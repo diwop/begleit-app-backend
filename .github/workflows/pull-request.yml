@@ -27,6 +27,10 @@ jobs:
           shared-key: pull-request
       - name: Install Protoc
         uses: arduino/setup-protoc@v3
+      - name: Install protoc-gen-openapiv2
+        run: |
+          go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv2@latest
+          echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
       - name: Check formatting
         id: format
         run: cargo fmt -- --check
