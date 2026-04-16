@@ -1,6 +1,8 @@
 syntax = "proto3";
 package translations;
 
+option go_package = "./api;api";
+
 message TranslateRequest {
   string original = 1;
 }

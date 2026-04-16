@@ -22,12 +22,19 @@ echo "cargo nextest" && \ # cargo install cargo-nextest --locked
 cargo nextest --version && \
 echo "protoc" && \ # mac: brew install protobuf; linux: sudo apt install protobuf-compiler; win: winget install protobuf
 protoc --version && \
+echo "go" && \ # mac: brew install go; linux: sudo apt install golang-go; win: winget install GoLang.Go
+go version && \
+echo "protoc-gen-openapiv2" && \ # mac/linux/win: go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv2@latest
+protoc-gen-openapiv2 --version && \
 echo "done"
 ```
 
 Your agent terminal might just see paths from `~/.zshenv` (not `~/.zshrc`) or `~/.bash_profile` (not `~/.bashrc`).
 If users specify their `$PATH` in the wrong file, you might not see installed tools.
-I you see few or no dependencies use `echo $PATH` to check the path and ask the developer wether `$PATH` is in the wrong file.
+If you see few or no dependencies or if you have installed a tool (especially protoc-gen-openapiv2 via Go) but the script still fails, we may have a `$PATH` configuration mismatch, the run `echo $PATH`.
+Check the path and ask the developer wether `$PATH` is defined in the wrong file or what is missing (e.g. `export PATH="$PATH:$(go env GOPATH)/bin`).
+If the developer fixed path issues, run `source ~/.zshenv` (or your respective file) and run the requirements check again.
+
 
 If there are missing dependencies:
 
