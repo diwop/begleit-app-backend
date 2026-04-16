@@ -5,9 +5,9 @@ macro_rules! route_grpc_json_service {
         {
             let mut router = $router;
             $(
-                // Convert to a string and use it directly for the route, e.g. "/translations/translate"
-                let path = format!("{}/{}", $prefix, stringify!($method));
-                
+                // Convert to a string and use it directly for the route, replacing snake_case with kebab-case, e.g. "/management/list-users"
+                let path = format!("{}/{}", $prefix, stringify!($method).replace("_", "-"));
+
                 router = router.route(
                     &path,
                     axum::routing::post(

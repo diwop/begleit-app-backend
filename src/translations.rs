@@ -50,4 +50,3 @@ pub fn setup() -> (Router, TranslationsServer<TranslationsImpl>) {
 
     (rest_router, grpc_service)
 }
-

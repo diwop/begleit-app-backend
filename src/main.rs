@@ -1,4 +1,3 @@
-
 use std::net::SocketAddr;
 use tracing::info;
 
@@ -9,12 +8,16 @@ async fn main() {
     if cfg!(debug_assertions) {
         // Pretty, colorful output for local development
         tracing_subscriber::fmt()
-            .with_env_filter(env_filter.unwrap_or_else(|_| "diwop_begleitapp=debug,tower_http=debug".into()))
+            .with_env_filter(
+                env_filter.unwrap_or_else(|_| "diwop_begleitapp=debug,tower_http=debug".into()),
+            )
             .init();
     } else {
         // Configure STACKIT/Kubernetes friendly structured JSON logging for production
         tracing_subscriber::fmt()
-            .with_env_filter(env_filter.unwrap_or_else(|_| "diwop_begleitapp=info,tower_http=info".into()))
+            .with_env_filter(
+                env_filter.unwrap_or_else(|_| "diwop_begleitapp=info,tower_http=info".into()),
+            )
             .json()
             .flatten_event(true)
             .init();

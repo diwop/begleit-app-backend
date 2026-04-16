@@ -27,7 +27,7 @@ async fn test_management_json_endpoint() {
     let client = reqwest::Client::new();
 
     let res = client
-        .post(&format!("{}/management/list_users", base_url))
+        .post(&format!("{}/management/list-users", base_url))
         .json(&serde_json::json!({}))
         .send()
         .await

@@ -2,6 +2,7 @@ version: 2
 
 updates:
   - package-ecosystem: "github-actions"
+    directory: "/"
     schedule:
       interval: "weekly"
       time: "09:00"
@@ -11,6 +12,7 @@ updates:
         patterns:
           - "*"
   - package-ecosystem: "cargo"
+    directory: "/"
     schedule:
       interval: "daily"
       time: "09:00"
@@ -22,6 +24,7 @@ updates:
           - "minor"
           - "patch"
   - package-ecosystem: "rust-toolchain"
+    directory: "/"
     schedule:
       interval: "weekly"
       time: "09:00"
