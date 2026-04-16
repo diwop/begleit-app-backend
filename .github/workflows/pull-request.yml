@@ -1,0 +1,59 @@
+name: Continuous Integration
+
+on:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check-dependabot:
+    name: Check Dependabot
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Validate dependabot.yml
+        uses: marocchino/validate-dependabot@v3
+        with:
+          path: .github/dependabot.yml
+
+  test-server:
+    name: Test Server
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: pull-request
+      - name: Check formatting
+        id: format
+        run: cargo fmt -- --check
+        continue-on-error: true
+      - name: Run clippy
+        id: clippy
+        run: cargo clippy
+        continue-on-error: true
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Run unit tests
+        id: tests
+        run: cargo nextest run
+        continue-on-error: true
+      - name: Aggregate results and fail if any failed
+        if: always() # ensure this runs even if earlier steps failed
+        run: |
+          echo "format outcome:   ${{ steps.format.outcome }}"
+          echo "clippy outcome:  ${{ steps.clippy.outcome }}"
+          echo "tests outcome:  ${{ steps.tests.outcome }}"
+
+          # If any step outcome is 'failure' then fail the job
+          for s in "${{ steps.format.outcome }}" "${{ steps.clippy.outcome }}" "${{ steps.tests.outcome }}"; do
+            if [ "$s" = "failure" ]; then
+              echo "One or more checks failed."
+              exit 1
+            fi
+          done
+
+          echo "All checks passed."

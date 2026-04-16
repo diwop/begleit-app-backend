@@ -1,0 +1,13 @@
+syntax = "proto3";
+package management;
+
+message ListUsersRequest {
+}
+
+message ListUsersResponse {
+  repeated string users = 1;
+}
+
+service Management {
+  rpc ListUsers (ListUsersRequest) returns (ListUsersResponse);
+}
