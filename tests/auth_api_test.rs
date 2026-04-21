@@ -24,9 +24,9 @@ async fn test_auth_header_validation() {
 
     let base_url = start_server().await;
     let rest_client = reqwest::Client::new();
-    
+
     // --- 1. REST JSON Testing ---
-    
+
     let res = rest_client
         .post(&format!("{}/translations/translate", base_url))
         .json(&serde_json::json!({"original": "Hello"}))
@@ -57,14 +57,26 @@ async fn test_auth_header_validation() {
 
     let mut grpc_client = TranslationsClient::connect(base_url).await.unwrap();
 
-    let request = tonic::Request::new(TranslateRequest { original: "Hello".into() });
-    let err = grpc_client.translate(request).await.expect_err("Should fail without key");
+    let request = tonic::Request::new(TranslateRequest {
+        original: "Hello".into(),
+    });
+    let err = grpc_client
+        .translate(request)
+        .await
+        .expect_err("Should fail without key");
     assert_eq!(err.code(), tonic::Code::Unauthenticated);
 
-    let mut request = tonic::Request::new(TranslateRequest { original: "Hello".into() });
-    request.metadata_mut().insert("x-api-key", "test-auth-secret-123".parse().unwrap());
-    
-    let res = grpc_client.translate(request).await.expect("Should succeed with key");
+    let mut request = tonic::Request::new(TranslateRequest {
+        original: "Hello".into(),
+    });
+    request
+        .metadata_mut()
+        .insert("x-api-key", "test-auth-secret-123".parse().unwrap());
+
+    let res = grpc_client
+        .translate(request)
+        .await
+        .expect("Should succeed with key");
     assert!(!res.into_inner().translated.is_empty());
 }
 
@@ -75,7 +87,7 @@ fn test_release_crash_without_key() {
     let result = std::panic::catch_unwind(|| {
         let _router = diwop_begleitapp::create_app();
     });
-    
+
     assert!(
         result.is_err(),
         "Expected create_app() to panic in release mode when API_KEY is omitted."
