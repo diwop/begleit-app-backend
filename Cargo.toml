@@ -25,7 +25,7 @@ opentelemetry-otlp = { version = "0.27", features = ["grpc-tonic", "metrics", "t
 tracing-opentelemetry = "0.28"
 
 [build-dependencies]
-tonic-build = "0.12"
+tonic-build = "0.14"
 
 [dev-dependencies]
 reqwest = { version = "0.13", features = ["json"] }
