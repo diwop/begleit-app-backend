@@ -3,6 +3,10 @@ name = "diwop-begleitapp"
 version = "0.1.0"
 edition = "2021"
 
+[profile.release-check]
+inherits = "release"
+opt-level = 0
+
 [dependencies]
 axum = "0.7.5"
 tokio = { version = "1.37.0", features = ["full"] }

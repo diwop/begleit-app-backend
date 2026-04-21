@@ -47,15 +47,20 @@ jobs:
         id: tests
         run: cargo nextest run
         continue-on-error: true
+      - name: Run release check
+        id: check
+        run: cargo check --profile release-check
+        continue-on-error: true
       - name: Aggregate results and fail if any failed
         if: always() # ensure this runs even if earlier steps failed
         run: |
           echo "format outcome:   ${{ steps.format.outcome }}"
           echo "clippy outcome:  ${{ steps.clippy.outcome }}"
           echo "tests outcome:  ${{ steps.tests.outcome }}"
+          echo "check outcome:  ${{ steps.check.outcome }}"
 
           # If any step outcome is 'failure' then fail the job
-          for s in "${{ steps.format.outcome }}" "${{ steps.clippy.outcome }}" "${{ steps.tests.outcome }}"; do
+          for s in "${{ steps.format.outcome }}" "${{ steps.clippy.outcome }}" "${{ steps.tests.outcome }}" "${{ steps.check.outcome }}"; do
             if [ "$s" = "failure" ]; then
               echo "One or more checks failed."
               exit 1

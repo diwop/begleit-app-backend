@@ -5,15 +5,21 @@ description: Develop and test features in the server
 
 # Change Server
 
-## Concepts
-
 The project contains a webserver written in Rust.
 
-### Testing
+Always check for compilation errors with `cargo check` and run `cargo nextest run` before notifying the user about the completion of a task.
 
-If you introduce a new feature or make a change it has to be reflected in tests.
-If there are existing unit or integration tests, extend or update them.
-If not, evaluate if unit and/or integration tests are appropriate to test the change.
+## Testing
+
+**CRITICAL**: You **MUST** write unit or integration tests for any newly added feature or component. Do not finish a task without providing corresponding test coverage.
+If there are existing unit, integration, or end-to-end tests, extend or update them.
+
+**CRITICAL**: You **MUST** write the test for a new pure function at the same time.
+
+## Comments
+
+Add descriptive comments to every function, struct, or construct that has more than 3 lines of code.
+**CRITICAL:** If you change a function, struct, or construct that has a comment, you **MUST** update the comment as well. Check the comment for correctness and completeness and update it if necessary.
 
 ## MCP Tools
 

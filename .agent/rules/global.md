@@ -23,7 +23,6 @@ Embrace the shift left on security:
 - When dealing with user data, make sure they are only identifiable with the user's id as a prefix. Always validate that a user is allowed to obtain requested data.
 
 **CRITICIAL**: Never introduce code that does not apply to these rules, not even for a spike or an uncommitted draft.
- 
 
 **CRITICAL**: Never store credentials in the code. Before you create a commit, always check the diff using `git diff` and scan it for credentials.
 
