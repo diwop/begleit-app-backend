@@ -93,16 +93,54 @@ impl Translations for MockTranslations {
 
 // ------------------ LLM Impl -------------------
 
+use tekken::config::{ModelData, TokenizerVersion};
+use tekken::Tekkenizer;
+
+pub fn load_tekkenizer() -> Result<Tekkenizer, Box<dyn std::error::Error + Send + Sync>> {
+    // Taken from https://huggingface.co/mistralai/Mistral-Small-4-119B-2603-NVFP4/blob/main/tekken.json
+    let content = include_str!("../tekken-mistral-4-small.json");
+    let model_data: ModelData = serde_json::from_str(content)?;
+
+    // Map newer versions (like v15) seamlessly down to V13 compatible bounds inherently
+    let version = TokenizerVersion::from_string(&model_data.config.version)
+        .unwrap_or(TokenizerVersion::V13);
+
+    let special_tokens = model_data.special_tokens
+        .ok_or_else(|| -> Box<dyn std::error::Error + Send + Sync> {
+            "Missing special tokens in JSON configuration payload".into()
+        })?;
+
+    Tekkenizer::new(
+        model_data.vocab,
+        &special_tokens,
+        &model_data.config.pattern,
+        model_data.config.default_vocab_size,
+        model_data.config.default_num_special_tokens,
+        version,
+        model_data.audio,
+    ).map_err(|e| {
+        format!("Failed to create Tekkenizer backend mapping bounds: {:?}", e).into()
+    })
+}
+
 #[derive(Clone)]
-pub struct LLMTranslations {}
+pub struct LLMTranslations {
+    tokenizer: std::sync::Arc<Tekkenizer>,
+}
 
 impl LLMTranslations {
     /// Creates a new LLMTranslations instance, verifying that the
     /// required OpenAI-compatible server URL is provided in the environment.
-    /// Returns an error if the environment variables are not set correctly.
-    pub fn new() -> Result<Self, std::env::VarError> {
+    /// It statically embeds the Tekkenizer configuration directly into the compiled binary.
+    /// Returns an error if the environment variables are not set correctly or parsing fails.
+    pub fn new() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let _url = std::env::var("OPENAI_BASE_URL")?;
-        Ok(Self {})
+
+        let tokenizer = load_tekkenizer()?;
+
+        Ok(Self {
+            tokenizer: std::sync::Arc::new(tokenizer),
+        })
     }
 }
 
@@ -115,8 +153,35 @@ impl Translations for LLMTranslations {
     ) -> Result<Response<TranslateResponse>, Status> {
         debug!("Handling a translation request.");
         let request = request.into_inner();
-        let translated = request.original;
-        info!("Handled a translation request.");
+        
+        let token_count = self.tokenizer.encode(&request.original, false, false)
+            .map(|t: Vec<u32>| t.len())
+            .unwrap_or(0);
+        
+        let translated = request.original.clone();
+
+        info!("Handled a translation request payload with {} characters evaluating to {} Mistral tokens.", request.original.len(), token_count);
+
         Ok(Response::new(TranslateResponse { translated }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tekkenizer_loads_and_tokenizes() {
+        let tokenizer = load_tekkenizer().expect("Tekkenizer must load and parse successfully");
+        let text = "Hello world, testing the Mistral tokenizer.";
+        
+        let tokens = tokenizer.encode(text, false, false).expect("Must continuously resolve bytes natively");
+        assert!(
+            !tokens.is_empty(),
+            "Tokenizer failed to produce any tokens for standard input"
+        );
+        
+        // Assert native bounds
+        assert!(tokens.len() > 3, "Should evaluate to multiple sequence nodes");
     }
 }
