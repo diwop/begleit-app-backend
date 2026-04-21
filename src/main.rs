@@ -1,6 +1,11 @@
 use std::net::SocketAddr;
 use tracing::info;
 
+/// Main entry point for the application:
+///
+/// - Initializes the logging system,
+/// - configures the application router and
+/// - starts the server.
 #[tokio::main]
 async fn main() {
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env();
