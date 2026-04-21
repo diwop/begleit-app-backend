@@ -2,7 +2,6 @@ use axum::Router;
 use tonic::{Request, Response, Status};
 use tracing::{debug, info};
 
-
 // ----------------- gRPC Service -----------------
 
 // Import the generated proto code
@@ -102,13 +101,15 @@ pub fn load_tekkenizer() -> Result<Tekkenizer, Box<dyn std::error::Error + Send 
     let model_data: ModelData = serde_json::from_str(content)?;
 
     // Map newer versions (like v15) seamlessly down to V13 compatible bounds inherently
-    let version = TokenizerVersion::from_string(&model_data.config.version)
-        .unwrap_or(TokenizerVersion::V13);
+    let version =
+        TokenizerVersion::from_string(&model_data.config.version).unwrap_or(TokenizerVersion::V13);
 
-    let special_tokens = model_data.special_tokens
-        .ok_or_else(|| -> Box<dyn std::error::Error + Send + Sync> {
-            "Missing special tokens in JSON configuration payload".into()
-        })?;
+    let special_tokens =
+        model_data
+            .special_tokens
+            .ok_or_else(|| -> Box<dyn std::error::Error + Send + Sync> {
+                "Missing special tokens in JSON configuration payload".into()
+            })?;
 
     Tekkenizer::new(
         model_data.vocab,
@@ -118,8 +119,13 @@ pub fn load_tekkenizer() -> Result<Tekkenizer, Box<dyn std::error::Error + Send 
         model_data.config.default_num_special_tokens,
         version,
         model_data.audio,
-    ).map_err(|e| {
-        format!("Failed to create Tekkenizer backend mapping bounds: {:?}", e).into()
+    )
+    .map_err(|e| {
+        format!(
+            "Failed to create Tekkenizer backend mapping bounds: {:?}",
+            e
+        )
+        .into()
     })
 }
 
@@ -153,11 +159,13 @@ impl Translations for LLMTranslations {
     ) -> Result<Response<TranslateResponse>, Status> {
         debug!("Handling a translation request.");
         let request = request.into_inner();
-        
-        let token_count = self.tokenizer.encode(&request.original, false, false)
+
+        let token_count = self
+            .tokenizer
+            .encode(&request.original, false, false)
             .map(|t: Vec<u32>| t.len())
             .unwrap_or(0);
-        
+
         let translated = request.original.clone();
 
         info!("Handled a translation request payload with {} characters evaluating to {} Mistral tokens.", request.original.len(), token_count);
@@ -174,14 +182,19 @@ mod tests {
     fn test_tekkenizer_loads_and_tokenizes() {
         let tokenizer = load_tekkenizer().expect("Tekkenizer must load and parse successfully");
         let text = "Hello world, testing the Mistral tokenizer.";
-        
-        let tokens = tokenizer.encode(text, false, false).expect("Must continuously resolve bytes natively");
+
+        let tokens = tokenizer
+            .encode(text, false, false)
+            .expect("Must continuously resolve bytes natively");
         assert!(
             !tokens.is_empty(),
             "Tokenizer failed to produce any tokens for standard input"
         );
-        
+
         // Assert native bounds
-        assert!(tokens.len() > 3, "Should evaluate to multiple sequence nodes");
+        assert!(
+            tokens.len() > 3,
+            "Should evaluate to multiple sequence nodes"
+        );
     }
 }
