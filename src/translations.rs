@@ -7,6 +7,9 @@ use tracing::{debug, info};
 // Import the generated proto code
 #[allow(clippy::module_inception)]
 pub mod translations {
+    pub fn empty_body() -> axum::body::Body {
+        axum::body::Body::empty()
+    }
     tonic::include_proto!("translations");
 }
 

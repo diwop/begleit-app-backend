@@ -17,12 +17,11 @@ pub fn create_app() -> Router {
     let (translations_rest, translations_grpc) = translations::setup();
     let (management_rest, management_grpc) = management::setup();
 
-    // Construct a SINGLE Tonic server housing all our gRPC endpoints
-    #[allow(deprecated)]
-    let grpc_router = tonic::transport::Server::builder()
-        .add_service(translations_grpc)
-        .add_service(management_grpc)
-        .into_router();
+    // Construct a SINGLE Tonic service router housing all our gRPC endpoints natively mapping to Axum
+    let mut grpc_router_builder = tonic::service::Routes::builder();
+    grpc_router_builder.add_service(translations_grpc);
+    grpc_router_builder.add_service(management_grpc);
+    let grpc_router = grpc_router_builder.routes().into_axum_router();
 
     // Attempt to extract the API Key enforcing production rules
     let expected_api_key = match std::env::var("API_KEY") {
@@ -104,8 +103,14 @@ fn configure_swagger_ui(is_secured: bool) -> utoipa_swagger_ui::SwaggerUi {
             }
         }
     }
-
-    utoipa_swagger_ui::SwaggerUi::new("/open-api")
-        .external_url_unchecked("/api-docs/translations.json", translations_swagger_val)
-        .external_url_unchecked("/api-docs/management.json", management_swagger_val)
+    utoipa_swagger_ui::SwaggerUi::new("/open-api").external_urls_from_iter_unchecked([
+        (
+            utoipa_swagger_ui::Url::new("Translations", "/api-docs/translations.json"),
+            translations_swagger_val,
+        ),
+        (
+            utoipa_swagger_ui::Url::new("Management", "/api-docs/management.json"),
+            management_swagger_val,
+        ),
+    ])
 }

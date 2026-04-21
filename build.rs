@@ -104,7 +104,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let out_dir = env::var("OUT_DIR")?;
     let api_config_path = generate_api_config(&proto_files, Path::new(&out_dir))?;
 
-    tonic_build::configure()
+    tonic_prost_build::configure()
         .type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
         // Tells protoc to use the openapiv2 plugin and output to our specific directory
         .protoc_arg("--openapiv2_out=./api-docs")

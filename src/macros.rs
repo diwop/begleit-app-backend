@@ -34,7 +34,9 @@ macro_rules! route_grpc_json_service {
                                 .$method(req)
                                 .await
                                 .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
-                            Ok::<_, axum::http::StatusCode>(axum::Json(res.into_inner()))
+
+                            use axum::response::IntoResponse;
+                            Ok::<axum::response::Response, axum::http::StatusCode>(axum::Json(res.into_inner()).into_response())
                         },
                     )
                     .with_state($state.clone()),

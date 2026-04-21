@@ -11,6 +11,9 @@ fn list_users() -> Vec<String> {
 // Import the generated proto code
 #[allow(clippy::module_inception)]
 pub mod management {
+    pub fn empty_body() -> axum::body::Body {
+        axum::body::Body::empty()
+    }
     tonic::include_proto!("management");
 }
 
