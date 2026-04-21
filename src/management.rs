@@ -8,6 +8,8 @@ fn list_users() -> Vec<String> {
 
 // ----------------- gRPC Service -----------------
 
+// Import the generated proto code
+#[allow(clippy::module_inception)]
 pub mod management {
     tonic::include_proto!("management");
 }

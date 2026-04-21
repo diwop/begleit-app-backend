@@ -5,6 +5,7 @@ use tracing::{debug, info};
 // ----------------- gRPC Service -----------------
 
 // Import the generated proto code
+#[allow(clippy::module_inception)]
 pub mod translations {
     tonic::include_proto!("translations");
 }
@@ -67,13 +68,13 @@ pub fn setup() -> (Router, TranslationsServer<TranslationsImpl>) {
 
 // ------------------ Mock Impl -------------------
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct MockTranslations {}
 
 impl MockTranslations {
     /// Creates a new MockTranslations instance.
     pub fn new() -> Self {
-        Self {}
+        Self::default()
     }
 }
 
@@ -150,9 +151,10 @@ impl LLMTranslations {
     }
 }
 
-// TODO: call LLM API
+// TODO: call  LLM API
 #[tonic::async_trait]
 impl Translations for LLMTranslations {
+    #[tracing::instrument(skip_all, fields(input_tokens, output_tokens, token_ratio))]
     async fn translate(
         &self,
         request: Request<TranslateRequest>,
@@ -165,6 +167,17 @@ impl Translations for LLMTranslations {
             .encode(&request.original, false, false)
             .map(|t: Vec<u32>| t.len())
             .unwrap_or(0);
+
+        let output_tokens = token_count; // Mock output token counts mimicking exact inputs
+        let token_ratio: f64 = 1.0;
+
+        let span = tracing::Span::current();
+        span.record("input_tokens", token_count);
+        span.record("output_tokens", output_tokens);
+        span.record("token_ratio", token_ratio);
+
+        // Artificial async delay simulating Mistral backend token decoding execution (1ms per input token)
+        tokio::time::sleep(tokio::time::Duration::from_millis(token_count as u64)).await;
 
         let translated = request.original.clone();
 
