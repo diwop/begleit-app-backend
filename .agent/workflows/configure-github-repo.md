@@ -16,6 +16,7 @@ Explain to the user the following suggested settings for the repository:
 - **Squash merging**: Enabled (Maintains a clean, linear commit history by squashing all commits into one upon merge)
 - **Rebase merging**: Enabled (Provides flexibility if a linear commit history without a merge commit is desired)
 - **Merge commits**: Disabled (Forces squash or rebase merging to maintain linear history)
+- **Auto merge PRs**: Enabled (Convenient and safe with the other configuration)
 
 ## Configure Settings using GitHub CLI
 
@@ -35,7 +36,8 @@ Offer to the user to configure these repository settings using the `gh` CLI.
       --delete-branch-on-merge \
       --enable-squash-merge \
       --enable-rebase-merge \
-      --enable-merge-commit=false
+      --enable-merge-commit=false \
+      --enable-auto-merge
     ```
 
 ## Branch Protection (main)
