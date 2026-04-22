@@ -36,7 +36,7 @@ fn init_tracing() {
         use opentelemetry::global;
         use opentelemetry_otlp::WithExportConfig;
 
-        let resource = opentelemetry_sdk::Resource::default();
+        let resource = opentelemetry_sdk::Resource::builder().build();
 
         // Build Spans Exporter
         let span_exporter = opentelemetry_otlp::SpanExporter::builder()
@@ -46,8 +46,8 @@ fn init_tracing() {
             .expect("Failed to build OTLP trace exporter");
 
         // Trace Provider
-        let tracer_provider = opentelemetry_sdk::trace::TracerProvider::builder()
-            .with_batch_exporter(span_exporter, opentelemetry_sdk::runtime::Tokio)
+        let tracer_provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+            .with_batch_exporter(span_exporter)
             .build();
 
         use opentelemetry::trace::TracerProvider;
@@ -63,11 +63,7 @@ fn init_tracing() {
         // Metrics Provider natively via OTLP pipeline
         let meter_provider = opentelemetry_sdk::metrics::SdkMeterProvider::builder()
             .with_reader(
-                opentelemetry_sdk::metrics::PeriodicReader::builder(
-                    metric_exporter,
-                    opentelemetry_sdk::runtime::Tokio,
-                )
-                .build(),
+                opentelemetry_sdk::metrics::PeriodicReader::builder(metric_exporter).build(),
             )
             .with_resource(resource)
             .build();

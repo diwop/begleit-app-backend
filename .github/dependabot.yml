@@ -20,10 +20,49 @@ updates:
     open-pull-requests-limit: 5
     groups:
       minor-patch-upgrades:
+        # Dependabot prefers longest match over evaluation order.
+        # Make sure you add all more specific patterns of groups tackling major updates
+        # (otherwise their minor/patch updates will be grouped in isolation).
+        patterns:
+          - "*"
+          - "*opentelemetry*"
+          - "tonic*"
+          - "prost*"
+          - "utoipa*"
+          - "tracing*"
+          - "axum*"
+          - "tower*"
         update-types:
           - "minor"
           - "patch"
-  - package-ecosystem: "rust-toolchain"
+      opentelemetry:
+        patterns:
+          - "*opentelemetry*"
+        update-types:
+          - "major"
+      tonic-prost:
+        patterns:
+          - "tonic*"
+          - "prost*"
+        update-types:
+          - "major"
+      utoipa:
+        patterns:
+          - "utoipa*"
+        update-types:
+          - "major"
+      tracing:
+        patterns:
+          - "tracing*"
+        update-types:
+          - "major"
+      axum-tower:
+        patterns:
+          - "axum*"
+          - "tower*"
+        update-types:
+          - "major"
+  - package-ecosystem: "rust-toolchain" 
     directory: "/"
     schedule:
       interval: "weekly"
