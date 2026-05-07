@@ -9,7 +9,7 @@ opt-level = 0
 
 [dependencies]
 axum = "0.8"
-tokio = { version = "1.52.1", features = ["full"] }
+tokio = { version = "1.52.2", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tower-http = { version = "0.6", features = ["trace"] }
@@ -25,7 +25,7 @@ opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic", "metrics", "t
 tracing-opentelemetry = "0.32"
 tonic-build = "0.14"
 utoipa = "5"
-tonic-prost = "0.14.5"
+tonic-prost = "0.14.6"
 
 [build-dependencies]
 tonic-prost-build = "0.14"
