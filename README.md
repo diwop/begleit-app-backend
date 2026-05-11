@@ -1,6 +1,6 @@
-# DiWop Begleitapp Backend
+# DiWop Begleit-App Backend
 
-Welcome to the `begleitapp-backend` repository.
+Welcome to the `begleit-app-backend` repository.
 
 See [docs/implementation-details.md](docs/implementation-details.md) for technical information.
 
@@ -18,7 +18,7 @@ For now it just provides listing users (always an empty list).
 
 ## Getting Started
 
-Use the agentic workflows in [`/onboarding`](.agent/workflows/onboarding.md) to get started.
+Use the agentic workflow [`/onboarding`](.agent/workflows/onboarding.md) to get started.
 
 Start the server with `cargo run`.
 

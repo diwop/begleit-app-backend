@@ -25,7 +25,7 @@ updates:
         # (otherwise their minor/patch updates will be grouped in isolation).
         patterns:
           - "*"
-          - "*opentelemetry*"
+          - "opentelemetry*"
           - "tonic*"
           - "prost*"
           - "utoipa*"
@@ -37,7 +37,7 @@ updates:
           - "patch"
       opentelemetry:
         patterns:
-          - "*opentelemetry*"
+          - "opentelemetry*"
         update-types:
           - "major"
       tonic-prost:

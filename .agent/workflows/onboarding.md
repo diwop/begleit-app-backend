@@ -16,6 +16,7 @@ Run command exactly to check for missing requirements:
 ```bash
 echo "git" && \ # mac: brew install git; linux: sudo apt install git; win: winget install Git.Git
 git --version && \
+echo "docker" && \ # mac: brew install --cask docker; linux: sudo apt install docker.io; win: winget install Docker.DockerDesktop
 echo "cargo" && \ # mac: brew install rustup; linux: curl https://sh.rustup.rs -sSf | sh; win: winget install Rustlang.Rustup
 cargo --version && \
 echo "cargo nextest" && \ # cargo install cargo-nextest --locked
