@@ -26,6 +26,7 @@ updates:
         patterns:
           - "*"
           - "opentelemetry*"
+          - "tracing-opentelemetry*"
           - "tonic*"
           - "prost*"
           - "utoipa*"
@@ -38,6 +39,7 @@ updates:
       opentelemetry:
         patterns:
           - "opentelemetry*"
+          - "tracing-opentelemetry*"
         update-types:
           - "major"
       tonic-prost:
