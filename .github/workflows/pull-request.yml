@@ -11,7 +11,7 @@ jobs:
     name: Check Dependabot
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Validate dependabot.yml
         uses: marocchino/validate-dependabot@v3
         with:
@@ -21,7 +21,7 @@ jobs:
     name: Test Server
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: pull-request
