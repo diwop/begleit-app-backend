@@ -24,7 +24,7 @@ opentelemetry_sdk = { version = "0.32" }
 opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic", "metrics", "trace"] }
 tracing-opentelemetry = "0.33"
 tonic-build = "0.14"
-utoipa = "5"
+utoipa = "6"
 tonic-prost = "0.14.6"
 
 [build-dependencies]
