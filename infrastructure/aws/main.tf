@@ -524,6 +524,7 @@ data "aws_iam_policy_document" "github_actions_deploy" {
     effect = "Allow"
     actions = [
       "iam:GetOpenIDConnectProvider",
+      "iam:ListOpenIDConnectProviders",
       "ecs:*",
       "elasticloadbalancing:*",
       "acm:DescribeCertificate",
