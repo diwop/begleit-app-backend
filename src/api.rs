@@ -1,0 +1,674 @@
+use axum::{
+    extract::{rejection::JsonRejection, FromRequest, Request},
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    routing::post,
+    Json, Router,
+};
+use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
+
+/// Speaker role in a conversation: `user` is the app user, `partner` is the conversation partner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Role {
+    User,
+    Partner,
+}
+
+/// Spoken contribution in a conversation with speaker role and plain-text message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[schema(example = json!({
+    "role": "partner",
+    "message": "sie müssen den antrag bis ende nächste woche abgeben"
+}))]
+pub struct ConversationMessage {
+    /// user is the app user, partner is the conversation partner.
+    pub role: Role,
+    /// Originally recognized spoken text as plain text.
+    #[schema(
+        min_length = 1,
+        pattern = r"\S",
+        example = "sie müssen den antrag bis ende nächste woche abgeben"
+    )]
+    pub message: String,
+}
+
+/// Response returned by `/correct-transcript` containing the corrected plain-text message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[schema(example = json!({
+    "message": "Sie müssen den Antrag bis Ende nächster Woche abgeben."
+}))]
+pub struct CorrectTranscriptResponse {
+    /// Complete corrected text as plain text, no Markdown.
+    #[schema(
+        min_length = 1,
+        pattern = r"\S",
+        example = "Sie müssen den Antrag bis Ende nächster Woche abgeben."
+    )]
+    pub message: String,
+}
+
+/// Request payload for `/translate` containing the chronological conversation history.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[schema(example = json!({
+    "messages": [
+        {
+            "role": "user",
+            "message": "wann muss ich den antrag abgeben"
+        },
+        {
+            "role": "partner",
+            "message": "sie müssen den antrag bis ende nächste woche abgeben"
+        }
+    ]
+}))]
+pub struct TranslateRequest {
+    /// Chronological conversation history; the last role must be "partner".
+    #[schema(min_items = 1)]
+    pub messages: Vec<ConversationMessage>,
+}
+
+/// Type of preparation returned by `/translate`.
+///
+/// `formatting` structures/formats while largely preserving the wording.
+/// `translation` simplifies the language or phrases it more understandably;
+/// a target language is not passed in this version.
+/// Use %type=formatting% or %type=translation% on staging environment to enforce.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum TranslationType {
+    Formatting,
+    Translation,
+}
+
+/// Warning severity level for UI display and icon; does not control visibility.
+/// Use %warning.type=danger%, %warning.type=warning%, or %warning.type=info% on staging environment to enforce.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum WarningType {
+    Danger,
+    Warning,
+    Info,
+}
+
+/// Optional content warning attached to a `/translate` response.
+///
+/// Optional; if there is no warning, the field is omitted, not transmitted as null.
+/// Without a warning, content is immediately visible. Content warnings are not
+/// technical errors and are returned with HTTP 200.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct Warning {
+    /// Short headline as plain text.
+    #[schema(
+        min_length = 1,
+        pattern = r"\S",
+        example = "Möglicherweise verletzender Inhalt"
+    )]
+    pub headline: String,
+    /// Explanation as Markdown, without embedded HTML.
+    #[schema(
+        min_length = 1,
+        pattern = r"\S",
+        example = "Diese Antwort enthält **abwertende Aussagen**."
+    )]
+    pub body: String,
+    /// Warning level for display and icon; does not control visibility.
+    /// Use %warning.type=danger%, %warning.type=warning%, or %warning.type=info% on staging environment to enforce.
+    #[serde(rename = "type")]
+    pub r#type: WarningType,
+    /// true hides content initially. The warning with headline and body as well as
+    /// the button "Antwort anzeigen" remain visible. The button reveals content
+    /// locally without another API call. content is already completely
+    /// included in the response. false displays the warning and content immediately.
+    /// Use %warning.revealable% on staging environment to enforce.
+    pub revealable: bool,
+}
+
+/// Response returned by `/translate` with the prepared Markdown content and optional warning.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct TranslationResponse {
+    /// formatting structures/formats while largely preserving the wording.
+    /// translation simplifies the language or phrases it more understandably;
+    /// a target language is not passed in this version.
+    /// Use %type=formatting% or %type=translation% on staging environment to enforce.
+    #[serde(rename = "type")]
+    pub r#type: TranslationType,
+    /// Complete response text as Markdown, without embedded HTML.
+    #[schema(
+        min_length = 1,
+        pattern = r"\S",
+        example = "Geben Sie den Antrag **bis Ende nächster Woche** ab."
+    )]
+    pub content: String,
+    /// Optional content warning; omitted when there is no warning.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<Warning>,
+}
+
+/// Inner error object containing a stable error code and human-readable message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ErrorDetail {
+    /// Stable machine-readable error code; to be evaluated by the client.
+    pub code: String,
+    /// Human-readable description; the exact wording is not stable.
+    pub message: String,
+}
+
+/// Standard error envelope returned by all endpoints on 4xx/5xx responses.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ErrorResponse {
+    /// Error details containing code and message.
+    pub error: ErrorDetail,
+}
+
+impl ErrorResponse {
+    /// Constructs a new `ErrorResponse` from a machine-readable code and message.
+    pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            error: ErrorDetail {
+                code: code.into(),
+                message: message.into(),
+            },
+        }
+    }
+}
+
+/// Custom JSON extractor that converts syntax errors into `400 INVALID_JSON`
+/// and schema/type errors into `422 VALIDATION_ERROR` using [`ErrorResponse`].
+pub struct AppJson<T>(pub T);
+
+impl<S, T> FromRequest<S> for AppJson<T>
+where
+    axum::Json<T>: FromRequest<S, Rejection = JsonRejection>,
+    S: Send + Sync,
+{
+    type Rejection = Response;
+
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        match axum::Json::<T>::from_request(req, state).await {
+            Ok(Json(value)) => Ok(Self(value)),
+            Err(JsonRejection::JsonDataError(_)) => Err((
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(ErrorResponse::new(
+                    "VALIDATION_ERROR",
+                    "A required field is missing or invalid, or the text is empty.",
+                )),
+            )
+                .into_response()),
+            Err(_) => Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse::new(
+                    "INVALID_JSON",
+                    "Request body is not valid JSON.",
+                )),
+            )
+                .into_response()),
+        }
+    }
+}
+
+/// Creates and returns the router for the conversation API endpoints.
+pub fn router() -> Router {
+    Router::new()
+        .route("/correct-transcript", post(correct_transcript))
+        .route("/translate", post(translate))
+}
+
+/// Checks whether a string contains at least one non-whitespace character.
+pub fn is_non_blank(text: &str) -> bool {
+    !text.trim().is_empty()
+}
+
+/// Correct spoken contribution for the UI.
+///
+/// For user and partner. Corrects recognition errors, spelling, and
+/// punctuation; preserves meaning, language, and tone and does not add
+/// information. If no correction is needed, the text is returned unchanged.
+/// Processes only the individual contribution, without conversation history.
+/// The corrected text replaces only the UI display, not the original text
+/// for /translate. In case of an error, the original remains visible;
+/// the correction can be retried independently of /translate.
+#[utoipa::path(
+    post,
+    path = "/correct-transcript",
+    operation_id = "correctTranscript",
+    request_body(
+        content = ConversationMessage,
+        example = json!({
+            "role": "partner",
+            "message": "sie müssen den antrag bis ende nächste woche abgeben"
+        })
+    ),
+    responses(
+        (
+            status = 200,
+            description = "Corrected contribution as plain text, no Markdown.",
+            body = CorrectTranscriptResponse,
+            example = json!({
+                "message": "Sie müssen den Antrag bis Ende nächster Woche abgeben."
+            })
+        ),
+        (
+            status = 400,
+            description = "INVALID_JSON – Request body is not valid JSON.",
+            body = ErrorResponse,
+            example = json!({
+                "error": {
+                    "code": "INVALID_JSON",
+                    "message": "Request body is not valid JSON."
+                }
+            })
+        ),
+        (
+            status = 401,
+            description = "UNAUTHORIZED – Required authentication is missing or invalid.",
+            body = ErrorResponse,
+            example = json!({
+                "error": {
+                    "code": "UNAUTHORIZED",
+                    "message": "Required authentication is missing or invalid."
+                }
+            })
+        ),
+        (
+            status = 403,
+            description = "FORBIDDEN – Access is not permitted.",
+            body = ErrorResponse,
+            example = json!({
+                "error": {
+                    "code": "FORBIDDEN",
+                    "message": "Access is not permitted."
+                }
+            })
+        ),
+        (
+            status = 422,
+            description = "VALIDATION_ERROR – Required field is missing, type or role is invalid, or text is empty.",
+            body = ErrorResponse,
+            example = json!({
+                "error": {
+                    "code": "VALIDATION_ERROR",
+                    "message": "A required field is missing or invalid, or the text is empty."
+                }
+            })
+        ),
+        (
+            status = 429,
+            description = "RATE_LIMITED – Too many requests.",
+            body = ErrorResponse,
+            example = json!({
+                "error": {
+                    "code": "RATE_LIMITED",
+                    "message": "Too many requests."
+                }
+            })
+        ),
+        (
+            status = 500,
+            description = "INTERNAL_ERROR – Processing failed.",
+            body = ErrorResponse,
+            example = json!({
+                "error": {
+                    "code": "INTERNAL_ERROR",
+                    "message": "Processing failed."
+                }
+            })
+        ),
+        (
+            status = 503,
+            description = "SERVICE_UNAVAILABLE – Service is temporarily unavailable.",
+            body = ErrorResponse,
+            example = json!({
+                "error": {
+                    "code": "SERVICE_UNAVAILABLE",
+                    "message": "Service is temporarily unavailable."
+                }
+            })
+        )
+    )
+)]
+pub async fn correct_transcript(
+    AppJson(request): AppJson<ConversationMessage>,
+) -> Result<Json<CorrectTranscriptResponse>, (StatusCode, Json<ErrorResponse>)> {
+    if !is_non_blank(&request.message) {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ErrorResponse::new(
+                "VALIDATION_ERROR",
+                "A required field is missing or invalid, or the text is empty.",
+            )),
+        ));
+    }
+
+    Ok(Json(CorrectTranscriptResponse {
+        message: request.message,
+    }))
+}
+
+/// Prepare the last statement from "partner" in German simple language.
+///
+/// Receives the conversation history chronologically with the originally recognized
+/// spoken texts, not the UI corrections. Generated preparations are not sent along
+/// as conversation contributions. Earlier contributions provide context; the response
+/// refers to the last statement from "partner".
+/// The last message MUST have the role "partner" (server-side validation;
+/// otherwise 422 LAST_MESSAGE_MUST_BE_PARTNER).
+/// Consecutive contributions with the same role are allowed.
+/// Starts in parallel with /correct-transcript and does not wait for its result.
+/// The order of responses is arbitrary; errors do not block the respective other call.
+/// Retries continue to use the original texts.
+#[utoipa::path(
+    post,
+    path = "/translate",
+    operation_id = "translate",
+    request_body(
+        content = TranslateRequest,
+        example = json!({
+            "messages": [
+                {
+                    "role": "user",
+                    "message": "wann muss ich den antrag abgeben"
+                },
+                {
+                    "role": "partner",
+                    "message": "sie müssen den antrag bis ende nächste woche abgeben"
+                }
+            ]
+        })
+    ),
+    responses(
+        (
+            status = 200,
+            description = "Prepared response with optional content warning.",
+            body = TranslationResponse,
+            examples(
+                ("withoutWarning" = (
+                    summary = "Response without warning",
+                    value = json!({
+                        "type": "translation",
+                        "content": "Geben Sie den Antrag **bis Ende nächster Woche** ab."
+                    })
+                )),
+                ("withWarning" = (
+                    summary = "Example with initially hidden response text",
+                    value = json!({
+                        "type": "translation",
+                        "content": "Die aufbereitete Antwort steht hier.",
+                        "warning": {
+                            "headline": "Möglicherweise verletzender Inhalt",
+                            "body": "Diese Antwort enthält **abwertende Aussagen**.",
+                            "type": "warning",
+                            "revealable": true
+                        }
+                    })
+                ))
+            )
+        ),
+        (
+            status = 400,
+            description = "INVALID_JSON – Request body is not valid JSON.",
+            body = ErrorResponse,
+            example = json!({
+                "error": {
+                    "code": "INVALID_JSON",
+                    "message": "Request body is not valid JSON."
+                }
+            })
+        ),
+        (
+            status = 401,
+            description = "UNAUTHORIZED – Required authentication is missing or invalid.",
+            body = ErrorResponse,
+            example = json!({
+                "error": {
+                    "code": "UNAUTHORIZED",
+                    "message": "Required authentication is missing or invalid."
+                }
+            })
+        ),
+        (
+            status = 403,
+            description = "FORBIDDEN – Access is not permitted.",
+            body = ErrorResponse,
+            example = json!({
+                "error": {
+                    "code": "FORBIDDEN",
+                    "message": "Access is not permitted."
+                }
+            })
+        ),
+        (
+            status = 422,
+            description = "VALIDATION_ERROR – Invalid fields or empty message list; LAST_MESSAGE_MUST_BE_PARTNER – Last statement does not come from partner.",
+            body = ErrorResponse,
+            examples(
+                ("invalidFields" = (
+                    value = json!({
+                        "error": {
+                            "code": "VALIDATION_ERROR",
+                            "message": "The message list must not be empty."
+                        }
+                    })
+                )),
+                ("lastRole" = (
+                    value = json!({
+                        "error": {
+                            "code": "LAST_MESSAGE_MUST_BE_PARTNER",
+                            "message": "The last message must come from the conversation partner."
+                        }
+                    })
+                ))
+            )
+        ),
+        (
+            status = 429,
+            description = "RATE_LIMITED – Too many requests.",
+            body = ErrorResponse,
+            example = json!({
+                "error": {
+                    "code": "RATE_LIMITED",
+                    "message": "Too many requests."
+                }
+            })
+        ),
+        (
+            status = 500,
+            description = "INTERNAL_ERROR – Processing failed.",
+            body = ErrorResponse,
+            example = json!({
+                "error": {
+                    "code": "INTERNAL_ERROR",
+                    "message": "Processing failed."
+                }
+            })
+        ),
+        (
+            status = 503,
+            description = "SERVICE_UNAVAILABLE – Service is temporarily unavailable.",
+            body = ErrorResponse,
+            example = json!({
+                "error": {
+                    "code": "SERVICE_UNAVAILABLE",
+                    "message": "Service is temporarily unavailable."
+                }
+            })
+        )
+    )
+)]
+pub async fn translate(
+    AppJson(request): AppJson<TranslateRequest>,
+) -> Result<Json<TranslationResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let Some(last_message) = request.messages.last() else {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ErrorResponse::new(
+                "VALIDATION_ERROR",
+                "The message list must not be empty.",
+            )),
+        ));
+    };
+
+    if request.messages.iter().any(|m| !is_non_blank(&m.message)) {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ErrorResponse::new(
+                "VALIDATION_ERROR",
+                "A required field is missing or invalid, or the text is empty.",
+            )),
+        ));
+    }
+
+    if last_message.role != Role::Partner {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ErrorResponse::new(
+                "LAST_MESSAGE_MUST_BE_PARTNER",
+                "The last message must come from the conversation partner.",
+            )),
+        ));
+    }
+
+    let is_staging = std::env::var("ENVIRONMENT")
+        .unwrap_or_else(|_| "production".to_string())
+        .eq_ignore_ascii_case("staging");
+
+    Ok(Json(build_translation_response(
+        &last_message.message,
+        is_staging,
+    )))
+}
+
+/// Builds a [`TranslationResponse`] from the partner's message text.
+///
+/// When `is_staging` is `true` (`ENVIRONMENT=staging`), honors inline test directives
+/// (`%type=formatting%`, `%type=translation%`, `%warning.type=...%`, and `%warning.revealable%`).
+/// In `production` (default, `is_staging == false`), directives are ignored.
+pub fn build_translation_response(message: &str, is_staging: bool) -> TranslationResponse {
+    if !is_staging {
+        return TranslationResponse {
+            r#type: TranslationType::Formatting,
+            content: message.to_string(),
+            warning: None,
+        };
+    }
+
+    let r#type = if message.contains("%type=formatting%") {
+        TranslationType::Formatting
+    } else if message.contains("%type=translation%") {
+        TranslationType::Translation
+    } else {
+        TranslationType::Formatting
+    };
+
+    let warning_type = if message.contains("%warning.type=danger%") {
+        Some(WarningType::Danger)
+    } else if message.contains("%warning.type=warning%") {
+        Some(WarningType::Warning)
+    } else if message.contains("%warning.type=info%") {
+        Some(WarningType::Info)
+    } else {
+        None
+    };
+
+    let revealable = if message.contains("%warning.revealable%")
+        || message.contains("%warning.revealable=true%")
+    {
+        Some(true)
+    } else if message.contains("%warning.revealable=false%") {
+        Some(false)
+    } else {
+        None
+    };
+
+    let warning = if warning_type.is_some() || revealable.is_some() {
+        Some(Warning {
+            headline: "Zu Ihrer Information".to_string(),
+            body: "Passen Sie auf sich auf!".to_string(),
+            r#type: warning_type.unwrap_or(WarningType::Info),
+            revealable: revealable.unwrap_or(false),
+        })
+    } else {
+        None
+    };
+
+    TranslationResponse {
+        r#type,
+        content: message.to_string(),
+        warning,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verifies that `is_non_blank` rejects empty and whitespace-only strings and accepts non-blank strings.
+    #[test]
+    fn test_is_non_blank() {
+        assert!(!is_non_blank(""));
+        assert!(!is_non_blank("   \t\n "));
+        assert!(is_non_blank("hello"));
+        assert!(is_non_blank("  a  "));
+    }
+
+    /// Verifies that `build_translation_response` enforces `%type=...%` and `%warning...%` directives only in staging.
+    #[test]
+    fn test_build_translation_response_directives() {
+        let default_res = build_translation_response("Normaler Text", true);
+        assert_eq!(default_res.r#type, TranslationType::Formatting);
+        assert!(default_res.warning.is_none());
+
+        let trans_res = build_translation_response("Text %type=translation%", true);
+        assert_eq!(trans_res.r#type, TranslationType::Translation);
+        assert!(trans_res.warning.is_none());
+
+        let fmt_res = build_translation_response("Text %type=formatting%", true);
+        assert_eq!(fmt_res.r#type, TranslationType::Formatting);
+
+        let revealable_only = build_translation_response("Achtung %warning.revealable%", true);
+        assert_eq!(
+            revealable_only.warning,
+            Some(Warning {
+                headline: "Zu Ihrer Information".to_string(),
+                body: "Passen Sie auf sich auf!".to_string(),
+                r#type: WarningType::Info,
+                revealable: true,
+            })
+        );
+
+        let warning_type_only = build_translation_response("Gefahr %warning.type=danger%", true);
+        assert_eq!(
+            warning_type_only.warning,
+            Some(Warning {
+                headline: "Zu Ihrer Information".to_string(),
+                body: "Passen Sie auf sich auf!".to_string(),
+                r#type: WarningType::Danger,
+                revealable: false,
+            })
+        );
+
+        let combined = build_translation_response(
+            "Kombi %type=translation% %warning.type=warning% %warning.revealable%",
+            true,
+        );
+        assert_eq!(combined.r#type, TranslationType::Translation);
+        assert_eq!(
+            combined.warning,
+            Some(Warning {
+                headline: "Zu Ihrer Information".to_string(),
+                body: "Passen Sie auf sich auf!".to_string(),
+                r#type: WarningType::Warning,
+                revealable: true,
+            })
+        );
+
+        // In production (is_staging = false), directives are ignored
+        let prod_res = build_translation_response(
+            "Kombi %type=translation% %warning.type=warning% %warning.revealable%",
+            false,
+        );
+        assert_eq!(prod_res.r#type, TranslationType::Formatting);
+        assert!(prod_res.warning.is_none());
+    }
+}

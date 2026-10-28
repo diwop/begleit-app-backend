@@ -1,4 +1,5 @@
 ---
+name: onboarding
 description: Onboarding guide for new developers (requirements, MCP server setup)
 ---
 
@@ -21,19 +22,15 @@ echo "cargo" && \ # mac: brew install rustup; linux: curl https://sh.rustup.rs -
 cargo --version && \
 echo "cargo nextest" && \ # cargo install cargo-nextest --locked
 cargo nextest --version && \
-echo "protoc" && \ # mac: brew install protobuf; linux: sudo apt install protobuf-compiler; win: winget install protobuf
-protoc --version && \
-echo "go" && \ # mac: brew install go; linux: sudo apt install golang-go; win: winget install GoLang.Go
-go version && \
-echo "protoc-gen-openapiv2" && \ # mac/linux/win: go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv2@latest
-protoc-gen-openapiv2 --version && \
+echo "tofu" && \ # mac: brew install opentofu; linux: snap install --classic opentofu; win: winget install OpenTofu.Tofu
+tofu --version && \
 echo "done"
 ```
 
 Your agent terminal might just see paths from `~/.zshenv` (not `~/.zshrc`) or `~/.bash_profile` (not `~/.bashrc`).
 If users specify their `$PATH` in the wrong file, you might not see installed tools.
-If you see few or no dependencies or if you have installed a tool (especially protoc-gen-openapiv2 via Go) but the script still fails, we may have a `$PATH` configuration mismatch, the run `echo $PATH`.
-Check the path and ask the developer wether `$PATH` is defined in the wrong file or what is missing (e.g. `export PATH="$PATH:$(go env GOPATH)/bin`).
+If you see few or no dependencies or if you have installed a tool but the script still fails, we may have a `$PATH` configuration mismatch, then run `echo $PATH`.
+Check the path and ask the developer whether `$PATH` is defined in the wrong file or what is missing.
 If the developer fixed path issues, run `source ~/.zshenv` (or your respective file) and run the requirements check again.
 
 
@@ -69,4 +66,4 @@ Clarify what you do at "proceed" and what dev has to do.
 If there are none there is no need to proceed: Workflow done.
 
 If there is no github repository, this is a new project.
-Suggest to continue with @initial-setup.md workflow.
+Suggest to continue with @../initial-setup/SKILL.md skill.

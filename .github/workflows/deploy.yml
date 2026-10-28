@@ -1,0 +1,140 @@
+name: Continuous Deployment
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: deployment
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy-aws:
+    name: Deploy to AWS (Test / Staging Environment)
+    if: vars.DEPLOY_TARGET == 'aws'
+    runs-on: ${{ vars.AWS_RUNNER || 'ubuntu-24.04-arm' }}
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'eu-central-1' }}
+      TF_VAR_aws_region: ${{ vars.AWS_REGION || 'eu-central-1' }}
+      TF_VAR_environment: ${{ vars.ENVIRONMENT || 'staging' }}
+      TF_VAR_hosted_zone_name: ${{ vars.HOSTED_ZONE_NAME || 'diwop.wulf.technology' }}
+      TF_VAR_custom_domain_name: ${{ vars.CUSTOM_DOMAIN_NAME || '' }}
+      TF_VAR_otel_exporter_otlp_endpoint: ${{ vars.OTEL_EXPORTER_OTLP_ENDPOINT || '' }}
+      TF_VAR_api_key: ${{ secrets.API_KEY }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup OpenTofu
+        uses: opentofu/setup-opentofu@v1
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Initialize OpenTofu (AWS)
+        run: |
+          tofu -chdir=infrastructure/aws init \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="region=${{ env.AWS_REGION }}"
+
+      - name: Ensure ECR repository exists
+        id: ecr-repo
+        run: |
+          tofu -chdir=infrastructure/aws apply -target=aws_ecr_repository.app -auto-approve
+          echo "ecr_url=$(tofu -chdir=infrastructure/aws output -raw ecr_repository_url)" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push linux/arm64 Docker image to ECR
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm64
+          push: true
+          tags: |
+            ${{ steps.ecr-repo.outputs.ecr_url }}:${{ github.sha }}
+            ${{ steps.ecr-repo.outputs.ecr_url }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Apply OpenTofu AWS infrastructure update
+        run: |
+          tofu -chdir=infrastructure/aws apply \
+            -var="image_tag=${{ github.sha }}" \
+            -auto-approve
+
+  deploy-stackit:
+    name: Deploy to STACKIT (SKE)
+    if: vars.DEPLOY_TARGET == 'stackit'
+    runs-on: ubuntu-latest
+    env:
+      STACKIT_SERVICE_ACCOUNT_KEY: ${{ secrets.STACKIT_SERVICE_ACCOUNT_KEY }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.STACKIT_S3_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.STACKIT_S3_SECRET_ACCESS_KEY }}
+      TF_VAR_project_id: ${{ vars.STACKIT_PROJECT_ID }}
+      TF_VAR_stackit_region: ${{ vars.STACKIT_REGION || 'eu01' }}
+      TF_VAR_environment: ${{ vars.ENVIRONMENT || 'production' }}
+      TF_VAR_registry_host: ${{ vars.STACKIT_REGISTRY_HOST || 'registry.onstackit.cloud' }}
+      TF_VAR_registry_project_name: ${{ vars.STACKIT_REGISTRY_PROJECT || 'diwop' }}
+      TF_VAR_otel_exporter_otlp_endpoint: ${{ vars.OTEL_EXPORTER_OTLP_ENDPOINT || '' }}
+      TF_VAR_api_key: ${{ secrets.API_KEY }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup OpenTofu
+        uses: opentofu/setup-opentofu@v1
+
+      - name: Initialize OpenTofu (STACKIT)
+        run: |
+          tofu -chdir=infrastructure/stackit init \
+            -backend-config="bucket=${{ vars.STACKIT_TF_STATE_BUCKET }}" \
+            -backend-config="endpoints={s3=\"https://object.storage.${{ env.TF_VAR_stackit_region }}.onstackit.cloud\"}"
+
+      - name: Resolve STACKIT OCI image repository URL
+        id: stackit-repo
+        run: |
+          tofu -chdir=infrastructure/stackit refresh
+          echo "repo_url=${{ env.TF_VAR_registry_host }}/${{ env.TF_VAR_registry_project_name }}/diwop-begleitapp-${{ env.TF_VAR_environment }}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to STACKIT OCI Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.TF_VAR_registry_host }}
+          username: ${{ vars.STACKIT_REGISTRY_USERNAME }}
+          password: ${{ secrets.STACKIT_REGISTRY_PASSWORD }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push linux/amd64 Docker image to STACKIT Registry
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ steps.stackit-repo.outputs.repo_url }}:${{ github.sha }}
+            ${{ steps.stackit-repo.outputs.repo_url }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Apply OpenTofu STACKIT infrastructure update
+        run: |
+          tofu -chdir=infrastructure/stackit apply \
+            -var="image_tag=${{ github.sha }}" \
+            -auto-approve

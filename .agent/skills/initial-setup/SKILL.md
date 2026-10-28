@@ -1,4 +1,5 @@
 ---
+name: initial-setup
 description: Initial setup guide (GitHub repository, installation)
 ---
 
@@ -24,4 +25,4 @@ If not:
   git remote add origin <repo-url>
   ```
 
-When the GitHub repository is configured suggest to check its configuration via workflow @configure-github-repo.md
+When the GitHub repository is configured suggest to check its configuration via skill @../configure-github-repo/SKILL.md

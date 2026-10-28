@@ -8,8 +8,6 @@ If you introduce a new feature or make a change it has to be reflected in tests.
 If there are existing unit, integration or end-to-end tests, extend or update them.
 If not, evaluate which test type or tests with different type are appropriate to test the change.
 
-**CRITICAL**: If the user asks for a _plan_, **DO NOT** modify any files yet. Other agents might be planning or editing in parallel. Only modify files after the user approves the plan, and you switch to execution mode.
-
 During feature development check if deployment workflow needs modifications.
 
 **CRITICAL**: At the end of development run all final checks in the relevant skills (Frontend/Backend) before committing.

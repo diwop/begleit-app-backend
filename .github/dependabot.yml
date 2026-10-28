@@ -27,8 +27,6 @@ updates:
           - "*"
           - "opentelemetry*"
           - "tracing-opentelemetry*"
-          - "tonic*"
-          - "prost*"
           - "utoipa*"
           - "tracing*"
           - "axum*"
@@ -40,12 +38,6 @@ updates:
         patterns:
           - "opentelemetry*"
           - "tracing-opentelemetry*"
-        update-types:
-          - "major"
-      tonic-prost:
-        patterns:
-          - "tonic*"
-          - "prost*"
         update-types:
           - "major"
       utoipa:
@@ -66,6 +58,18 @@ updates:
           - "major"
   - package-ecosystem: "rust-toolchain" 
     directory: "/"
+    schedule:
+      interval: "weekly"
+      time: "09:00"
+      timezone: "Europe/Berlin"
+  - package-ecosystem: "terraform"
+    directory: "/infrastructure/aws"
+    schedule:
+      interval: "weekly"
+      time: "09:00"
+      timezone: "Europe/Berlin"
+  - package-ecosystem: "terraform"
+    directory: "/infrastructure/stackit"
     schedule:
       interval: "weekly"
       time: "09:00"
