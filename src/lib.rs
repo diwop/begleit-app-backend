@@ -1,28 +1,46 @@
+pub mod api;
 pub mod auth;
-pub mod macros;
-pub mod management;
-pub mod translations;
 
-use axum::Router;
+pub use api::{
+    ConversationMessage, CorrectTranscriptResponse, ErrorDetail, ErrorResponse, Role,
+    TranslateRequest, TranslationResponse, TranslationType, Warning, WarningType,
+};
+
+use axum::{http::StatusCode, routing::get, Router};
 use tower_http::trace::TraceLayer;
+use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityRequirement, SecurityScheme};
+use utoipa::OpenApi;
+
+/// Base OpenAPI documentation structure for the DiWoP Conversation API.
+#[derive(OpenApi)]
+#[openapi(
+    info(
+        title = "DiWoP Conversation API",
+        version = "0.1.0",
+        description = "Contract draft for alignment.\nFor partner contributions, both endpoints are called in parallel and independently.\n/correct-transcript is used exclusively for the UI display. /translate receives the originally recognized spoken texts for the entire conversation history.\nAdditional headers and timeouts are configured in the client."
+    ),
+    paths(api::correct_transcript, api::translate),
+    components(schemas(
+        Role,
+        ConversationMessage,
+        CorrectTranscriptResponse,
+        TranslateRequest,
+        TranslationType,
+        WarningType,
+        Warning,
+        TranslationResponse,
+        ErrorDetail,
+        ErrorResponse
+    ))
+)]
+struct ApiDoc;
 
 /// Creates and configures the main application router.
 ///
-/// This function aggregates all separate components of the application into a single
-/// `axum::Router`. It sets up both REST and gRPC endpoints for various modules (like
-/// translations and management), configures Swagger UI to expose OpenAPI documentation,
-/// and applies necessary middleware such as request tracing.
+/// This function aggregates all separate HTTP components of the application into a single
+/// `axum::Router`, exposes an unauthenticated `/healthz` endpoint and Swagger UI for OpenAPI
+/// documentation, and applies authentication and request tracing middleware.
 pub fn create_app() -> Router {
-    // Get the separate REST and gRPC components
-    let (translations_rest, translations_grpc) = translations::setup();
-    let (management_rest, management_grpc) = management::setup();
-
-    // Construct a SINGLE Tonic service router housing all our gRPC endpoints natively mapping to Axum
-    let mut grpc_router_builder = tonic::service::Routes::builder();
-    grpc_router_builder.add_service(translations_grpc);
-    grpc_router_builder.add_service(management_grpc);
-    let grpc_router = grpc_router_builder.routes().into_axum_router();
-
     // Attempt to extract the API Key enforcing production rules
     let expected_api_key = match std::env::var("API_KEY") {
         Ok(key) => Some(std::sync::Arc::new(key)),
@@ -35,8 +53,7 @@ pub fn create_app() -> Router {
         }
     };
 
-    // Combine all REST routers and the consolidated gRPC router
-    let mut api_router = translations_rest.merge(management_rest).merge(grpc_router);
+    let mut api_router = api::router();
 
     let is_secured = expected_api_key.is_some();
 
@@ -49,68 +66,37 @@ pub fn create_app() -> Router {
     }
 
     let swagger_ui = configure_swagger_ui(is_secured);
+    let health_router = Router::new().route("/healthz", get(|| async { StatusCode::OK }));
 
-    // Merge API definitions (secured above) alongside Public Swagger
+    // Merge API definitions (secured above) alongside unauthenticated health check and Public Swagger
     api_router
+        .merge(health_router)
         .merge(swagger_ui)
         .layer(TraceLayer::new_for_http())
 }
 
 /// Helper function to configure the Swagger UI and apply dynamic security definitions.
 fn configure_swagger_ui(is_secured: bool) -> utoipa_swagger_ui::SwaggerUi {
-    let mut translations_swagger_val: serde_json::Value =
-        serde_json::from_str(include_str!("../api-docs/translations.swagger.json"))
-            .expect("Generated Translations API Swagger must be valid JSON");
+    let mut openapi = ApiDoc::openapi();
 
-    let mut management_swagger_val: serde_json::Value =
-        serde_json::from_str(include_str!("../api-docs/management.swagger.json"))
-            .expect("Generated Management API Swagger must be valid JSON");
-
-    let pkg_version = env!("CARGO_PKG_VERSION");
-
-    let security_definitions = if is_secured {
-        Some(serde_json::json!({
-            "ApiKeyAuth": {
-                "type": "apiKey",
-                "in": "header",
-                "name": "x-api-key"
-            }
-        }))
-    } else {
-        None
-    };
-
-    let security_global = if is_secured {
-        Some(serde_json::json!([{ "ApiKeyAuth": [] }]))
-    } else {
-        None
-    };
-
-    for swagger_val in [&mut translations_swagger_val, &mut management_swagger_val] {
-        if let Some(obj) = swagger_val.as_object_mut() {
-            // Unconditionally set the API metadata version mirroring Cargo.toml
-            if let Some(info) = obj.get_mut("info").and_then(|i| i.as_object_mut()) {
-                info.insert("version".to_string(), serde_json::json!(pkg_version));
-            }
-
-            if is_secured {
-                if let Some(ref sec_def) = security_definitions {
-                    obj.insert("securityDefinitions".to_string(), sec_def.clone());
-                }
-                if let Some(ref sec_global) = security_global {
-                    obj.insert("security".to_string(), sec_global.clone());
-                }
-            }
-        }
+    if is_secured {
+        let components = openapi.components.get_or_insert_with(Default::default);
+        components.add_security_scheme(
+            "bearerAuth",
+            SecurityScheme::Http(
+                HttpBuilder::new()
+                    .scheme(HttpAuthScheme::Bearer)
+                    .description(Some(
+                        "Configured API key; whether authentication is required depends on the deployment.",
+                    ))
+                    .build(),
+            ),
+        );
+        openapi.security = Some(vec![SecurityRequirement::new(
+            "bearerAuth",
+            Vec::<String>::new(),
+        )]);
     }
-    utoipa_swagger_ui::SwaggerUi::new("/open-api").external_urls_from_iter_unchecked([
-        (
-            utoipa_swagger_ui::Url::new("Translations", "/api-docs/translations.json"),
-            translations_swagger_val,
-        ),
-        (
-            utoipa_swagger_ui::Url::new("Management", "/api-docs/management.json"),
-            management_swagger_val,
-        ),
-    ])
+
+    utoipa_swagger_ui::SwaggerUi::new("/open-api").url("/api-docs/openapi.json", openapi)
 }

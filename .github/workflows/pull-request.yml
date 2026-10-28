@@ -17,6 +17,23 @@ jobs:
         with:
           path: .github/dependabot.yml
 
+  check-infrastructure:
+    name: Check Infrastructure
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: opentofu/setup-opentofu@v1
+      - name: Check OpenTofu formatting
+        run: tofu fmt -check -recursive infrastructure
+      - name: Validate AWS OpenTofu configuration
+        run: |
+          tofu -chdir=infrastructure/aws init -backend=false
+          tofu -chdir=infrastructure/aws validate
+      - name: Validate STACKIT OpenTofu configuration
+        run: |
+          tofu -chdir=infrastructure/stackit init -backend=false
+          tofu -chdir=infrastructure/stackit validate
+
   test-server:
     name: Test Server
     runs-on: ubuntu-latest
@@ -25,12 +42,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: pull-request
-      - name: Install Protoc
-        uses: arduino/setup-protoc@v3
-      - name: Install protoc-gen-openapiv2
-        run: |
-          go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv2@latest
-          echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
       - name: Check formatting
         id: format
         run: cargo fmt -- --check

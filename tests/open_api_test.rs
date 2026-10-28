@@ -25,23 +25,15 @@ async fn test_openapi_endpoints() {
 
     // Verify Swagger UI HTML is served
     let res = client
-        .get(&format!("{}/open-api/", base_url))
+        .get(format!("{}/open-api/", base_url))
         .send()
         .await
         .unwrap();
     assert_eq!(res.status(), reqwest::StatusCode::OK);
 
-    // Verify Translations Swagger JSON is served
+    // Verify OpenAPI JSON is served
     let res = client
-        .get(&format!("{}/api-docs/translations.json", base_url))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(res.status(), reqwest::StatusCode::OK);
-
-    // Verify Management Swagger JSON is served
-    let res = client
-        .get(&format!("{}/api-docs/management.json", base_url))
+        .get(format!("{}/api-docs/openapi.json", base_url))
         .send()
         .await
         .unwrap();

@@ -2,23 +2,19 @@
 
 Welcome to the `begleit-app-backend` repository.
 
-See [docs/implementation-details.md](docs/implementation-details.md) for technical information.
+See [docs/implementation-details.md](docs/implementation-details.md) for technical information and [docs/diwop-api-contract.md](docs/diwop-api-contract.md) for the API contract.
 
-## APIs
+## Cloud-Agnostic Container Architecture
 
-This service exposes two APIs:
+The service is packaged as a cloud-agnostic Docker container designed to run unmodified across different cloud providers (such as AWS for test/staging environments and STACKIT for production) provisioned via OpenTofu (`infrastructure/`):
 
-### [Translations API](proto/translations.proto)
-
-It provides translations into simple language.
-
-### [Management API](proto/management.proto)
-
-For now it just provides listing users (always an empty list).
+- **12-Factor Configuration**: Configured strictly through environment variables injected by the container runtime—without cloud-specific SDKs or parameter store lookups.
+- **Standardized Observability**: Emits structured JSON logs to `stdout` and exports traces and metrics via OpenTelemetry (OTLP).
+- **Orchestrator-Ready**: Provides an unauthenticated `/healthz` probe endpoint, handles `SIGTERM` for graceful shutdown and telemetry flushing, and runs as an unprivileged non-root user.
 
 ## Getting Started
 
-Use the agentic workflow [`/onboarding`](.agent/workflows/onboarding.md) to get started.
+Use the agentic skill [`/onboarding`](.agent/skills/onboarding/SKILL.md) to get started.
 
 Start the server with `cargo run`.
 

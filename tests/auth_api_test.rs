@@ -1,9 +1,7 @@
-use diwop_begleitapp::create_app;
-use diwop_begleitapp::translations::translations::{
-    translations_client::TranslationsClient, TranslateRequest,
-};
+use diwop_begleitapp::{create_app, ConversationMessage, ErrorResponse, Role};
 use tokio::net::TcpListener;
 
+/// Starts an ephemeral test server running the application router and returns its base URL.
 async fn start_server() -> String {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -18,66 +16,55 @@ async fn start_server() -> String {
     url
 }
 
+/// Verifies that the `Authorization: Bearer <api-key>` header is enforced when `API_KEY` is configured.
 #[tokio::test]
 async fn test_auth_header_validation() {
     std::env::set_var("API_KEY", "test-auth-secret-123");
 
     let base_url = start_server().await;
     let rest_client = reqwest::Client::new();
-
-    // --- 1. REST JSON Testing ---
+    let payload = ConversationMessage {
+        role: Role::Partner,
+        message: "sie müssen den antrag bis ende nächste woche abgeben".to_string(),
+    };
 
     let res = rest_client
-        .post(&format!("{}/translations/translate", base_url))
-        .json(&serde_json::json!({"original": "Hello"}))
+        .post(format!("{}/correct-transcript", base_url))
+        .json(&payload)
         .send()
         .await
         .unwrap();
     assert_eq!(res.status(), reqwest::StatusCode::UNAUTHORIZED);
+    let err: ErrorResponse = res.json().await.unwrap();
+    assert_eq!(err.error.code, "UNAUTHORIZED");
 
     let res = rest_client
-        .post(&format!("{}/translations/translate", base_url))
-        .header("x-api-key", "wrong-key")
-        .json(&serde_json::json!({"original": "Hello"}))
+        .post(format!("{}/correct-transcript", base_url))
+        .header("Authorization", "Bearer wrong-key")
+        .json(&payload)
         .send()
         .await
         .unwrap();
     assert_eq!(res.status(), reqwest::StatusCode::UNAUTHORIZED);
+    let err: ErrorResponse = res.json().await.unwrap();
+    assert_eq!(err.error.code, "UNAUTHORIZED");
 
     let res = rest_client
-        .post(&format!("{}/translations/translate", base_url))
-        .header("x-api-key", "test-auth-secret-123")
-        .json(&serde_json::json!({"original": "Hello"}))
+        .post(format!("{}/correct-transcript", base_url))
+        .header("Authorization", "Bearer test-auth-secret-123")
+        .json(&payload)
         .send()
         .await
         .unwrap();
     assert_eq!(res.status(), reqwest::StatusCode::OK);
 
-    // --- 2. gRPC Testing ---
-
-    let mut grpc_client = TranslationsClient::connect(base_url).await.unwrap();
-
-    let request = tonic::Request::new(TranslateRequest {
-        original: "Hello".into(),
-    });
-    let err = grpc_client
-        .translate(request)
+    // Health check endpoint remains unauthenticated even when API_KEY is set
+    let res = rest_client
+        .get(format!("{}/healthz", base_url))
+        .send()
         .await
-        .expect_err("Should fail without key");
-    assert_eq!(err.code(), tonic::Code::Unauthenticated);
-
-    let mut request = tonic::Request::new(TranslateRequest {
-        original: "Hello".into(),
-    });
-    request
-        .metadata_mut()
-        .insert("x-api-key", "test-auth-secret-123".parse().unwrap());
-
-    let res = grpc_client
-        .translate(request)
-        .await
-        .expect("Should succeed with key");
-    assert!(!res.into_inner().translated.is_empty());
+        .unwrap();
+    assert_eq!(res.status(), reqwest::StatusCode::OK);
 }
 
 #[test]

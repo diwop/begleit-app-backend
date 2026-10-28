@@ -29,4 +29,4 @@ The `context7` MCP server is available for Rust crate documentation.
 
 ### Final Checks (CRITICAL)
 
-At the end of development run `cargo format`, `cargo clippy` and `cargo nextest run`.
+Before you commit run `cargo format`, `cargo clippy` and verify that `cargo nextest run` has run since the latest change.

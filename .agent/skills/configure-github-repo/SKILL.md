@@ -1,4 +1,5 @@
 ---
+name: configure-github-repo
 description: Configure GitHub repository settings (Issues, Wiki, Merge strategies, etc.)
 ---
 
@@ -59,7 +60,7 @@ Explain the following suggested branch protection rules for the `main` branch to
   - **Dismiss stale pull request approvals when new commits are pushed**: Enabled
 - **Require status checks to pass before merging**: Enabled
   - **Require branches to be up to date before merging**: Enabled
-  - **Status checks**: Add the leaf checks (no other check depends on them) from @../../.github/workflows/pull-request.yml
+  - **Status checks**: Add the leaf checks (no other check depends on them) from @../../../.github/workflows/pull-request.yml
 - **Require linear history**: Enabled
 - **Allow force pushes**: Disabled
 - **Allow deletions**: Disabled
@@ -77,6 +78,7 @@ If there are differences, suggest to the user to configure these via `gh api`:
           "strict": true,
           "contexts": [
             "Check Dependabot",
+            "Check Infrastructure",
             "Test Server"
           ]
         },
