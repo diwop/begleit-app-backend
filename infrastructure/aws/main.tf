@@ -71,6 +71,20 @@ resource "aws_ssm_parameter" "gemini_api_key" {
   depends_on = [aws_iam_role_policy.github_actions_deploy]
 }
 
+resource "aws_ssm_parameter" "admin_password" {
+  name        = "/${local.name_prefix}/admin-password"
+  description = "Admin password for ${local.name_prefix}"
+  type        = "SecureString"
+  value       = "REPLACE_ME"
+  overwrite   = true
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+
+  depends_on = [aws_iam_role_policy.github_actions_deploy]
+}
+
 # 3. Least-Privilege IAM Roles for ECS Fargate
 data "aws_iam_policy_document" "ecs_tasks_assume" {
   statement {
@@ -101,6 +115,7 @@ data "aws_iam_policy_document" "ecs_secret_read" {
     resources = [
       aws_ssm_parameter.api_key.arn,
       aws_ssm_parameter.gemini_api_key.arn,
+      aws_ssm_parameter.admin_password.arn,
     ]
   }
 }
@@ -351,6 +366,10 @@ resource "aws_ecs_task_definition" "app" {
         {
           name      = "GEMINI_API_KEY"
           valueFrom = aws_ssm_parameter.gemini_api_key.arn
+        },
+        {
+          name      = "ADMIN_PASSWORD"
+          valueFrom = aws_ssm_parameter.admin_password.arn
         }
       ]
       logConfiguration = {

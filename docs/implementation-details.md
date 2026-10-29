@@ -4,6 +4,7 @@ This repository contains a Rust-based backend service. It acts as an integration
 
 - **Rust**: The core programming language used for high-performance and safe execution.
 - **HTTP JSON APIs**: APIs are exposed as HTTP JSON REST endpoints using Axum.
+- **Web Administration Interface**: Server-rendered HTML administration interface powered by Askama templates and semantic CSS at `/`, protected with `ADMIN_PASSWORD`.
 - **Swagger UI**: The HTTP APIs are documented using OpenAPI and Swagger UI at `/open-api`.
 - **Docker**: Cloud-agnostic containerization for portable deployment across AWS and STACKIT.
 
@@ -34,6 +35,7 @@ The _release_ profile is intended for production within the Docker container. It
 Configuration via environment variables:
 
 * `API_KEY` (required in release) - Bearer token required on protected API routes (`Authorization: Bearer <API_KEY>`)
+* `ADMIN_PASSWORD` (required in release, defaults to `"admin"` in debug) - Password required to authenticate into the Web Administration interface at `/login`
 * `GEMINI_API_KEY` (required in release, optional in debug) - LLM API key used by `rig-core` (or STACKIT AI Model Serving when deployed to STACKIT) for `/correct-transcript` and `/translate`. In debug mode, if unset, the server falls back to `EchoPromptRunner`.
 * `ENVIRONMENT` (optional, default `production`) - Deployment environment (`production` or `staging`; setting `ENVIRONMENT=staging` enables inline `%...%` test directives on `/translate`)
 * `PORT` (optional, default `3000`) - TCP port the HTTP server binds to (`0.0.0.0:<PORT>`)

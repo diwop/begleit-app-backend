@@ -46,15 +46,24 @@ This guide explains how to deploy `diwop-begleitapp` to AWS using OpenTofu (`inf
        BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
    ```
 
-3. **Set the LLM API Key (`GEMINI_API_KEY`) in AWS SSM Parameter Store**:
-   Create (or update) the `SecureString` parameter `/<app_name>-<environment>/gemini-api-key` in AWS Systems Manager Parameter Store. `aws_ssm_parameter.gemini_api_key` is configured with `overwrite = true` and `lifecycle { ignore_changes = [value] }`:
+3. **Set the LLM API Key (`GEMINI_API_KEY`) & Admin Password (`ADMIN_PASSWORD`) in AWS SSM Parameter Store**:
+   Create (or update) the `SecureString` parameters in AWS Systems Manager Parameter Store. Both `aws_ssm_parameter.gemini_api_key` and `aws_ssm_parameter.admin_password` are configured with `overwrite = true` and `lifecycle { ignore_changes = [value] }`:
 
    ```bash
+   # LLM API Key
    aws ssm put-parameter \
      --region "$AWS_REGION" \
      --name "/diwop-begleitapp-staging/gemini-api-key" \
      --type "SecureString" \
      --value "<your-llm-api-key>" \
+     --overwrite
+
+   # Web Admin Password
+   aws ssm put-parameter \
+     --region "$AWS_REGION" \
+     --name "/diwop-begleitapp-staging/admin-password" \
+     --type "SecureString" \
+     --value "<your-admin-password>" \
      --overwrite
    ```
 
@@ -156,8 +165,8 @@ Pushes to `main` (or manual `workflow_dispatch` runs) automatically build the `l
 | :--- | :--- |
 | `API_KEY` | Bearer token stored in AWS SSM Parameter Store (`/<name_prefix>/api-key`) and injected into the container |
 
-### Setting the LLM API Key in AWS SSM Parameter Store
-OpenTofu automatically provisions a `SecureString` parameter at `/<app_name>-<environment>/gemini-api-key` (for example, `/diwop-begleitapp-staging/gemini-api-key`) with `ignore_changes = [value]` and injects it into the ECS container as `GEMINI_API_KEY`. Populate the real LLM API key directly in AWS Systems Manager Parameter Store:
+### Setting the LLM API Key and Admin Password in AWS SSM Parameter Store
+OpenTofu automatically provisions `SecureString` parameters at `/<app_name>-<environment>/gemini-api-key` and `/<app_name>-<environment>/admin-password` (for example, `/diwop-begleitapp-staging/gemini-api-key` and `/diwop-begleitapp-staging/admin-password`) with `ignore_changes = [value]` and injects them into the ECS container as `GEMINI_API_KEY` and `ADMIN_PASSWORD`. Populate the real values directly in AWS Systems Manager Parameter Store:
 
 ```bash
 aws ssm put-parameter \
@@ -165,5 +174,12 @@ aws ssm put-parameter \
   --name "/diwop-begleitapp-staging/gemini-api-key" \
   --type "SecureString" \
   --value "<your-llm-api-key>" \
+  --overwrite
+
+aws ssm put-parameter \
+  --region "$AWS_REGION" \
+  --name "/diwop-begleitapp-staging/admin-password" \
+  --type "SecureString" \
+  --value "<your-admin-password>" \
   --overwrite
 ```

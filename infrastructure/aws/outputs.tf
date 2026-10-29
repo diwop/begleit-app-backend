@@ -23,6 +23,11 @@ output "gemini_api_key_ssm_parameter_name" {
   value       = aws_ssm_parameter.gemini_api_key.name
 }
 
+output "admin_password_ssm_parameter_name" {
+  description = "SSM Parameter Store name for the Admin Password."
+  value       = aws_ssm_parameter.admin_password.name
+}
+
 output "api_key_ssm_parameter_name" {
   description = "SSM Parameter Store name for the Bearer API key."
   value       = aws_ssm_parameter.api_key.name

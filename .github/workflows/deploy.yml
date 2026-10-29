@@ -154,6 +154,7 @@ jobs:
       TF_VAR_registry_project_name: ${{ vars.STACKIT_REGISTRY_PROJECT || 'diwop' }}
       TF_VAR_otel_exporter_otlp_endpoint: ${{ vars.OTEL_EXPORTER_OTLP_ENDPOINT || '' }}
       TF_VAR_api_key: ${{ secrets.API_KEY }}
+      TF_VAR_admin_password: ${{ secrets.ADMIN_PASSWORD || 'REPLACE_ME' }}
     steps:
       - uses: actions/checkout@v7
 

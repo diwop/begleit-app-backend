@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard | diwop Admin{% endblock %}
+
+{% block content %}
+<div class="dashboard-wrapper">
+  <header class="dashboard-header">
+    <div class="dashboard-brand">
+      <span class="brand-title">diwop</span>
+      <span class="badge badge-success">Angemeldet</span>
+    </div>
+    <form method="post" action="/logout" class="logout-form">
+      <button type="submit" class="btn btn-secondary">Abmelden</button>
+    </form>
+  </header>
+
+  <div class="card dashboard-card">
+    <div class="card-header">
+      <h1 class="card-title">Willkommen im Administrationsbereich</h1>
+      <p class="card-description">Sie sind erfolgreich als Administrator authentifiziert. Weitere Verwaltungsfunktionen werden hier bereitgestellt.</p>
+    </div>
+    <div class="card-body">
+      <div class="status-box">
+        <p class="status-text">Das Backend ist betriebsbereit und alle Dienste laufen normal.</p>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

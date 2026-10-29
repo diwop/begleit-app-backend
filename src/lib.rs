@@ -2,6 +2,7 @@ pub mod api;
 pub mod auth;
 pub mod metrics;
 pub mod prompts;
+pub mod web;
 
 pub use api::{
     ConversationMessage, CorrectTranscriptResponse, ErrorDetail, ErrorResponse, Role,
@@ -113,6 +114,7 @@ pub fn create_app_with_runner(runner: Arc<dyn PromptRunner>) -> Router {
 /// - Exposes an unauthenticated `/readyz` endpoint returning `200 OK` if `readiness` is true, or `503 Service Unavailable` if false.
 /// - Exposes Swagger UI documentation on `/open-api` and `/api-docs/openapi.json`.
 /// - Protects operational endpoints with Bearer authentication if `API_KEY` is configured.
+/// - Exposes the administration web interface on `/`, `/login`, `/logout`, and `/static/style.css` protected via `ADMIN_PASSWORD`.
 pub fn create_app_with_runner_and_readiness(
     runner: Arc<dyn PromptRunner>,
     readiness: Arc<AtomicBool>,
@@ -126,6 +128,18 @@ pub fn create_app_with_runner_and_readiness(
 
             #[cfg(debug_assertions)]
             None
+        }
+    };
+
+    // Attempt to extract the Admin Password enforcing production rules
+    let admin_password = match std::env::var("ADMIN_PASSWORD") {
+        Ok(pw) if !pw.trim().is_empty() => Arc::new(pw),
+        _ => {
+            #[cfg(not(debug_assertions))]
+            panic!("ADMIN_PASSWORD environment variable is crucially required in release profile!");
+
+            #[cfg(debug_assertions)]
+            Arc::new("admin".to_string())
         }
     };
 
@@ -147,6 +161,7 @@ pub fn create_app_with_runner_and_readiness(
     ));
 
     let swagger_ui = configure_swagger_ui(is_secured);
+    let web_router = web::router(admin_password);
 
     let readiness_state = Arc::clone(&readiness);
     let health_router = Router::new()
@@ -165,10 +180,11 @@ pub fn create_app_with_runner_and_readiness(
             }),
         );
 
-    // Merge API definitions (secured above) alongside unauthenticated health/readiness checks and Public Swagger
+    // Merge API definitions (secured above) alongside unauthenticated health/readiness checks, Public Swagger, and Web Admin
     api_router
         .merge(health_router)
         .merge(swagger_ui)
+        .merge(web_router)
         .layer(TraceLayer::new_for_http())
 }
 
