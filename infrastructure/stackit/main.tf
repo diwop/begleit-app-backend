@@ -52,6 +52,7 @@ resource "kubernetes_secret" "api_key" {
   data = {
     API_KEY        = var.api_key
     GEMINI_API_KEY = var.gemini_api_key
+    ADMIN_PASSWORD = var.admin_password
   }
 
   type = "Opaque"
@@ -130,6 +131,16 @@ resource "kubernetes_deployment" "app" {
               secret_key_ref {
                 name = kubernetes_secret.api_key.metadata[0].name
                 key  = "GEMINI_API_KEY"
+              }
+            }
+          }
+
+          env {
+            name = "ADMIN_PASSWORD"
+            value_from {
+              secret_key_ref {
+                name = kubernetes_secret.api_key.metadata[0].name
+                key  = "ADMIN_PASSWORD"
               }
             }
           }

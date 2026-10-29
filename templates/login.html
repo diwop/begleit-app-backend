@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+
+{% block title %}Admin-Anmeldung | diwop{% endblock %}
+
+{% block content %}
+<div class="center-wrapper">
+  <div class="card login-card">
+    <div class="card-header">
+      <h1 class="card-title">Admin-Anmeldung</h1>
+      <p class="card-description">Bitte geben Sie das Admin-Passwort ein, um auf den Administrationsbereich zuzugreifen.</p>
+    </div>
+
+    <form method="post" action="/login" class="form-body">
+      <div class="form-field">
+        <label for="admin-password" class="field-label">Admin-Passwort</label>
+        <input
+          type="password"
+          id="admin-password"
+          name="password"
+          autocomplete="current-password"
+          required
+          autofocus
+          class="field-input"
+          placeholder="Admin-Passwort eingeben"
+        >
+        {% if let Some(err) = error_message %}
+          <p class="error-msg" role="alert">{{ err }}</p>
+        {% endif %}
+      </div>
+
+      <div class="form-actions">
+        <button type="submit" class="btn btn-primary">Anmelden</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

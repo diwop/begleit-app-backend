@@ -46,6 +46,13 @@ variable "gemini_api_key" {
   sensitive   = true
 }
 
+variable "admin_password" {
+  description = "Admin password for the web administration interface."
+  type        = string
+  default     = "REPLACE_ME"
+  sensitive   = true
+}
+
 variable "otel_exporter_otlp_endpoint" {
   description = "Optional OTLP gRPC collector endpoint URL inside the SKE cluster."
   type        = string
