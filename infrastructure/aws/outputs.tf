@@ -17,3 +17,8 @@ output "github_actions_role_arn" {
   description = "IAM Role ARN for GitHub Actions OIDC deployment."
   value       = aws_iam_role.github_actions_deploy.arn
 }
+
+output "gemini_api_key_ssm_parameter_name" {
+  description = "SSM Parameter Store name for the Gemini API key."
+  value       = aws_ssm_parameter.gemini_api_key.name
+}

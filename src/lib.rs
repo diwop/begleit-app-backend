@@ -1,12 +1,15 @@
 pub mod api;
 pub mod auth;
+pub mod prompts;
 
 pub use api::{
     ConversationMessage, CorrectTranscriptResponse, ErrorDetail, ErrorResponse, Role,
     TranslateRequest, TranslationResponse, TranslationType, Warning, WarningType,
 };
+pub use prompts::{EchoPromptRunner, GeminiPromptRunner, PromptError, PromptRunner};
 
 use axum::{http::StatusCode, routing::get, Router};
+use std::sync::Arc;
 use tower_http::trace::TraceLayer;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityRequirement, SecurityScheme};
 use utoipa::OpenApi;
@@ -35,12 +38,31 @@ use utoipa::OpenApi;
 )]
 struct ApiDoc;
 
-/// Creates and configures the main application router.
+/// Creates and configures the main application router using the environment-configured [`PromptRunner`].
+///
+/// In release builds, `GEMINI_API_KEY` is required and configures [`GeminiPromptRunner`].
+/// In debug/test builds, falls back to [`EchoPromptRunner`] when `GEMINI_API_KEY` is unset.
+pub fn create_app() -> Router {
+    let runner: Arc<dyn PromptRunner> = match std::env::var("GEMINI_API_KEY") {
+        Ok(key) if !key.trim().is_empty() => Arc::new(GeminiPromptRunner::new(key)),
+        _ => {
+            #[cfg(not(debug_assertions))]
+            panic!("GEMINI_API_KEY environment variable is crucially required in release profile!");
+
+            #[cfg(debug_assertions)]
+            Arc::new(EchoPromptRunner)
+        }
+    };
+
+    create_app_with_runner(runner)
+}
+
+/// Creates and configures the main application router with an explicit [`PromptRunner`].
 ///
 /// This function aggregates all separate HTTP components of the application into a single
 /// `axum::Router`, exposes an unauthenticated `/healthz` endpoint and Swagger UI for OpenAPI
 /// documentation, and applies authentication and request tracing middleware.
-pub fn create_app() -> Router {
+pub fn create_app_with_runner(runner: Arc<dyn PromptRunner>) -> Router {
     // Attempt to extract the API Key enforcing production rules
     let expected_api_key = match std::env::var("API_KEY") {
         Ok(key) => Some(std::sync::Arc::new(key)),
@@ -53,7 +75,7 @@ pub fn create_app() -> Router {
         }
     };
 
-    let mut api_router = api::router();
+    let mut api_router = api::router(runner);
 
     let is_secured = expected_api_key.is_some();
 

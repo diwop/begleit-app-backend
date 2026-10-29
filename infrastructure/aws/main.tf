@@ -46,7 +46,7 @@ resource "aws_ecr_lifecycle_policy" "app" {
   })
 }
 
-# 2. Secret Management (API_KEY injected into container environment)
+# 2. Secret Management (API_KEY & GEMINI_API_KEY injected into container environment)
 resource "aws_secretsmanager_secret" "api_key" {
   name        = "${local.name_prefix}/api-key"
   description = "Bearer API key for ${local.name_prefix}"
@@ -55,6 +55,19 @@ resource "aws_secretsmanager_secret" "api_key" {
 resource "aws_secretsmanager_secret_version" "api_key" {
   secret_id     = aws_secretsmanager_secret.api_key.id
   secret_string = var.api_key
+}
+
+resource "aws_ssm_parameter" "gemini_api_key" {
+  name        = "/${local.name_prefix}/gemini-api-key"
+  description = "Gemini API key for ${local.name_prefix}"
+  type        = "SecureString"
+  value       = "REPLACE_ME"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+
+  depends_on = [aws_iam_role_policy.github_actions_deploy]
 }
 
 # 3. Least-Privilege IAM Roles for ECS Fargate
@@ -85,6 +98,12 @@ data "aws_iam_policy_document" "ecs_secret_read" {
     effect    = "Allow"
     actions   = ["secretsmanager:GetSecretValue"]
     resources = [aws_secretsmanager_secret.api_key.arn]
+  }
+
+  statement {
+    effect    = "Allow"
+    actions   = ["ssm:GetParameters"]
+    resources = [aws_ssm_parameter.gemini_api_key.arn]
   }
 }
 
@@ -330,6 +349,10 @@ resource "aws_ecs_task_definition" "app" {
         {
           name      = "API_KEY"
           valueFrom = aws_secretsmanager_secret.api_key.arn
+        },
+        {
+          name      = "GEMINI_API_KEY"
+          valueFrom = aws_ssm_parameter.gemini_api_key.arn
         }
       ]
       logConfiguration = {
@@ -498,6 +521,23 @@ data "aws_iam_policy_document" "github_actions_deploy" {
   }
 
   statement {
+    sid    = "SSMParametersManage"
+    effect = "Allow"
+    actions = [
+      "ssm:PutParameter",
+      "ssm:DeleteParameter",
+      "ssm:GetParameter",
+      "ssm:GetParameters",
+      "ssm:ListTagsForResource",
+      "ssm:AddTagsToResource",
+      "ssm:RemoveTagsFromResource",
+    ]
+    resources = [
+      "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${local.name_prefix}/*"
+    ]
+  }
+
+  statement {
     sid    = "IAMRoleReadAndPass"
     effect = "Allow"
     actions = [
@@ -521,6 +561,7 @@ data "aws_iam_policy_document" "github_actions_deploy" {
     actions = [
       "iam:GetOpenIDConnectProvider",
       "iam:ListOpenIDConnectProviders",
+      "ssm:DescribeParameters",
       "ecs:*",
       "elasticloadbalancing:*",
       "acm:DescribeCertificate",

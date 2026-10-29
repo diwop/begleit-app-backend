@@ -80,12 +80,32 @@ docker build --platform linux/arm64 -t "$ECR_URL:latest" .
 docker push "$ECR_URL:latest"
 ```
 
-## 4. Deploy Full AWS Stack
+## 4. Deploy Full AWS Stack & Set Gemini API Key
 
-Apply the complete configuration to create the AWS Secrets Manager secret, least-privilege IAM roles, ACM certificate + Route 53 validation, Application Load Balancer, ECS Fargate `ARM64` `FARGATE_SPOT` service (`0.25 vCPU`, `512 MB`), and scheduled scaling (`00:00` down to `0`, `08:00` up to `1` `Europe/Berlin`):
+Apply the complete configuration to create the AWS Secrets Manager secret, AWS SSM Parameter Store placeholder (`/<app_name>-<environment>/gemini-api-key`), least-privilege IAM roles, ACM certificate + Route 53 validation, Application Load Balancer, ECS Fargate `ARM64` `FARGATE_SPOT` service (`0.25 vCPU`, `512 MB`), and scheduled scaling (`00:00` down to `0`, `08:00` up to `1` `Europe/Berlin`):
 
 ```bash
 tofu -chdir=infrastructure/aws apply -var="image_tag=latest"
+```
+
+Then populate the real `GEMINI_API_KEY` in AWS Systems Manager Parameter Store (OpenTofu ignores subsequent changes to `value` via `ignore_changes = [value]`):
+
+```bash
+export SSM_PARAM_NAME=$(tofu -chdir=infrastructure/aws output -raw gemini_api_key_ssm_parameter_name)
+
+aws ssm put-parameter \
+  --region "$AWS_REGION" \
+  --name "$SSM_PARAM_NAME" \
+  --type "SecureString" \
+  --value "<your-gemini-api-key>" \
+  --overwrite
+
+# Restart the ECS task so it picks up the newly stored SSM parameter value
+aws ecs update-service \
+  --region "$AWS_REGION" \
+  --cluster "diwop-begleitapp-${TF_VAR_environment}" \
+  --service "diwop-begleitapp-${TF_VAR_environment}" \
+  --force-new-deployment
 ```
 
 ## 5. Verify the Deployment
@@ -120,3 +140,15 @@ Pushes to `main` (or manual `workflow_dispatch` runs) automatically build the `l
 | Secret | Description |
 | :--- | :--- |
 | `API_KEY` | Bearer token stored in AWS Secrets Manager and injected into the container |
+
+### Setting the `GEMINI_API_KEY` in AWS SSM Parameter Store
+OpenTofu automatically provisions a `SecureString` parameter at `/<app_name>-<environment>/gemini-api-key` (for example, `/diwop-begleitapp-staging/gemini-api-key`) with `ignore_changes = [value]` and injects it into the ECS container as `GEMINI_API_KEY`. Populate the real Gemini API key directly in AWS Systems Manager Parameter Store:
+
+```bash
+aws ssm put-parameter \
+  --region "$AWS_REGION" \
+  --name "/diwop-begleitapp-staging/gemini-api-key" \
+  --type "SecureString" \
+  --value "<your-gemini-api-key>" \
+  --overwrite
+```
