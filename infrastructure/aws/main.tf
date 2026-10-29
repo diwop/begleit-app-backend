@@ -62,6 +62,7 @@ resource "aws_ssm_parameter" "gemini_api_key" {
   description = "Gemini API key for ${local.name_prefix}"
   type        = "SecureString"
   value       = "REPLACE_ME"
+  overwrite   = true
 
   lifecycle {
     ignore_changes = [value]

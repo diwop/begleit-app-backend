@@ -46,6 +46,18 @@ This guide explains how to deploy `diwop-begleitapp` to AWS using OpenTofu (`inf
        BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
    ```
 
+3. **Set the `GEMINI_API_KEY` in AWS SSM Parameter Store**:
+   Create (or update) the `SecureString` parameter `/<app_name>-<environment>/gemini-api-key` in AWS Systems Manager Parameter Store. `aws_ssm_parameter.gemini_api_key` is configured with `overwrite = true` and `lifecycle { ignore_changes = [value] }`:
+
+   ```bash
+   aws ssm put-parameter \
+     --region "$AWS_REGION" \
+     --name "/diwop-begleitapp-staging/gemini-api-key" \
+     --type "SecureString" \
+     --value "<your-gemini-api-key>" \
+     --overwrite
+   ```
+
 ## 2. Initialize OpenTofu
 
 Initialize the `infrastructure/aws` directory with your S3 state bucket:
