@@ -1,12 +1,15 @@
 pub mod api;
 pub mod auth;
+pub mod metrics;
 pub mod prompts;
 
 pub use api::{
     ConversationMessage, CorrectTranscriptResponse, ErrorDetail, ErrorResponse, Role,
     TranslateRequest, TranslationResponse, TranslationType, Warning, WarningType,
 };
-pub use prompts::{EchoPromptRunner, GeminiPromptRunner, PromptError, PromptRunner};
+pub use prompts::{
+    EchoPromptRunner, GeminiPromptRunner, PromptError, PromptOutput, PromptRunner, TokenUsage,
+};
 
 use axum::{http::StatusCode, routing::get, Router};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -137,6 +140,11 @@ pub fn create_app_with_runner_and_readiness(
             auth::validate_api_key,
         ));
     }
+
+    // Attach HTTP metrics tracking to api_router to record request count and duration
+    api_router = api_router.route_layer(axum::middleware::from_fn(
+        crate::metrics::track_http_metrics,
+    ));
 
     let swagger_ui = configure_swagger_ui(is_secured);
 

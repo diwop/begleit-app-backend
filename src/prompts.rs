@@ -40,6 +40,22 @@ const STAGING_DIRECTIVE_TOKENS: &[&str] = &[
     "%warning.revealable%",
 ];
 
+/// Upstream LLM token counts for input, reasoning, and output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TokenUsage {
+    pub input_tokens: u64,
+    pub reasoning_tokens: u64,
+    pub output_tokens: u64,
+}
+
+/// Output of a prompt execution including response text, optional reasoning thoughts, and token usage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptOutput {
+    pub text: String,
+    pub reasoning: Option<String>,
+    pub usage: TokenUsage,
+}
+
 /// Error returned when a prompt execution against the language model fails.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptError(pub String);
@@ -60,7 +76,7 @@ pub trait PromptRunner: Send + Sync {
         system_prompt: &'a str,
         prompt: &'a str,
         thinking_level: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<String, PromptError>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<PromptOutput, PromptError>> + Send + 'a>>;
 }
 
 /// Production [`PromptRunner`] that sends requests to Google's Gemini API (`gemini-3.5-flash-lite`) using `rig`.
@@ -83,8 +99,15 @@ impl PromptRunner for GeminiPromptRunner {
         system_prompt: &'a str,
         prompt: &'a str,
         thinking_level: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<String, PromptError>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<PromptOutput, PromptError>> + Send + 'a>> {
         Box::pin(async move {
+            tracing::debug!(
+                thinking_level,
+                system_prompt = %system_prompt,
+                prompt = %prompt,
+                "Sending prompt to LLM API"
+            );
+
             let client = gemini::Client::builder()
                 .api_key(&self.api_key)
                 .build()
@@ -119,23 +142,24 @@ impl PromptRunner for GeminiPromptRunner {
                 .await
                 .map_err(|e| PromptError(e.to_string()))?;
 
-            tracing::info!(
-                "Ran prompt with {} input and {} output tokens",
-                res.usage.input_tokens,
-                res.usage.output_tokens
-            );
-
             let mut response = String::new();
+            let mut reasoning_text = String::new();
             for part in res.choice {
                 match part {
                     rig::completion::AssistantContent::Reasoning(reasoning) => {
-                        tracing::info!("Reasoning: {}", reasoning.display_text().trim());
+                        let thought_string = reasoning.display_text();
+                        let thought_text = thought_string.trim();
+                        tracing::debug!(reasoning = %thought_text, "Received LLM reasoning thought");
+                        if !reasoning_text.is_empty() {
+                            reasoning_text.push('\n');
+                        }
+                        reasoning_text.push_str(thought_text);
                     }
                     rig::completion::AssistantContent::ToolCall(tool) => {
                         tracing::warn!(
-                            "ToolCall: {}({})",
-                            tool.function.name,
-                            tool.function.arguments
+                            tool = %tool.function.name,
+                            args = %tool.function.arguments,
+                            "Unexpected ToolCall received from LLM model"
                         );
                     }
                     rig::completion::AssistantContent::Text(text) => {
@@ -148,30 +172,96 @@ impl PromptRunner for GeminiPromptRunner {
                 }
             }
 
-            Ok(response)
+            tracing::debug!(response = %response, "Received LLM response text");
+
+            let input_tokens = res.usage.input_tokens;
+            let output_tokens = res.usage.output_tokens;
+            let reasoning_tokens = res.usage.reasoning_tokens;
+
+            Ok(PromptOutput {
+                text: response,
+                reasoning: if reasoning_text.is_empty() {
+                    None
+                } else {
+                    Some(reasoning_text)
+                },
+                usage: TokenUsage {
+                    input_tokens,
+                    reasoning_tokens,
+                    output_tokens,
+                },
+            })
         })
     }
 }
 
+/// Lazily-loaded Gemma 4 tokenizer decompressed from bundled assets.
+static GEMMA_TOKENIZER: LazyLock<tokenizers::Tokenizer> = LazyLock::new(|| {
+    use flate2::read::GzDecoder;
+    use std::io::Read;
+
+    let compressed = include_bytes!("../assets/gemma-4-tokenizer.json.gz");
+    let mut decoder = GzDecoder::new(&compressed[..]);
+    let mut json_bytes = Vec::new();
+    decoder
+        .read_to_end(&mut json_bytes)
+        .expect("Failed to decompress gemma-4 tokenizer");
+    tokenizers::Tokenizer::from_bytes(&json_bytes).expect("Failed to parse gemma-4 tokenizer")
+});
+
+/// Counts the number of tokens in the given text using the Gemma 4 tokenizer.
+pub fn count_gemma_tokens(text: &str) -> u64 {
+    GEMMA_TOKENIZER
+        .encode(text, true)
+        .map(|encoding| encoding.get_ids().len() as u64)
+        .unwrap_or(0)
+}
+
 /// Fallback [`PromptRunner`] used in local debug/test builds when `GEMINI_API_KEY` is not set.
-/// Extracts the ```input block from the prompt and echoes it back deterministically.
+/// Extracts the ```input block from the prompt and echoes it back deterministically,
+/// tokenized using the Gemma 4 tokenizer.
 #[derive(Debug, Default, Clone)]
 pub struct EchoPromptRunner;
 
 impl PromptRunner for EchoPromptRunner {
     fn run_prompt<'a>(
         &'a self,
-        _system_prompt: &'a str,
+        system_prompt: &'a str,
         prompt: &'a str,
         thinking_level: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<String, PromptError>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<PromptOutput, PromptError>> + Send + 'a>> {
         Box::pin(async move {
             let input = extract_input_block(prompt).unwrap_or(prompt);
-            if thinking_level == "minimal" {
-                Ok(input.to_string())
+            let mocked_reasoning = format!("I am thinking about '{input}'");
+            let output_text = if thinking_level == "minimal" {
+                input.to_string()
             } else {
-                Ok(format!("FORMATIERUNG\n{input}"))
-            }
+                format!("FORMATIERUNG\n{input}")
+            };
+
+            let combined_input = format!("{system_prompt}\n{prompt}");
+            let input_tokens = count_gemma_tokens(&combined_input);
+            let reasoning_tokens = count_gemma_tokens(&mocked_reasoning);
+            let output_tokens = count_gemma_tokens(&output_text);
+
+            tracing::debug!(
+                input_tokens,
+                reasoning_tokens,
+                output_tokens,
+                reasoning = %mocked_reasoning,
+                output = %output_text,
+                "EchoPromptRunner executed mock prompt"
+            );
+
+            Ok(PromptOutput {
+                text: output_text,
+                reasoning: Some(mocked_reasoning),
+                usage: TokenUsage {
+                    input_tokens,
+                    reasoning_tokens,
+                    output_tokens,
+                },
+            })
         })
     }
 }
@@ -409,5 +499,25 @@ mod tests {
             })
         );
         assert_eq!(staging.cleaned_message, "Bitte beachten");
+    }
+
+    /// Verifies that `EchoPromptRunner` accurately counts Gemma 4 tokens and mocks reasoning thoughts.
+    #[tokio::test]
+    async fn test_echo_prompt_runner_tokens_and_reasoning() {
+        let runner = EchoPromptRunner;
+        let prompt = "```input\nHallo Welt\n```";
+        let output = runner
+            .run_prompt("System Prompt", prompt, "minimal")
+            .await
+            .unwrap();
+
+        assert_eq!(output.text, "Hallo Welt");
+        assert_eq!(
+            output.reasoning,
+            Some("I am thinking about 'Hallo Welt'".to_string())
+        );
+        assert!(output.usage.input_tokens > 0);
+        assert!(output.usage.reasoning_tokens > 0);
+        assert!(output.usage.output_tokens > 0);
     }
 }

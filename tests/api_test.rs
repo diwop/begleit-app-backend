@@ -1,7 +1,8 @@
 use diwop_begleitapp::{
     create_app, create_app_with_runner_and_readiness, ConversationMessage,
-    CorrectTranscriptResponse, EchoPromptRunner, ErrorResponse, PromptError, PromptRunner, Role,
-    TranslateRequest, TranslationResponse, TranslationType, Warning, WarningType,
+    CorrectTranscriptResponse, EchoPromptRunner, ErrorResponse, PromptError, PromptOutput,
+    PromptRunner, Role, TokenUsage, TranslateRequest, TranslationResponse, TranslationType,
+    Warning, WarningType,
 };
 use std::future::Future;
 use std::pin::Pin;
@@ -44,13 +45,25 @@ impl PromptRunner for MockPromptRunner {
         system_prompt: &'a str,
         prompt: &'a str,
         thinking_level: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<String, PromptError>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<PromptOutput, PromptError>> + Send + 'a>> {
         self.calls.lock().unwrap().push(RecordedCall {
             system_prompt: system_prompt.to_string(),
             prompt: prompt.to_string(),
             thinking_level: thinking_level.to_string(),
         });
-        let res = self.response.clone().map_err(PromptError);
+        let res = self
+            .response
+            .clone()
+            .map(|text| PromptOutput {
+                text,
+                reasoning: Some("Mock reasoning".to_string()),
+                usage: TokenUsage {
+                    input_tokens: 10,
+                    reasoning_tokens: 5,
+                    output_tokens: 15,
+                },
+            })
+            .map_err(PromptError);
         Box::pin(async move { res })
     }
 }
