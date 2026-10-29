@@ -22,3 +22,8 @@ output "gemini_api_key_ssm_parameter_name" {
   description = "SSM Parameter Store name for the Gemini API key."
   value       = aws_ssm_parameter.gemini_api_key.name
 }
+
+output "api_key_ssm_parameter_name" {
+  description = "SSM Parameter Store name for the Bearer API key."
+  value       = aws_ssm_parameter.api_key.name
+}

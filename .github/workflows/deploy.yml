@@ -100,6 +100,44 @@ jobs:
             -var="image_tag=${{ github.sha }}" \
             -auto-approve
 
+      - name: Run post-deployment smoke test
+        run: |
+          SERVICE_URL=$(tofu -chdir=infrastructure/aws output -raw custom_domain_url)
+          PARAM_NAME=$(tofu -chdir=infrastructure/aws output -raw api_key_ssm_parameter_name)
+          API_KEY=$(aws ssm get-parameter \
+            --region "${{ env.AWS_REGION }}" \
+            --name "$PARAM_NAME" \
+            --with-decryption \
+            --query Parameter.Value \
+            --output text)
+
+          echo "Waiting for service to be healthy at $SERVICE_URL..."
+          for i in {1..24}; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$SERVICE_URL/healthz" || true)
+            if [ "$STATUS" = "200" ]; then
+              echo "Service is healthy (attempt $i)."
+              break
+            fi
+            echo "Attempt $i: /healthz returned $STATUS, retrying in 5s..."
+            sleep 5
+          done
+
+          echo "Smoke testing POST /correct-transcript..."
+          CORRECT_RES=$(curl -fsS -X POST "$SERVICE_URL/correct-transcript" \
+            -H "Authorization: Bearer $API_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{"role":"partner","message":"sie müssen den antrag bis ende nächste woche abgeben"}')
+          echo "Response: $CORRECT_RES"
+
+          echo "Smoke testing POST /translate..."
+          TRANSLATE_RES=$(curl -fsS -X POST "$SERVICE_URL/translate" \
+            -H "Authorization: Bearer $API_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{"messages":[{"role":"user","message":"wann muss ich den antrag abgeben"},{"role":"partner","message":"sie müssen den antrag bis ende nächste woche abgeben"}]}')
+          echo "Response: $TRANSLATE_RES"
+
+          echo "All smoke tests passed successfully!"
+
   deploy-stackit:
     name: Deploy to STACKIT (SKE)
     if: vars.DEPLOY_TARGET == 'stackit'
