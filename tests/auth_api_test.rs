@@ -59,12 +59,20 @@ async fn test_auth_header_validation() {
         .unwrap();
     assert_eq!(res.status(), reqwest::StatusCode::OK);
 
-    // Health check endpoint remains unauthenticated even when API_KEY is set
+    // Health check and readiness endpoints remain unauthenticated even when API_KEY is set
     let res = rest_client
         .get(format!("{}/healthz", base_url))
         .send()
         .await
         .unwrap();
+    assert_eq!(res.status(), reqwest::StatusCode::OK);
+
+    let res = rest_client
+        .get(format!("{}/readyz", base_url))
+        .send()
+        .await
+        .unwrap();
+    // In test/debug environment with EchoPromptRunner, warmup finishes quickly and yields 200 OK
     assert_eq!(res.status(), reqwest::StatusCode::OK);
 }
 

@@ -111,14 +111,15 @@ jobs:
             --query Parameter.Value \
             --output text)
 
-          echo "Waiting for service to be healthy at $SERVICE_URL..."
+          echo "Waiting for service to be healthy and ready at $SERVICE_URL..."
           for i in {1..24}; do
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$SERVICE_URL/healthz" || true)
-            if [ "$STATUS" = "200" ]; then
-              echo "Service is healthy (attempt $i)."
+            HEALTH_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$SERVICE_URL/healthz" || true)
+            READY_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$SERVICE_URL/readyz" || true)
+            if [ "$HEALTH_STATUS" = "200" ] && [ "$READY_STATUS" = "200" ]; then
+              echo "Service is healthy and ready (attempt $i)."
               break
             fi
-            echo "Attempt $i: /healthz returned $STATUS, retrying in 5s..."
+            echo "Attempt $i: /healthz=$HEALTH_STATUS /readyz=$READY_STATUS, retrying in 5s..."
             sleep 5
           done
 

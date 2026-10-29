@@ -70,6 +70,14 @@ resource "kubernetes_deployment" "app" {
   spec {
     replicas = 2
 
+    strategy {
+      type = "RollingUpdate"
+      rolling_update {
+        max_surge       = "1"
+        max_unavailable = "0"
+      }
+    }
+
     selector {
       match_labels = {
         app = module.app_config.app_name
@@ -137,7 +145,7 @@ resource "kubernetes_deployment" "app" {
 
           readiness_probe {
             http_get {
-              path = module.app_config.health_check_path
+              path = module.app_config.readiness_check_path
               port = module.app_config.port
             }
             initial_delay_seconds = 3

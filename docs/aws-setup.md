@@ -46,7 +46,7 @@ This guide explains how to deploy `diwop-begleitapp` to AWS using OpenTofu (`inf
        BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
    ```
 
-3. **Set the `GEMINI_API_KEY` in AWS SSM Parameter Store**:
+3. **Set the LLM API Key (`GEMINI_API_KEY`) in AWS SSM Parameter Store**:
    Create (or update) the `SecureString` parameter `/<app_name>-<environment>/gemini-api-key` in AWS Systems Manager Parameter Store. `aws_ssm_parameter.gemini_api_key` is configured with `overwrite = true` and `lifecycle { ignore_changes = [value] }`:
 
    ```bash
@@ -54,7 +54,7 @@ This guide explains how to deploy `diwop-begleitapp` to AWS using OpenTofu (`inf
      --region "$AWS_REGION" \
      --name "/diwop-begleitapp-staging/gemini-api-key" \
      --type "SecureString" \
-     --value "<your-gemini-api-key>" \
+     --value "<your-llm-api-key>" \
      --overwrite
    ```
 
@@ -92,15 +92,15 @@ docker build --platform linux/arm64 -t "$ECR_URL:latest" .
 docker push "$ECR_URL:latest"
 ```
 
-## 4. Deploy Full AWS Stack & Set Gemini API Key
+## 4. Deploy Full AWS Stack & Set LLM API Key
 
-Apply the complete configuration to create the AWS SSM Parameter Store parameters (`/<app_name>-<environment>/api-key` and `/<app_name>-<environment>/gemini-api-key`), least-privilege IAM roles, ACM certificate + Route 53 validation, Application Load Balancer, ECS Fargate `ARM64` `FARGATE_SPOT` service (`0.25 vCPU`, `512 MB`), and scheduled scaling (`00:00` down to `0`, `08:00` up to `1` `Europe/Berlin`):
+Apply the complete configuration to create the AWS SSM Parameter Store parameters (`/<app_name>-<environment>/api-key` and `/<app_name>-<environment>/gemini-api-key`), least-privilege IAM roles, ACM certificate + Route 53 validation, Application Load Balancer with zero-downtime rolling deployment (`deployment_minimum_healthy_percent = 100`, `deployment_maximum_percent = 200`, circuit breaker rollback, target group health check targeting `/readyz`), ECS Fargate `ARM64` `FARGATE_SPOT` service (`0.25 vCPU`, `512 MB`), and scheduled scaling (`00:00` down to `0`, `08:00` up to `1` `Europe/Berlin`):
 
 ```bash
 tofu -chdir=infrastructure/aws apply -var="image_tag=latest"
 ```
 
-Then populate the real `GEMINI_API_KEY` in AWS Systems Manager Parameter Store (OpenTofu ignores subsequent changes to `value` via `ignore_changes = [value]`):
+Then populate the real LLM API key in AWS Systems Manager Parameter Store (OpenTofu ignores subsequent changes to `value` via `ignore_changes = [value]`):
 
 ```bash
 export SSM_PARAM_NAME=$(tofu -chdir=infrastructure/aws output -raw gemini_api_key_ssm_parameter_name)
@@ -109,7 +109,7 @@ aws ssm put-parameter \
   --region "$AWS_REGION" \
   --name "$SSM_PARAM_NAME" \
   --type "SecureString" \
-  --value "<your-gemini-api-key>" \
+  --value "<your-llm-api-key>" \
   --overwrite
 
 # Restart the ECS task so it picks up the newly stored SSM parameter value
@@ -122,13 +122,16 @@ aws ecs update-service \
 
 ## 5. Verify the Deployment
 
-Retrieve the public HTTPS URLs (`service_url` and `custom_domain_url`) and verify the health probe and OpenAPI UI:
+Retrieve the public HTTPS URLs (`service_url` and `custom_domain_url`) and verify the liveness probe, readiness probe, and OpenAPI UI:
 
 ```bash
 export SERVICE_URL=$(tofu -chdir=infrastructure/aws output -raw custom_domain_url)
 
-# Unauthenticated health probe
+# Unauthenticated process liveness probe
 curl -i "$SERVICE_URL/healthz"
+
+# Unauthenticated container readiness probe (verifies LLM API connectivity on startup)
+curl -i "$SERVICE_URL/readyz"
 
 # Swagger UI
 open "$SERVICE_URL/open-api"
@@ -153,14 +156,14 @@ Pushes to `main` (or manual `workflow_dispatch` runs) automatically build the `l
 | :--- | :--- |
 | `API_KEY` | Bearer token stored in AWS SSM Parameter Store (`/<name_prefix>/api-key`) and injected into the container |
 
-### Setting the `GEMINI_API_KEY` in AWS SSM Parameter Store
-OpenTofu automatically provisions a `SecureString` parameter at `/<app_name>-<environment>/gemini-api-key` (for example, `/diwop-begleitapp-staging/gemini-api-key`) with `ignore_changes = [value]` and injects it into the ECS container as `GEMINI_API_KEY`. Populate the real Gemini API key directly in AWS Systems Manager Parameter Store:
+### Setting the LLM API Key in AWS SSM Parameter Store
+OpenTofu automatically provisions a `SecureString` parameter at `/<app_name>-<environment>/gemini-api-key` (for example, `/diwop-begleitapp-staging/gemini-api-key`) with `ignore_changes = [value]` and injects it into the ECS container as `GEMINI_API_KEY`. Populate the real LLM API key directly in AWS Systems Manager Parameter Store:
 
 ```bash
 aws ssm put-parameter \
   --region "$AWS_REGION" \
   --name "/diwop-begleitapp-staging/gemini-api-key" \
   --type "SecureString" \
-  --value "<your-gemini-api-key>" \
+  --value "<your-llm-api-key>" \
   --overwrite
 ```
