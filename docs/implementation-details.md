@@ -16,8 +16,13 @@ The Docker image is built to run identically across AWS (ECS / App Runner / EKS)
   - **Logs**: Written to `stdout` (structured JSON in `--release`, human-readable in debug mode) for native ingestion by cloud log collectors.
   - **Traces & Metrics**: Exported via OTLP (gRPC) whenever `OTEL_EXPORTER_OTLP_ENDPOINT` is configured.
 - **Health Check & Lifecycle**:
-  - `GET /healthz` returns `200 OK` without authentication for load balancer and Kubernetes liveness/readiness probes.
+  - `GET /healthz` returns `200 OK` without authentication for process liveness probes.
+  - `GET /readyz` returns `200 OK` without authentication for container readiness probes. On startup, the server initiates an asynchronous warmup check against the configured LLM API. The probe result is cached in-memory so recurring health checks do not incur LLM API costs or rate-limiting overhead.
   - Handles `SIGTERM` and `SIGINT` to drain in-flight HTTP requests and flush OpenTelemetry trace/metric batches before exiting.
+- **Zero-Downtime Rolling Deployments**:
+  - Deployments add a new container instance first and only terminate the previous instance after `/readyz` passes.
+  - On AWS ECS Fargate: `deployment_minimum_healthy_percent = 100`, `deployment_maximum_percent = 200`, ALB Target Group health check on `/readyz`, and circuit breaker with automatic rollback.
+  - On STACKIT SKE: `RollingUpdate` strategy with `max_surge = 1` and `max_unavailable = 0`, Kubernetes `readinessProbe` on `/readyz`, and `livenessProbe` on `/healthz`.
 - **Non-Root Execution**: Runs as unprivileged user `10001:10001` (`appuser`) in `debian:bookworm-slim` to satisfy Kubernetes `restricted` Pod Security Standards.
 
 ## Running modes
@@ -29,7 +34,7 @@ The _release_ profile is intended for production within the Docker container. It
 Configuration via environment variables:
 
 * `API_KEY` (required in release) - Bearer token required on protected API routes (`Authorization: Bearer <API_KEY>`)
-* `GEMINI_API_KEY` (required in release, optional in debug) - Google Gemini API key used by `rig-core` (`gemini-3.5-flash-lite`) for `/correct-transcript` and `/translate`. In debug mode, if unset, the server falls back to `EchoPromptRunner`.
+* `GEMINI_API_KEY` (required in release, optional in debug) - LLM API key used by `rig-core` (or STACKIT AI Model Serving when deployed to STACKIT) for `/correct-transcript` and `/translate`. In debug mode, if unset, the server falls back to `EchoPromptRunner`.
 * `ENVIRONMENT` (optional, default `production`) - Deployment environment (`production` or `staging`; setting `ENVIRONMENT=staging` enables inline `%...%` test directives on `/translate`)
 * `PORT` (optional, default `3000`) - TCP port the HTTP server binds to (`0.0.0.0:<PORT>`)
 * `RUST_LOG` (optional, default `diwop_begleitapp=info,tower_http=info`) - Log filter directive

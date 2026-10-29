@@ -1,10 +1,11 @@
 use diwop_begleitapp::{
-    create_app, create_app_with_runner, ConversationMessage, CorrectTranscriptResponse,
-    ErrorResponse, PromptError, PromptRunner, Role, TranslateRequest, TranslationResponse,
-    TranslationType, Warning, WarningType,
+    create_app, create_app_with_runner_and_readiness, ConversationMessage,
+    CorrectTranscriptResponse, EchoPromptRunner, ErrorResponse, PromptError, PromptRunner, Role,
+    TranslateRequest, TranslationResponse, TranslationType, Warning, WarningType,
 };
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use tokio::net::TcpListener;
 
@@ -76,7 +77,22 @@ async fn start_server_with_runner(runner: Arc<dyn PromptRunner>) -> String {
     let addr = listener.local_addr().unwrap();
     let url = format!("http://{}", addr);
 
-    let app = create_app_with_runner(runner);
+    let app = create_app_with_runner_and_readiness(runner, Arc::new(AtomicBool::new(true)));
+
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    url
+}
+
+/// Starts an ephemeral test server with a custom [`AtomicBool`] readiness flag and returns its base URL.
+async fn start_server_with_readiness(readiness: Arc<AtomicBool>) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let url = format!("http://{}", addr);
+
+    let app = create_app_with_runner_and_readiness(Arc::new(EchoPromptRunner), readiness);
 
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
@@ -441,4 +457,63 @@ async fn test_healthz_endpoint() {
         .unwrap();
 
     assert_eq!(res.status(), reqwest::StatusCode::OK);
+}
+
+/// Verifies that `GET /readyz` returns `200 OK` when the readiness flag is `true`.
+#[tokio::test]
+async fn test_readyz_endpoint_when_ready() {
+    let readiness = Arc::new(AtomicBool::new(true));
+    let base_url = start_server_with_readiness(readiness).await;
+    let client = reqwest::Client::new();
+
+    let res = client
+        .get(format!("{}/readyz", base_url))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), reqwest::StatusCode::OK);
+}
+
+/// Verifies that `GET /readyz` returns `503 Service Unavailable` when the readiness flag is `false`.
+#[tokio::test]
+async fn test_readyz_endpoint_when_unready() {
+    let readiness = Arc::new(AtomicBool::new(false));
+    let base_url = start_server_with_readiness(readiness).await;
+    let client = reqwest::Client::new();
+
+    let res = client
+        .get(format!("{}/readyz", base_url))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+}
+
+/// Verifies that `GET /readyz` transitions from initial state to `200 OK` once background warmup completes.
+#[tokio::test]
+async fn test_readyz_startup_warmup_transition() {
+    let base_url = start_server().await;
+    let client = reqwest::Client::new();
+
+    // Poll /readyz until background warmup completes (should be almost immediate with EchoPromptRunner)
+    let mut became_ready = false;
+    for _ in 0..20 {
+        let res = client
+            .get(format!("{}/readyz", base_url))
+            .send()
+            .await
+            .unwrap();
+        if res.status() == reqwest::StatusCode::OK {
+            became_ready = true;
+            break;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    }
+
+    assert!(
+        became_ready,
+        "Server failed to become ready via background warmup probe"
+    );
 }

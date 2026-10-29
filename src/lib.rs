@@ -9,6 +9,7 @@ pub use api::{
 pub use prompts::{EchoPromptRunner, GeminiPromptRunner, PromptError, PromptRunner};
 
 use axum::{http::StatusCode, routing::get, Router};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tower_http::trace::TraceLayer;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityRequirement, SecurityScheme};
@@ -42,6 +43,8 @@ struct ApiDoc;
 ///
 /// In release builds, `GEMINI_API_KEY` is required and configures [`GeminiPromptRunner`].
 /// In debug/test builds, falls back to [`EchoPromptRunner`] when `GEMINI_API_KEY` is unset.
+///
+/// Spawns a background warmup task to verify the LLM API before marking the service as ready on `/readyz`.
 pub fn create_app() -> Router {
     let runner: Arc<dyn PromptRunner> = match std::env::var("GEMINI_API_KEY") {
         Ok(key) if !key.trim().is_empty() => Arc::new(GeminiPromptRunner::new(key)),
@@ -59,10 +62,58 @@ pub fn create_app() -> Router {
 
 /// Creates and configures the main application router with an explicit [`PromptRunner`].
 ///
-/// This function aggregates all separate HTTP components of the application into a single
-/// `axum::Router`, exposes an unauthenticated `/healthz` endpoint and Swagger UI for OpenAPI
-/// documentation, and applies authentication and request tracing middleware.
+/// Spawns a single asynchronous background warmup check against `runner` to verify LLM API connectivity.
+/// While warmup is in progress or if all attempts fail, `/readyz` returns `503 Service Unavailable`.
+/// Once warmup succeeds, the readiness state is cached as `true`, and subsequent `/readyz` queries
+/// return `200 OK` in-memory without recurring LLM API calls.
 pub fn create_app_with_runner(runner: Arc<dyn PromptRunner>) -> Router {
+    let readiness = Arc::new(AtomicBool::new(false));
+
+    // Spawn an asynchronous startup warmup probe if running within an active Tokio runtime
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        let runner_clone = Arc::clone(&runner);
+        let readiness_clone = Arc::clone(&readiness);
+        handle.spawn(async move {
+            for attempt in 1..=3 {
+                tracing::info!(attempt, "Running LLM API startup warmup check for readiness probe...");
+                match runner_clone
+                    .run_prompt("Du bist ein Test-Assistent.", "ping", "minimal")
+                    .await
+                {
+                    Ok(_) => {
+                        tracing::info!("LLM API startup warmup succeeded. Service is ready.");
+                        readiness_clone.store(true, Ordering::SeqCst);
+                        return;
+                    }
+                    Err(e) => {
+                        tracing::warn!(attempt, error = %e, "LLM API startup warmup attempt failed");
+                        if attempt < 3 {
+                            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                        }
+                    }
+                }
+            }
+            tracing::error!("LLM API startup warmup failed after 3 attempts. Service remains unready.");
+        });
+    } else {
+        // Fallback for non-Tokio contexts (e.g. synchronous router instantiation in tests)
+        readiness.store(true, Ordering::SeqCst);
+    }
+
+    create_app_with_runner_and_readiness(runner, readiness)
+}
+
+/// Creates and configures the main application router with an explicit [`PromptRunner`] and [`AtomicBool`] readiness flag.
+///
+/// This function aggregates all separate HTTP components into a single `axum::Router`:
+/// - Exposes an unauthenticated `/healthz` endpoint returning `200 OK` (process liveness probe).
+/// - Exposes an unauthenticated `/readyz` endpoint returning `200 OK` if `readiness` is true, or `503 Service Unavailable` if false.
+/// - Exposes Swagger UI documentation on `/open-api` and `/api-docs/openapi.json`.
+/// - Protects operational endpoints with Bearer authentication if `API_KEY` is configured.
+pub fn create_app_with_runner_and_readiness(
+    runner: Arc<dyn PromptRunner>,
+    readiness: Arc<AtomicBool>,
+) -> Router {
     // Attempt to extract the API Key enforcing production rules
     let expected_api_key = match std::env::var("API_KEY") {
         Ok(key) => Some(std::sync::Arc::new(key)),
@@ -88,9 +139,25 @@ pub fn create_app_with_runner(runner: Arc<dyn PromptRunner>) -> Router {
     }
 
     let swagger_ui = configure_swagger_ui(is_secured);
-    let health_router = Router::new().route("/healthz", get(|| async { StatusCode::OK }));
 
-    // Merge API definitions (secured above) alongside unauthenticated health check and Public Swagger
+    let readiness_state = Arc::clone(&readiness);
+    let health_router = Router::new()
+        .route("/healthz", get(|| async { StatusCode::OK }))
+        .route(
+            "/readyz",
+            get(move || {
+                let ready = readiness_state.load(Ordering::SeqCst);
+                async move {
+                    if ready {
+                        StatusCode::OK
+                    } else {
+                        StatusCode::SERVICE_UNAVAILABLE
+                    }
+                }
+            }),
+        );
+
+    // Merge API definitions (secured above) alongside unauthenticated health/readiness checks and Public Swagger
     api_router
         .merge(health_router)
         .merge(swagger_ui)

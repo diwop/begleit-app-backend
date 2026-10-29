@@ -22,6 +22,12 @@ variable "health_check_path" {
   default     = "/healthz"
 }
 
+variable "readiness_check_path" {
+  description = "Unauthenticated HTTP path used for container readiness checks."
+  type        = string
+  default     = "/readyz"
+}
+
 variable "rust_log" {
   description = "Log filter directive for tracing_subscriber."
   type        = string
