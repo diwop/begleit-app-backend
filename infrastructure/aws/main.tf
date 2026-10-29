@@ -46,15 +46,15 @@ resource "aws_ecr_lifecycle_policy" "app" {
   })
 }
 
-# 2. Secret Management (API_KEY & GEMINI_API_KEY injected into container environment)
-resource "aws_secretsmanager_secret" "api_key" {
-  name        = "${local.name_prefix}/api-key"
+# 2. Secret Management (API_KEY & GEMINI_API_KEY injected into container environment via SSM Parameter Store)
+resource "aws_ssm_parameter" "api_key" {
+  name        = "/${local.name_prefix}/api-key"
   description = "Bearer API key for ${local.name_prefix}"
-}
+  type        = "SecureString"
+  value       = var.api_key
+  overwrite   = true
 
-resource "aws_secretsmanager_secret_version" "api_key" {
-  secret_id     = aws_secretsmanager_secret.api_key.id
-  secret_string = var.api_key
+  depends_on = [aws_iam_role_policy.github_actions_deploy]
 }
 
 resource "aws_ssm_parameter" "gemini_api_key" {
@@ -96,15 +96,12 @@ resource "aws_iam_role_policy_attachment" "ecs_execution_managed" {
 
 data "aws_iam_policy_document" "ecs_secret_read" {
   statement {
-    effect    = "Allow"
-    actions   = ["secretsmanager:GetSecretValue"]
-    resources = [aws_secretsmanager_secret.api_key.arn]
-  }
-
-  statement {
-    effect    = "Allow"
-    actions   = ["ssm:GetParameters"]
-    resources = [aws_ssm_parameter.gemini_api_key.arn]
+    effect  = "Allow"
+    actions = ["ssm:GetParameters"]
+    resources = [
+      aws_ssm_parameter.api_key.arn,
+      aws_ssm_parameter.gemini_api_key.arn,
+    ]
   }
 }
 
@@ -349,7 +346,7 @@ resource "aws_ecs_task_definition" "app" {
       secrets = [
         {
           name      = "API_KEY"
-          valueFrom = aws_secretsmanager_secret.api_key.arn
+          valueFrom = aws_ssm_parameter.api_key.arn
         },
         {
           name      = "GEMINI_API_KEY"
@@ -398,7 +395,7 @@ resource "aws_ecs_service" "app" {
 
   depends_on = [
     aws_lb_listener.https,
-    aws_secretsmanager_secret_version.api_key,
+    aws_ssm_parameter.api_key,
     aws_iam_role_policy.ecs_secret_read,
   ]
 }
@@ -505,20 +502,6 @@ data "aws_iam_policy_document" "github_actions_deploy" {
     effect    = "Allow"
     actions   = ["ecr:*"]
     resources = [aws_ecr_repository.app.arn]
-  }
-
-  statement {
-    sid    = "SecretsManagerApiKey"
-    effect = "Allow"
-    actions = [
-      "secretsmanager:DescribeSecret",
-      "secretsmanager:GetResourcePolicy",
-      "secretsmanager:GetSecretValue",
-      "secretsmanager:PutSecretValue",
-      "secretsmanager:UpdateSecret",
-      "secretsmanager:ListSecretVersionIds",
-    ]
-    resources = [aws_secretsmanager_secret.api_key.arn]
   }
 
   statement {

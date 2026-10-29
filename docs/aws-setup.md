@@ -94,7 +94,7 @@ docker push "$ECR_URL:latest"
 
 ## 4. Deploy Full AWS Stack & Set Gemini API Key
 
-Apply the complete configuration to create the AWS Secrets Manager secret, AWS SSM Parameter Store placeholder (`/<app_name>-<environment>/gemini-api-key`), least-privilege IAM roles, ACM certificate + Route 53 validation, Application Load Balancer, ECS Fargate `ARM64` `FARGATE_SPOT` service (`0.25 vCPU`, `512 MB`), and scheduled scaling (`00:00` down to `0`, `08:00` up to `1` `Europe/Berlin`):
+Apply the complete configuration to create the AWS SSM Parameter Store parameters (`/<app_name>-<environment>/api-key` and `/<app_name>-<environment>/gemini-api-key`), least-privilege IAM roles, ACM certificate + Route 53 validation, Application Load Balancer, ECS Fargate `ARM64` `FARGATE_SPOT` service (`0.25 vCPU`, `512 MB`), and scheduled scaling (`00:00` down to `0`, `08:00` up to `1` `Europe/Berlin`):
 
 ```bash
 tofu -chdir=infrastructure/aws apply -var="image_tag=latest"
@@ -151,7 +151,7 @@ Pushes to `main` (or manual `workflow_dispatch` runs) automatically build the `l
 ### Required GitHub Repository Secrets (`Settings -> Secrets and variables -> Actions -> Secrets`)
 | Secret | Description |
 | :--- | :--- |
-| `API_KEY` | Bearer token stored in AWS Secrets Manager and injected into the container |
+| `API_KEY` | Bearer token stored in AWS SSM Parameter Store (`/<name_prefix>/api-key`) and injected into the container |
 
 ### Setting the `GEMINI_API_KEY` in AWS SSM Parameter Store
 OpenTofu automatically provisions a `SecureString` parameter at `/<app_name>-<environment>/gemini-api-key` (for example, `/diwop-begleitapp-staging/gemini-api-key`) with `ignore_changes = [value]` and injects it into the ECS container as `GEMINI_API_KEY`. Populate the real Gemini API key directly in AWS Systems Manager Parameter Store:
