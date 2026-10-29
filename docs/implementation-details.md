@@ -29,6 +29,7 @@ The _release_ profile is intended for production within the Docker container. It
 Configuration via environment variables:
 
 * `API_KEY` (required in release) - Bearer token required on protected API routes (`Authorization: Bearer <API_KEY>`)
+* `GEMINI_API_KEY` (required in release, optional in debug) - Google Gemini API key used by `rig-core` (`gemini-3.5-flash-lite`) for `/correct-transcript` and `/translate`. In debug mode, if unset, the server falls back to `EchoPromptRunner`.
 * `ENVIRONMENT` (optional, default `production`) - Deployment environment (`production` or `staging`; setting `ENVIRONMENT=staging` enables inline `%...%` test directives on `/translate`)
 * `PORT` (optional, default `3000`) - TCP port the HTTP server binds to (`0.0.0.0:<PORT>`)
 * `RUST_LOG` (optional, default `diwop_begleitapp=info,tower_http=info`) - Log filter directive

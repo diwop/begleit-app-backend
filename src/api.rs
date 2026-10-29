@@ -1,11 +1,17 @@
+use crate::prompts::{
+    build_correct_transcript_prompt, build_translate_prompt, extract_staging_directives,
+    parse_translate_output, PromptRunner, CORRECT_TRANSCRIPT_SYSTEM_PROMPT,
+    TRANSLATE_SYSTEM_PROMPT,
+};
 use axum::{
-    extract::{rejection::JsonRejection, FromRequest, Request},
+    extract::{rejection::JsonRejection, FromRequest, Request, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::post,
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use utoipa::ToSchema;
 
 /// Speaker role in a conversation: `user` is the app user, `partner` is the conversation partner.
@@ -208,11 +214,12 @@ where
     }
 }
 
-/// Creates and returns the router for the conversation API endpoints.
-pub fn router() -> Router {
+/// Creates and returns the router for the conversation API endpoints using the provided [`PromptRunner`].
+pub fn router(runner: Arc<dyn PromptRunner>) -> Router {
     Router::new()
         .route("/correct-transcript", post(correct_transcript))
         .route("/translate", post(translate))
+        .with_state(runner)
 }
 
 /// Checks whether a string contains at least one non-whitespace character.
@@ -329,6 +336,7 @@ pub fn is_non_blank(text: &str) -> bool {
     )
 )]
 pub async fn correct_transcript(
+    State(runner): State<Arc<dyn PromptRunner>>,
     AppJson(request): AppJson<ConversationMessage>,
 ) -> Result<Json<CorrectTranscriptResponse>, (StatusCode, Json<ErrorResponse>)> {
     if !is_non_blank(&request.message) {
@@ -341,9 +349,29 @@ pub async fn correct_transcript(
         ));
     }
 
-    Ok(Json(CorrectTranscriptResponse {
-        message: request.message,
-    }))
+    let prompt = build_correct_transcript_prompt(&request.message);
+    let corrected = runner
+        .run_prompt(CORRECT_TRANSCRIPT_SYSTEM_PROMPT, &prompt, "minimal")
+        .await
+        .map_err(|e| {
+            tracing::error!("correct-transcript prompt error: {e}");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ErrorResponse::new(
+                    "SERVICE_UNAVAILABLE",
+                    "Service is temporarily unavailable.",
+                )),
+            )
+        })?;
+
+    let trimmed = corrected.trim();
+    let message = if trimmed.is_empty() {
+        request.message
+    } else {
+        trimmed.to_string()
+    };
+
+    Ok(Json(CorrectTranscriptResponse { message }))
 }
 
 /// Prepare the last statement from "partner" in German simple language.
@@ -497,9 +525,10 @@ pub async fn correct_transcript(
     )
 )]
 pub async fn translate(
+    State(runner): State<Arc<dyn PromptRunner>>,
     AppJson(request): AppJson<TranslateRequest>,
 ) -> Result<Json<TranslationResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let Some(last_message) = request.messages.last() else {
+    let Some((last_message, history)) = request.messages.split_last() else {
         return Err((
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(ErrorResponse::new(
@@ -533,69 +562,49 @@ pub async fn translate(
         .unwrap_or_else(|_| "production".to_string())
         .eq_ignore_ascii_case("staging");
 
-    Ok(Json(build_translation_response(
-        &last_message.message,
-        is_staging,
-    )))
+    let directives = extract_staging_directives(&last_message.message, is_staging);
+    let prompt = build_translate_prompt(history, &directives.cleaned_message);
+
+    let raw_output = runner
+        .run_prompt(&TRANSLATE_SYSTEM_PROMPT, &prompt, "low")
+        .await
+        .map_err(|e| {
+            tracing::error!("translate prompt error: {e}");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ErrorResponse::new(
+                    "SERVICE_UNAVAILABLE",
+                    "Service is temporarily unavailable.",
+                )),
+            )
+        })?;
+
+    let (model_type, model_content) = parse_translate_output(&raw_output);
+    let content = if model_content.is_empty() {
+        directives.cleaned_message
+    } else {
+        model_content
+    };
+
+    Ok(Json(TranslationResponse {
+        r#type: directives.r#type.unwrap_or(model_type),
+        content,
+        warning: directives.warning,
+    }))
 }
 
-/// Builds a [`TranslationResponse`] from the partner's message text.
+/// Builds a [`TranslationResponse`] from the partner's message text and a model output.
 ///
 /// When `is_staging` is `true` (`ENVIRONMENT=staging`), honors inline test directives
-/// (`%type=formatting%`, `%type=translation%`, `%warning.type=...%`, and `%warning.revealable%`).
+/// (`%type=formatting%`, `%type=translation%`, `%warning.type=...%`, and `%warning.revealable%`)
+/// to override `type` and attach `warning`, while stripping the directive markers from `content`.
 /// In `production` (default, `is_staging == false`), directives are ignored.
 pub fn build_translation_response(message: &str, is_staging: bool) -> TranslationResponse {
-    if !is_staging {
-        return TranslationResponse {
-            r#type: TranslationType::Formatting,
-            content: message.to_string(),
-            warning: None,
-        };
-    }
-
-    let r#type = if message.contains("%type=formatting%") {
-        TranslationType::Formatting
-    } else if message.contains("%type=translation%") {
-        TranslationType::Translation
-    } else {
-        TranslationType::Formatting
-    };
-
-    let warning_type = if message.contains("%warning.type=danger%") {
-        Some(WarningType::Danger)
-    } else if message.contains("%warning.type=warning%") {
-        Some(WarningType::Warning)
-    } else if message.contains("%warning.type=info%") {
-        Some(WarningType::Info)
-    } else {
-        None
-    };
-
-    let revealable = if message.contains("%warning.revealable%")
-        || message.contains("%warning.revealable=true%")
-    {
-        Some(true)
-    } else if message.contains("%warning.revealable=false%") {
-        Some(false)
-    } else {
-        None
-    };
-
-    let warning = if warning_type.is_some() || revealable.is_some() {
-        Some(Warning {
-            headline: "Zu Ihrer Information".to_string(),
-            body: "Passen Sie auf sich auf!".to_string(),
-            r#type: warning_type.unwrap_or(WarningType::Info),
-            revealable: revealable.unwrap_or(false),
-        })
-    } else {
-        None
-    };
-
+    let directives = extract_staging_directives(message, is_staging);
     TranslationResponse {
-        r#type,
-        content: message.to_string(),
-        warning,
+        r#type: directives.r#type.unwrap_or(TranslationType::Formatting),
+        content: directives.cleaned_message,
+        warning: directives.warning,
     }
 }
 

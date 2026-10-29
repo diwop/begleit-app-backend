@@ -3,6 +3,7 @@ use tokio::net::TcpListener;
 
 /// Starts an ephemeral test server running the application router and returns its base URL.
 async fn start_server() -> String {
+    std::env::remove_var("GEMINI_API_KEY");
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let url = format!("http://{}", addr);

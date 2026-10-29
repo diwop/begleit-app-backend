@@ -1,16 +1,82 @@
 use diwop_begleitapp::{
-    create_app, ConversationMessage, CorrectTranscriptResponse, ErrorResponse, Role,
-    TranslateRequest, TranslationResponse, TranslationType, Warning, WarningType,
+    create_app, create_app_with_runner, ConversationMessage, CorrectTranscriptResponse,
+    ErrorResponse, PromptError, PromptRunner, Role, TranslateRequest, TranslationResponse,
+    TranslationType, Warning, WarningType,
 };
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 use tokio::net::TcpListener;
 
-/// Starts an ephemeral test server running the application router and returns its base URL.
+/// Captured invocation arguments passed to [`MockPromptRunner`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RecordedCall {
+    system_prompt: String,
+    prompt: String,
+    thinking_level: String,
+}
+
+/// Configurable mock [`PromptRunner`] that records calls and returns a canned response.
+struct MockPromptRunner {
+    calls: Mutex<Vec<RecordedCall>>,
+    response: Result<String, String>,
+}
+
+impl MockPromptRunner {
+    /// Creates a new [`MockPromptRunner`] that returns `response` on every invocation.
+    fn new(response: Result<String, String>) -> Arc<Self> {
+        Arc::new(Self {
+            calls: Mutex::new(Vec::new()),
+            response,
+        })
+    }
+
+    /// Returns a snapshot of all recorded [`PromptRunner::run_prompt`] calls.
+    fn recorded_calls(&self) -> Vec<RecordedCall> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+impl PromptRunner for MockPromptRunner {
+    fn run_prompt<'a>(
+        &'a self,
+        system_prompt: &'a str,
+        prompt: &'a str,
+        thinking_level: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, PromptError>> + Send + 'a>> {
+        self.calls.lock().unwrap().push(RecordedCall {
+            system_prompt: system_prompt.to_string(),
+            prompt: prompt.to_string(),
+            thinking_level: thinking_level.to_string(),
+        });
+        let res = self.response.clone().map_err(PromptError);
+        Box::pin(async move { res })
+    }
+}
+
+/// Starts an ephemeral test server running the application router with [`EchoPromptRunner`] and returns its base URL.
 async fn start_server() -> String {
+    std::env::remove_var("GEMINI_API_KEY");
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let url = format!("http://{}", addr);
 
     let app = create_app();
+
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    url
+}
+
+/// Starts an ephemeral test server with a custom [`PromptRunner`] and returns its base URL.
+async fn start_server_with_runner(runner: Arc<dyn PromptRunner>) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let url = format!("http://{}", addr);
+
+    let app = create_app_with_runner(runner);
 
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
@@ -219,7 +285,7 @@ async fn test_translate_directives_for_type_and_warning() {
         }
     );
 
-    // 2. Staging environment honors directives
+    // 2. Staging environment honors directives and strips them from the prompt/content
     std::env::set_var("ENVIRONMENT", "staging");
     let res = client
         .post(format!("{}/translate", base_url))
@@ -239,7 +305,7 @@ async fn test_translate_directives_for_type_and_warning() {
         body,
         TranslationResponse {
             r#type: TranslationType::Translation,
-            content: msg.to_string(),
+            content: "Bitte beachten".to_string(),
             warning: Some(Warning {
                 headline: "Zu Ihrer Information".to_string(),
                 body: "Passen Sie auf sich auf!".to_string(),
@@ -248,6 +314,118 @@ async fn test_translate_directives_for_type_and_warning() {
             }),
         }
     );
+}
+
+/// Verifies that `POST /correct-transcript` and `POST /translate` render prompts, parse model outputs, and map runner errors to 503.
+#[tokio::test]
+async fn test_prompt_runner_integration_and_error_handling() {
+    let client = reqwest::Client::new();
+
+    // 1. /correct-transcript with MockPromptRunner
+    let mock_correct = MockPromptRunner::new(Ok(
+        "Sie müssen den Antrag bis Ende nächster Woche abgeben.".to_string(),
+    ));
+    let url_correct = start_server_with_runner(mock_correct.clone()).await;
+
+    let res = client
+        .post(format!("{}/correct-transcript", url_correct))
+        .json(&ConversationMessage {
+            role: Role::Partner,
+            message: "sie müssen den antrag bis ende nächste woche abgeben".to_string(),
+        })
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), reqwest::StatusCode::OK);
+    let body: CorrectTranscriptResponse = res.json().await.unwrap();
+    assert_eq!(
+        body.message,
+        "Sie müssen den Antrag bis Ende nächster Woche abgeben."
+    );
+
+    let calls = mock_correct.recorded_calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].thinking_level, "minimal");
+    assert!(calls[0]
+        .prompt
+        .contains("sie müssen den antrag bis ende nächste woche abgeben"));
+
+    // 2. /translate with MockPromptRunner returning ÜBERSETZUNG
+    let mock_translate = MockPromptRunner::new(Ok(
+        "ÜBERSETZUNG\nGeben Sie den Antrag **bis Ende nächster Woche** ab.".to_string(),
+    ));
+    let url_translate = start_server_with_runner(mock_translate.clone()).await;
+
+    std::env::remove_var("ENVIRONMENT");
+    let res = client
+        .post(format!("{}/translate", url_translate))
+        .json(&TranslateRequest {
+            messages: vec![
+                ConversationMessage {
+                    role: Role::User,
+                    message: "wann muss ich den antrag abgeben".to_string(),
+                },
+                ConversationMessage {
+                    role: Role::Partner,
+                    message: "sie müssen den antrag bis ende nächste woche abgeben".to_string(),
+                },
+            ],
+        })
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), reqwest::StatusCode::OK);
+    let body: TranslationResponse = res.json().await.unwrap();
+    assert_eq!(
+        body,
+        TranslationResponse {
+            r#type: TranslationType::Translation,
+            content: "Geben Sie den Antrag **bis Ende nächster Woche** ab.".to_string(),
+            warning: None,
+        }
+    );
+
+    let calls = mock_translate.recorded_calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].thinking_level, "low");
+    assert!(calls[0]
+        .prompt
+        .contains("User:\n```\nwann muss ich den antrag abgeben\n```"));
+    assert!(calls[0]
+        .prompt
+        .contains("sie müssen den antrag bis ende nächste woche abgeben"));
+
+    // 3. Model error -> 503 SERVICE_UNAVAILABLE
+    let mock_err = MockPromptRunner::new(Err("Gemini timeout".to_string()));
+    let url_err = start_server_with_runner(mock_err).await;
+
+    let res = client
+        .post(format!("{}/correct-transcript", url_err))
+        .json(&ConversationMessage {
+            role: Role::User,
+            message: "Hallo".to_string(),
+        })
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+    let err: ErrorResponse = res.json().await.unwrap();
+    assert_eq!(err.error.code, "SERVICE_UNAVAILABLE");
+
+    let res = client
+        .post(format!("{}/translate", url_err))
+        .json(&TranslateRequest {
+            messages: vec![ConversationMessage {
+                role: Role::Partner,
+                message: "Hallo".to_string(),
+            }],
+        })
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+    let err: ErrorResponse = res.json().await.unwrap();
+    assert_eq!(err.error.code, "SERVICE_UNAVAILABLE");
 }
 
 /// Verifies that `GET /healthz` returns `200 OK`.

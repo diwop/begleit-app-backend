@@ -39,6 +39,13 @@ variable "api_key" {
   sensitive   = true
 }
 
+variable "gemini_api_key" {
+  description = "Gemini API key required by the application in release mode."
+  type        = string
+  default     = "REPLACE_ME"
+  sensitive   = true
+}
+
 variable "otel_exporter_otlp_endpoint" {
   description = "Optional OTLP gRPC collector endpoint URL inside the SKE cluster."
   type        = string

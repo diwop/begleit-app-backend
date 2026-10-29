@@ -120,3 +120,15 @@ Pushes to `main` (or manual `workflow_dispatch` runs) automatically build the `l
 | Secret | Description |
 | :--- | :--- |
 | `API_KEY` | Bearer token stored in AWS Secrets Manager and injected into the container |
+
+### Setting the `GEMINI_API_KEY` in AWS SSM Parameter Store
+OpenTofu automatically provisions a `SecureString` parameter at `/<app_name>-<environment>/gemini-api-key` (for example, `/diwop-begleitapp-staging/gemini-api-key`) with `ignore_changes = [value]` and injects it into the ECS container as `GEMINI_API_KEY`. Populate the real Gemini API key directly in AWS Systems Manager Parameter Store:
+
+```bash
+aws ssm put-parameter \
+  --region "$AWS_REGION" \
+  --name "/diwop-begleitapp-staging/gemini-api-key" \
+  --type "SecureString" \
+  --value "<your-gemini-api-key>" \
+  --overwrite
+```
