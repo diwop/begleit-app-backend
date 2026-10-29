@@ -15,7 +15,7 @@ Unlike AWS App Runner, STACKIT hosts containerized workloads primarily on **STAC
    - Provisions a managed Kubernetes cluster in region `eu01` using the official `stackitcloud/stackit` OpenTofu provider.
 3. **Kubernetes Resources (`hashicorp/kubernetes`)**:
    - **`kubernetes_namespace`**: Isolates the workload per environment (`diwop-begleitapp-staging`).
-   - **`kubernetes_secret`**: Stores `API_KEY` and injects it into the pod as an environment variable via `secret_key_ref`.
+   - **`kubernetes_secret`**: Stores `API_KEY` and `GEMINI_API_KEY` and injects them into the pod as environment variables via `secret_key_ref`.
    - **`kubernetes_deployment`**: Runs the container as non-root (`10001:10001`) with `liveness_probe` and `readiness_probe` targeting `GET /healthz:3000`.
    - **`kubernetes_service`**: Exposes the deployment within the cluster / via a STACKIT LoadBalancer.
 
@@ -55,6 +55,7 @@ The `deploy-stackit` job in [`.github/workflows/deploy.yml`](../.github/workflow
 | Secret | Description |
 | :--- | :--- |
 | `API_KEY` | Bearer token stored in the Kubernetes Secret and injected into the pod |
+| `GEMINI_API_KEY` | Google Gemini API key stored in the Kubernetes Secret and injected into the pod |
 | `STACKIT_SERVICE_ACCOUNT_KEY` | STACKIT Service Account JSON key for the `stackitcloud/stackit` OpenTofu provider |
 | `STACKIT_S3_ACCESS_KEY_ID` | Access key ID for the STACKIT Object Storage state bucket |
 | `STACKIT_S3_SECRET_ACCESS_KEY` | Secret access key for the STACKIT Object Storage state bucket |
