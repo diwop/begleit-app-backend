@@ -339,7 +339,18 @@ pub async fn correct_transcript(
     State(runner): State<Arc<dyn PromptRunner>>,
     AppJson(request): AppJson<ConversationMessage>,
 ) -> Result<Json<CorrectTranscriptResponse>, (StatusCode, Json<ErrorResponse>)> {
+    tracing::debug!(
+        endpoint = "/correct-transcript",
+        role = ?request.role,
+        "Handling correct-transcript request"
+    );
+
     if !is_non_blank(&request.message) {
+        tracing::warn!(
+            endpoint = "/correct-transcript",
+            error = "VALIDATION_ERROR",
+            "Validation rejected request: text is empty"
+        );
         return Err((
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(ErrorResponse::new(
@@ -350,11 +361,15 @@ pub async fn correct_transcript(
     }
 
     let prompt = build_correct_transcript_prompt(&request.message);
-    let corrected = runner
+    let prompt_output = runner
         .run_prompt(CORRECT_TRANSCRIPT_SYSTEM_PROMPT, &prompt, "minimal")
         .await
         .map_err(|e| {
-            tracing::error!("correct-transcript prompt error: {e}");
+            tracing::error!(
+                endpoint = "/correct-transcript",
+                error = %e,
+                "LLM API request failed"
+            );
             (
                 StatusCode::SERVICE_UNAVAILABLE,
                 Json(ErrorResponse::new(
@@ -364,7 +379,23 @@ pub async fn correct_transcript(
             )
         })?;
 
-    let trimmed = corrected.trim();
+    crate::metrics::record_token_usage(
+        "/correct-transcript",
+        prompt_output.usage.input_tokens,
+        prompt_output.usage.reasoning_tokens,
+        prompt_output.usage.output_tokens,
+    );
+
+    tracing::info!(
+        endpoint = "/correct-transcript",
+        status = 200,
+        input_tokens = prompt_output.usage.input_tokens,
+        reasoning_tokens = prompt_output.usage.reasoning_tokens,
+        output_tokens = prompt_output.usage.output_tokens,
+        "LLM request completed successfully"
+    );
+
+    let trimmed = prompt_output.text.trim();
     let message = if trimmed.is_empty() {
         request.message
     } else {
@@ -529,6 +560,11 @@ pub async fn translate(
     AppJson(request): AppJson<TranslateRequest>,
 ) -> Result<Json<TranslationResponse>, (StatusCode, Json<ErrorResponse>)> {
     let Some((last_message, history)) = request.messages.split_last() else {
+        tracing::warn!(
+            endpoint = "/translate",
+            error = "VALIDATION_ERROR",
+            "Validation rejected request: message list is empty"
+        );
         return Err((
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(ErrorResponse::new(
@@ -539,6 +575,11 @@ pub async fn translate(
     };
 
     if request.messages.iter().any(|m| !is_non_blank(&m.message)) {
+        tracing::warn!(
+            endpoint = "/translate",
+            error = "VALIDATION_ERROR",
+            "Validation rejected request: contains blank message"
+        );
         return Err((
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(ErrorResponse::new(
@@ -549,6 +590,11 @@ pub async fn translate(
     }
 
     if last_message.role != Role::Partner {
+        tracing::warn!(
+            endpoint = "/translate",
+            error = "LAST_MESSAGE_MUST_BE_PARTNER",
+            "Validation rejected request: last message role is not partner"
+        );
         return Err((
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(ErrorResponse::new(
@@ -558,6 +604,15 @@ pub async fn translate(
         ));
     }
 
+    let history_len = history.len();
+    crate::metrics::record_translate_history_length(history_len);
+
+    tracing::debug!(
+        endpoint = "/translate",
+        history_length = history_len,
+        "Handling translate request"
+    );
+
     let is_staging = std::env::var("ENVIRONMENT")
         .unwrap_or_else(|_| "production".to_string())
         .eq_ignore_ascii_case("staging");
@@ -565,11 +620,15 @@ pub async fn translate(
     let directives = extract_staging_directives(&last_message.message, is_staging);
     let prompt = build_translate_prompt(history, &directives.cleaned_message);
 
-    let raw_output = runner
+    let prompt_output = runner
         .run_prompt(&TRANSLATE_SYSTEM_PROMPT, &prompt, "low")
         .await
         .map_err(|e| {
-            tracing::error!("translate prompt error: {e}");
+            tracing::error!(
+                endpoint = "/translate",
+                error = %e,
+                "LLM API request failed"
+            );
             (
                 StatusCode::SERVICE_UNAVAILABLE,
                 Json(ErrorResponse::new(
@@ -579,7 +638,24 @@ pub async fn translate(
             )
         })?;
 
-    let (model_type, model_content) = parse_translate_output(&raw_output);
+    crate::metrics::record_token_usage(
+        "/translate",
+        prompt_output.usage.input_tokens,
+        prompt_output.usage.reasoning_tokens,
+        prompt_output.usage.output_tokens,
+    );
+
+    tracing::info!(
+        endpoint = "/translate",
+        status = 200,
+        history_length = history_len,
+        input_tokens = prompt_output.usage.input_tokens,
+        reasoning_tokens = prompt_output.usage.reasoning_tokens,
+        output_tokens = prompt_output.usage.output_tokens,
+        "LLM request completed successfully"
+    );
+
+    let (model_type, model_content) = parse_translate_output(&prompt_output.text);
     let content = if model_content.is_empty() {
         directives.cleaned_message
     } else {
