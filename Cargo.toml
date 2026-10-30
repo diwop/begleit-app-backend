@@ -24,7 +24,7 @@ utoipa = "6"
 rig = { package = "rig-core", version = "0.42.0" }
 tokenizers = { version = "0.21", default-features = false, features = ["fancy-regex"] }
 flate2 = "1.0"
-askama = "0.12"
+askama = "0.16"
 sha2 = "0.10"
 subtle = "2.5"
 
