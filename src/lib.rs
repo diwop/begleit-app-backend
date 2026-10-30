@@ -165,9 +165,9 @@ pub fn create_app_with_runner_and_readiness(
     let is_secured = expected_api_key.is_some();
 
     // Conditionally map the authentication middleware intercepting any access
-    if let Some(api_key) = expected_api_key {
+    if let Some(ref api_key) = expected_api_key {
         api_router = api_router.route_layer(axum::middleware::from_fn_with_state(
-            api_key,
+            Arc::clone(api_key),
             auth::validate_api_key,
         ));
     }
@@ -178,7 +178,7 @@ pub fn create_app_with_runner_and_readiness(
     ));
 
     let swagger_ui = configure_swagger_ui(is_secured);
-    let web_router = web::router(admin_password);
+    let web_router = web::router(admin_password, expected_api_key.clone());
 
     let readiness_state = Arc::clone(&readiness);
     let health_router = Router::new()

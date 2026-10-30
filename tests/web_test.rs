@@ -43,6 +43,10 @@ async fn test_unauthenticated_index_serves_login_page() {
         html.contains("autocomplete=\"current-password\""),
         "HTML should contain autocomplete=current-password"
     );
+    assert!(
+        !html.contains("Dialogübersetzung ausprobieren"),
+        "HTML should not expose dialog translation link when unauthenticated"
+    );
 }
 
 /// Verifies that POST `/login` with an incorrect password returns 401 Unauthorized and an error message.
@@ -138,6 +142,14 @@ async fn test_authenticated_index_serves_dashboard() {
         html.contains("action=\"/logout\""),
         "HTML should contain logout form"
     );
+    assert!(
+        html.contains("Dialogübersetzung ausprobieren"),
+        "HTML should contain dialog translation link on dashboard"
+    );
+    assert!(
+        html.contains("href=\"/dialog-translation\""),
+        "HTML should link to /dialog-translation on dashboard"
+    );
 }
 
 /// Verifies that POST `/logout` clears the session cookie and redirects to `/`.
@@ -203,5 +215,98 @@ async fn test_static_style_css() {
     assert!(
         css.contains(".login-card"),
         "CSS should style .login-card component"
+    );
+}
+
+/// Verifies that an unauthenticated GET to `/dialog-translation` presents the login form with next parameter.
+#[tokio::test]
+async fn test_unauthenticated_dialog_translation_serves_login() {
+    let base_url = start_server().await;
+    let client = reqwest::Client::new();
+
+    let res = client
+        .get(format!("{}/dialog-translation", base_url))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), reqwest::StatusCode::OK);
+    let html = res.text().await.unwrap();
+    assert!(
+        html.contains("Admin-Anmeldung"),
+        "HTML should contain login heading"
+    );
+    assert!(
+        html.contains("name=\"next\" value=\"/dialog-translation\""),
+        "HTML should contain hidden next field targeting /dialog-translation"
+    );
+}
+
+/// Verifies that POST `/login` with a valid password and `next` parameter redirects to the specified path.
+#[tokio::test]
+async fn test_login_success_redirects_to_next() {
+    let base_url = start_server().await;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+
+    let form_params = [("password", "admin"), ("next", "/dialog-translation")];
+    let res = client
+        .post(format!("{}/login", base_url))
+        .form(&form_params)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), reqwest::StatusCode::SEE_OTHER);
+    assert_eq!(
+        res.headers()
+            .get(header::LOCATION)
+            .and_then(|h| h.to_str().ok()),
+        Some("/dialog-translation")
+    );
+}
+
+/// Verifies that GET `/dialog-translation` with a valid session cookie renders the dialog translation interface.
+#[tokio::test]
+async fn test_authenticated_dialog_translation_serves_interface() {
+    let base_url = start_server().await;
+    let client = reqwest::Client::new();
+
+    let valid_token = web::generate_session_token("admin");
+
+    let res = client
+        .get(format!("{}/dialog-translation", base_url))
+        .header(header::COOKIE, format!("admin_session={valid_token}"))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), reqwest::StatusCode::OK);
+    let html = res.text().await.unwrap();
+    assert!(
+        html.contains("Dialog in Leichter Sprache"),
+        "HTML should contain page title"
+    );
+    assert!(
+        html.contains("record-user-btn"),
+        "HTML should contain user record button"
+    );
+    assert!(
+        html.contains("record-partner-btn"),
+        "HTML should contain partner record button"
+    );
+    assert!(
+        html.contains("NutzerIn"),
+        "HTML should display NutzerIn subtitle"
+    );
+    assert!(
+        html.contains("GesprächspartnerIn"),
+        "HTML should display GesprächspartnerIn subtitle"
+    );
+    assert!(
+        html.contains("Neuer Dialog"),
+        "HTML should contain reset button"
     );
 }

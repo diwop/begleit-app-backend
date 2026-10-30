@@ -1,0 +1,511 @@
+{% extends "base.html" %}
+
+{% block title %}Dialog in Leichter Sprache | diwop{% endblock %}
+
+{% block content %}
+<div class="dialog-page">
+  <header class="dialog-header">
+    <div class="dialog-header-left">
+      <a href="/" class="btn btn-secondary btn-sm nav-back-link">
+        <svg class="icon-svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <line x1="19" y1="12" x2="5" y2="12"></line>
+          <polyline points="12 19 5 12 12 5"></polyline>
+        </svg>
+        <span>Dashboard</span>
+      </a>
+      <h1 class="dialog-title">Dialog in Leichter Sprache</h1>
+    </div>
+    <div class="dialog-header-right">
+      <button type="button" id="reset-dialog-btn" class="btn btn-secondary btn-sm">
+        <svg class="icon-svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <polyline points="1 4 1 10 7 10"></polyline>
+          <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>
+        </svg>
+        <span>Neuer Dialog</span>
+      </button>
+      <form method="post" action="/logout" class="inline-logout-form">
+        <button type="submit" class="btn btn-secondary btn-sm">Abmelden</button>
+      </form>
+    </div>
+  </header>
+
+  <div id="dialog-scroll-container" class="dialog-scroll-container">
+    <div id="dialog-feed" class="dialog-feed" role="log" aria-live="polite">
+      <div id="stt-unsupported-banner" class="warning-box warning-danger" style="display: none;" role="alert">
+        Die Web Speech API wird in Ihrem Browser nicht unterstützt. Bitte verwenden Sie Google Chrome, Microsoft Edge oder Safari für die Spracheingabe.
+      </div>
+      <div id="empty-state" class="empty-state">
+        <p class="empty-state-text">
+          Tippen Sie unten auf „NutzerIn“ oder „GesprächspartnerIn“, um die Sprachaufnahme zu starten.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <footer class="bottom-bar">
+    <div class="record-control">
+      <button
+        type="button"
+        id="record-user-btn"
+        class="record-btn"
+        data-role="user"
+        aria-label="Aufnahme für NutzerIn starten"
+        aria-pressed="false"
+      >
+        <svg class="record-icon icon-mic" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+          <line x1="12" y1="19" x2="12" y2="23"></line>
+          <line x1="8" y1="23" x2="16" y2="23"></line>
+        </svg>
+        <svg class="record-icon icon-stop" width="24" height="24" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style="display: none;">
+          <rect x="5" y="5" width="14" height="14" rx="2" ry="2"></rect>
+        </svg>
+      </button>
+      <span class="record-label">NutzerIn</span>
+    </div>
+
+    <div class="record-control">
+      <button
+        type="button"
+        id="record-partner-btn"
+        class="record-btn"
+        data-role="partner"
+        aria-label="Aufnahme für GesprächspartnerIn starten"
+        aria-pressed="false"
+      >
+        <svg class="record-icon icon-mic" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+          <line x1="12" y1="19" x2="12" y2="23"></line>
+          <line x1="8" y1="23" x2="16" y2="23"></line>
+        </svg>
+        <svg class="record-icon icon-stop" width="24" height="24" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style="display: none;">
+          <rect x="5" y="5" width="14" height="14" rx="2" ry="2"></rect>
+        </svg>
+      </button>
+      <span class="record-label">GesprächspartnerIn</span>
+    </div>
+  </footer>
+</div>
+
+<script>
+  (function() {
+    const EMBEDDED_API_KEY = "{{ api_key }}";
+
+    // State management
+    let activeRole = null; // 'user' | 'partner' | null
+    let isRecording = false;
+    let shouldStayRecording = false;
+    let recognition = null;
+    let activeCardElements = null;
+    let currentFinalTranscript = '';
+    let currentInterimTranscript = '';
+    let dialogHistory = []; // [ { role: 'user' | 'partner', message: string } ]
+
+    // DOM references
+    const feedEl = document.getElementById('dialog-feed');
+    const scrollContainer = document.getElementById('dialog-scroll-container');
+    const emptyStateEl = document.getElementById('empty-state');
+    const unsupportedBanner = document.getElementById('stt-unsupported-banner');
+    const userBtn = document.getElementById('record-user-btn');
+    const partnerBtn = document.getElementById('record-partner-btn');
+    const resetBtn = document.getElementById('reset-dialog-btn');
+
+    // Check SpeechRecognition support
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      if (unsupportedBanner) unsupportedBanner.style.display = 'block';
+    }
+
+    function scrollToBottom() {
+      if (scrollContainer) {
+        scrollContainer.scrollTop = scrollContainer.scrollHeight;
+      }
+    }
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+
+    /**
+     * Safely converts reduced Markdown (bold, italic, lists, subheadings, line breaks)
+     * to sanitized HTML after fully escaping all tags.
+     */
+    function renderSafeMarkdown(markdown) {
+      if (!markdown) return '';
+      let html = escapeHtml(markdown);
+      html = html.replace(/^##\s+(.*$)/gim, '<h3 class="md-heading">$1</h3>');
+      html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+      html = html.replace(/\*(.*?)\*/g, '<em>$1</em>');
+      html = html.replace(/(?:^|\n)\*\s+(.*)/g, '\n<li class="md-li">$1</li>');
+      html = html.replace(/(<li class="md-li">[\s\S]*?<\/li>)/g, '<ul class="md-ul">$1</ul>');
+      html = html.replace(/<\/ul>\s*<ul class="md-ul">/g, '');
+      html = html.replace(/(?:^|\n)(\d+)\.\s+(.*)/g, '\n<li class="md-oli">$2</li>');
+      html = html.replace(/(<li class="md-oli">[\s\S]*?<\/li>)/g, '<ol class="md-ol">$1</ol>');
+      html = html.replace(/<\/ol>\s*<ol class="md-ol">/g, '');
+      html = html.replace(/\n/g, '<br>');
+      return html;
+    }
+
+    function updateButtonVisuals() {
+      [userBtn, partnerBtn].forEach(btn => {
+        const btnRole = btn.getAttribute('data-role');
+        const isCurrentActive = isRecording && activeRole === btnRole;
+        const micIcon = btn.querySelector('.icon-mic');
+        const stopIcon = btn.querySelector('.icon-stop');
+
+        btn.setAttribute('aria-pressed', isCurrentActive ? 'true' : 'false');
+        if (isCurrentActive) {
+          btn.classList.add('is-recording');
+          btn.setAttribute('aria-label', `Aufnahme für ${btnRole === 'user' ? 'NutzerIn' : 'GesprächspartnerIn'} beenden`);
+          if (micIcon) micIcon.style.display = 'none';
+          if (stopIcon) stopIcon.style.display = 'block';
+        } else {
+          btn.classList.remove('is-recording');
+          btn.setAttribute('aria-label', `Aufnahme für ${btnRole === 'user' ? 'NutzerIn' : 'GesprächspartnerIn'} starten`);
+          if (micIcon) micIcon.style.display = 'block';
+          if (stopIcon) stopIcon.style.display = 'none';
+        }
+      });
+    }
+
+    function createLiveCard(role) {
+      if (emptyStateEl) emptyStateEl.style.display = 'none';
+
+      const card = document.createElement('div');
+      card.className = `dialog-card ${role === 'user' ? 'card-user' : 'card-partner'}`;
+
+      const title = document.createElement('div');
+      title.className = 'card-role-title';
+      title.textContent = role === 'user' ? 'NutzerIn' : 'GesprächspartnerIn';
+
+      const body = document.createElement('div');
+      body.className = 'card-content';
+
+      const textSpan = document.createElement('span');
+      textSpan.className = 'live-text-content';
+
+      const indicator = document.createElement('span');
+      indicator.className = 'live-pulse-dot';
+      indicator.title = 'Aufnahme läuft...';
+
+      body.appendChild(textSpan);
+      body.appendChild(indicator);
+      card.appendChild(title);
+      card.appendChild(body);
+
+      feedEl.appendChild(card);
+      scrollToBottom();
+
+      return { card, textSpan, indicator };
+    }
+
+    function startRecognition(role) {
+      if (!SpeechRecognition) {
+        alert('Die Web Speech API wird in Ihrem Browser leider nicht unterstützt.');
+        return;
+      }
+
+      isRecording = true;
+      shouldStayRecording = true;
+      activeRole = role;
+      currentFinalTranscript = '';
+      currentInterimTranscript = '';
+
+      updateButtonVisuals();
+      activeCardElements = createLiveCard(role);
+
+      recognition = new SpeechRecognition();
+      recognition.lang = 'de-DE';
+      recognition.continuous = true;
+      recognition.interimResults = true;
+
+      recognition.onresult = (event) => {
+        let interim = '';
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          const item = event.results[i];
+          if (item.isFinal) {
+            currentFinalTranscript += item[0].transcript + ' ';
+          } else {
+            interim += item[0].transcript;
+          }
+        }
+        currentInterimTranscript = interim;
+
+        if (activeCardElements && activeCardElements.textSpan) {
+          const combined = (currentFinalTranscript + currentInterimTranscript).trim();
+          activeCardElements.textSpan.textContent = combined || 'Ich höre zu...';
+          scrollToBottom();
+        }
+      };
+
+      recognition.onerror = (event) => {
+        console.warn('Speech recognition error:', event.error);
+        if (event.error === 'not-allowed') {
+          shouldStayRecording = false;
+          stopRecording();
+          alert('Mikrofonzugriff verweigert. Bitte erlauben Sie den Mikrofonzugriff in Ihren Browsereinstellungen.');
+        }
+      };
+
+      recognition.onend = () => {
+        if (shouldStayRecording && isRecording) {
+          try {
+            recognition.start();
+          } catch (e) {
+            console.warn('Failed to restart recognition:', e);
+          }
+        }
+      };
+
+      try {
+        recognition.start();
+      } catch (e) {
+        console.error('Failed to start speech recognition:', e);
+      }
+    }
+
+    function stopRecording() {
+      shouldStayRecording = false;
+      isRecording = false;
+      if (recognition) {
+        try {
+          recognition.stop();
+        } catch (e) {}
+      }
+
+      const role = activeRole;
+      const cardElements = activeCardElements;
+
+      activeRole = null;
+      activeCardElements = null;
+      updateButtonVisuals();
+
+      if (!cardElements) return;
+
+      if (cardElements.indicator) {
+        cardElements.indicator.remove();
+      }
+
+      const rawTranscript = (currentFinalTranscript + ' ' + currentInterimTranscript).trim();
+
+      // If empty recording, discard the card
+      if (!rawTranscript) {
+        cardElements.card.remove();
+        if (feedEl.querySelectorAll('.dialog-card').length === 0 && emptyStateEl) {
+          emptyStateEl.style.display = 'block';
+        }
+        return;
+      }
+
+      cardElements.textSpan.textContent = rawTranscript;
+
+      // Add to conversation history snapshot
+      const currentEntry = {
+        role: role === 'user' ? 'user' : 'partner',
+        message: rawTranscript
+      };
+      dialogHistory.push(currentEntry);
+      const historySnapshot = dialogHistory.slice();
+
+      // 1. Parallel call to /correct-transcript
+      correctTranscript(role, rawTranscript, cardElements.textSpan);
+
+      // 2. Parallel call to /translate for GesprächspartnerIn
+      if (role === 'partner') {
+        runTranslation(historySnapshot, cardElements.card, rawTranscript);
+      }
+    }
+
+    async function correctTranscript(role, rawMessage, textSpanEl) {
+      try {
+        const headers = { 'Content-Type': 'application/json' };
+        if (EMBEDDED_API_KEY) {
+          headers['Authorization'] = `Bearer ${EMBEDDED_API_KEY}`;
+        }
+
+        const res = await fetch('/correct-transcript', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ role, message: rawMessage })
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.message) {
+            textSpanEl.textContent = data.message;
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to correct transcript:', e);
+      }
+    }
+
+    async function runTranslation(historySnapshot, partnerCardEl, rawMessage) {
+      // Immediately create a loading card for GesprächspartnerIn (Leichte Sprache)
+      const leichteCard = document.createElement('div');
+      leichteCard.className = 'dialog-card card-partner-leichte';
+
+      const title = document.createElement('div');
+      title.className = 'card-role-title text-primary';
+      title.textContent = 'GesprächspartnerIn (Leichte Sprache)';
+
+      const body = document.createElement('div');
+      body.className = 'card-content';
+      body.innerHTML = `
+        <div class="card-loading-state">
+          <span class="spinner" aria-hidden="true"></span>
+          <span class="loading-label">Wird in Leichte Sprache übertragen...</span>
+        </div>
+      `;
+
+      leichteCard.appendChild(title);
+      leichteCard.appendChild(body);
+
+      // Insert immediately below the partner card
+      if (partnerCardEl.nextSibling) {
+        feedEl.insertBefore(leichteCard, partnerCardEl.nextSibling);
+      } else {
+        feedEl.appendChild(leichteCard);
+      }
+      scrollToBottom();
+
+      async function executeFetch() {
+        body.innerHTML = `
+          <div class="card-loading-state">
+            <span class="spinner" aria-hidden="true"></span>
+            <span class="loading-label">Wird in Leichte Sprache übertragen...</span>
+          </div>
+        `;
+
+        try {
+          const headers = { 'Content-Type': 'application/json' };
+          if (EMBEDDED_API_KEY) {
+            headers['Authorization'] = `Bearer ${EMBEDDED_API_KEY}`;
+          }
+
+          const res = await fetch('/translate', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ messages: historySnapshot })
+          });
+
+          if (!res.ok) {
+            throw new Error(`API error ${res.status}`);
+          }
+
+          const data = await res.json();
+
+          // If type is formatting: remove original partner card
+          if (data.type === 'formatting' && partnerCardEl.parentNode) {
+            partnerCardEl.remove();
+          }
+
+          body.innerHTML = '';
+
+          // Render optional warning
+          if (data.warning) {
+            const warningEl = document.createElement('div');
+            const wType = data.warning.type || 'info';
+            warningEl.className = `warning-box warning-${wType}`;
+
+            const wHeadline = document.createElement('div');
+            wHeadline.className = 'warning-headline';
+            wHeadline.textContent = data.warning.headline;
+            warningEl.appendChild(wHeadline);
+
+            const wBody = document.createElement('div');
+            wBody.className = 'warning-body';
+            wBody.innerHTML = renderSafeMarkdown(data.warning.body);
+            warningEl.appendChild(wBody);
+
+            body.appendChild(warningEl);
+          }
+
+          // Content container
+          const contentContainer = document.createElement('div');
+          contentContainer.className = 'md-rendered-content';
+          contentContainer.innerHTML = renderSafeMarkdown(data.content);
+
+          if (data.warning && data.warning.revealable) {
+            contentContainer.style.display = 'none';
+
+            const revealBtn = document.createElement('button');
+            revealBtn.type = 'button';
+            revealBtn.className = 'btn btn-secondary btn-sm reveal-btn';
+            revealBtn.textContent = 'Antwort anzeigen';
+            revealBtn.addEventListener('click', () => {
+              contentContainer.style.display = 'block';
+              revealBtn.remove();
+              scrollToBottom();
+            });
+
+            body.appendChild(revealBtn);
+          }
+
+          body.appendChild(contentContainer);
+          scrollToBottom();
+        } catch (err) {
+          console.error('Translation error:', err);
+          body.innerHTML = `
+            <div class="error-retry-state">
+              <span class="error-msg">Übertragung in Leichte Sprache fehlgeschlagen.</span>
+              <button type="button" class="btn btn-secondary btn-sm retry-btn">Erneut versuchen</button>
+            </div>
+          `;
+          const retryBtn = body.querySelector('.retry-btn');
+          if (retryBtn) {
+            retryBtn.addEventListener('click', executeFetch);
+          }
+          scrollToBottom();
+        }
+      }
+
+      executeFetch();
+    }
+
+    function handleRecordButtonClick(role) {
+      if (isRecording) {
+        if (activeRole === role) {
+          // Clicked the active recording button -> stop
+          stopRecording();
+        } else {
+          // Clicked the other speaker -> stop current, then start other
+          stopRecording();
+          startRecognition(role);
+        }
+      } else {
+        // Not recording -> start
+        startRecognition(role);
+      }
+    }
+
+    userBtn.addEventListener('click', () => handleRecordButtonClick('user'));
+    partnerBtn.addEventListener('click', () => handleRecordButtonClick('partner'));
+
+    resetBtn.addEventListener('click', () => {
+      if (isRecording) {
+        shouldStayRecording = false;
+        isRecording = false;
+        if (recognition) {
+          try { recognition.stop(); } catch(e) {}
+        }
+        activeRole = null;
+        activeCardElements = null;
+        updateButtonVisuals();
+      }
+
+      dialogHistory = [];
+      feedEl.querySelectorAll('.dialog-card').forEach(card => card.remove());
+      if (emptyStateEl) emptyStateEl.style.display = 'block';
+    });
+  })();
+</script>
+{% endblock %}

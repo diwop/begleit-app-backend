@@ -21,6 +21,7 @@ pub const SESSION_COOKIE_NAME: &str = "admin_session";
 #[template(path = "login.html")]
 pub struct LoginTemplate {
     pub error_message: Option<String>,
+    pub next: Option<String>,
 }
 
 /// Askama template rendering the authenticated dashboard at `/`.
@@ -28,24 +29,37 @@ pub struct LoginTemplate {
 #[template(path = "dashboard.html")]
 pub struct DashboardTemplate;
 
+/// Askama template rendering the dialog translation test interface at `/dialog-translation`.
+#[derive(Template)]
+#[template(path = "dialog_translation.html")]
+pub struct DialogTranslationTemplate {
+    pub api_key: String,
+}
+
 /// Payload received from the HTML login form submission (`POST /login`).
 #[derive(serde::Deserialize)]
 pub struct LoginForm {
     pub password: String,
+    pub next: Option<String>,
 }
 
-/// Shared application state for the web router holding the configured admin password.
+/// Shared application state for the web router holding the configured admin password and optional API key.
 #[derive(Clone)]
 pub struct WebState {
     pub admin_password: Arc<String>,
+    pub api_key: Option<Arc<String>>,
 }
 
 /// Creates the web interface router for the HTML administration pages.
-pub fn router(admin_password: Arc<String>) -> Router {
-    let state = WebState { admin_password };
+pub fn router(admin_password: Arc<String>, api_key: Option<Arc<String>>) -> Router {
+    let state = WebState {
+        admin_password,
+        api_key,
+    };
 
     Router::new()
         .route("/", get(index))
+        .route("/dialog-translation", get(dialog_translation))
         .route("/login", post(login))
         .route("/logout", post(logout))
         .route("/static/style.css", get(serve_style))
@@ -91,6 +105,23 @@ fn extract_session_cookie(headers: &HeaderMap) -> Option<String> {
     None
 }
 
+/// Validates a post-login redirect path, ensuring it is a safe relative path starting with `/`
+/// and not an external or protocol-relative URL (e.g. `//evil.com` or `/\evil.com`).
+pub fn validate_redirect_target(target: Option<&str>) -> &str {
+    match target {
+        Some(path)
+            if path.starts_with('/')
+                && !path.starts_with("//")
+                && !path.starts_with("/\\")
+                && !path.contains('\r')
+                && !path.contains('\n') =>
+        {
+            path
+        }
+        _ => "/",
+    }
+}
+
 /// Handler for `GET /`: Renders the authenticated dashboard if logged in, or the login form otherwise.
 async fn index(State(state): State<WebState>, headers: HeaderMap) -> Response {
     if let Some(cookie_val) = extract_session_cookie(&headers) {
@@ -108,6 +139,41 @@ async fn index(State(state): State<WebState>, headers: HeaderMap) -> Response {
 
     let template = LoginTemplate {
         error_message: None,
+        next: None,
+    };
+    match template.render() {
+        Ok(html) => Html(html).into_response(),
+        Err(e) => {
+            tracing::error!("Failed to render login template: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error").into_response()
+        }
+    }
+}
+
+/// Handler for `GET /dialog-translation`: Renders the dialog translation test interface if logged in,
+/// or the login card with a return target redirect otherwise.
+async fn dialog_translation(State(state): State<WebState>, headers: HeaderMap) -> Response {
+    if let Some(cookie_val) = extract_session_cookie(&headers) {
+        if is_valid_session(&cookie_val, &state.admin_password) {
+            let template = DialogTranslationTemplate {
+                api_key: state
+                    .api_key
+                    .as_ref()
+                    .map_or(String::new(), |k| k.to_string()),
+            };
+            return match template.render() {
+                Ok(html) => Html(html).into_response(),
+                Err(e) => {
+                    tracing::error!("Failed to render dialog translation template: {e}");
+                    (StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error").into_response()
+                }
+            };
+        }
+    }
+
+    let template = LoginTemplate {
+        error_message: None,
+        next: Some("/dialog-translation".to_string()),
     };
     match template.render() {
         Ok(html) => Html(html).into_response(),
@@ -144,11 +210,13 @@ async fn login(State(state): State<WebState>, Form(form): Form<LoginForm>) -> Re
             headers.insert(header::SET_COOKIE, cookie_val);
         }
 
-        (headers, Redirect::to("/")).into_response()
+        let target = validate_redirect_target(form.next.as_deref());
+        (headers, Redirect::to(target)).into_response()
     } else {
         tracing::warn!("Failed admin login attempt: invalid or empty password");
         let template = LoginTemplate {
             error_message: Some("Ungültiges Admin-Passwort.".to_string()),
+            next: form.next,
         };
         match template.render() {
             Ok(html) => (StatusCode::UNAUTHORIZED, Html(html)).into_response(),
@@ -207,6 +275,28 @@ mod tests {
         assert!(
             !is_valid_session("invalid-token-string", password),
             "Arbitrary invalid token string should fail validation"
+        );
+    }
+
+    /// Verifies safe relative redirect path validation preventing open redirects.
+    #[test]
+    fn test_validate_redirect_target() {
+        assert_eq!(validate_redirect_target(None), "/");
+        assert_eq!(validate_redirect_target(Some("")), "/");
+        assert_eq!(validate_redirect_target(Some("https://evil.com")), "/");
+        assert_eq!(validate_redirect_target(Some("//evil.com")), "/");
+        assert_eq!(validate_redirect_target(Some("/\\evil.com")), "/");
+        assert_eq!(
+            validate_redirect_target(Some("/dialog-translation\r\nevil")),
+            "/"
+        );
+        assert_eq!(
+            validate_redirect_target(Some("/dialog-translation")),
+            "/dialog-translation"
+        );
+        assert_eq!(
+            validate_redirect_target(Some("/some/other/path")),
+            "/some/other/path"
         );
     }
 
