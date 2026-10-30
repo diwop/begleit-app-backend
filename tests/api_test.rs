@@ -378,7 +378,7 @@ async fn test_prompt_runner_integration_and_error_handling() {
 
     let calls = mock_correct.recorded_calls();
     assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].thinking_level, "minimal");
+    assert_eq!(calls[0].thinking_level, "low");
     assert!(calls[0]
         .prompt
         .contains("sie müssen den antrag bis ende nächste woche abgeben"));
@@ -421,7 +421,7 @@ async fn test_prompt_runner_integration_and_error_handling() {
 
     let calls = mock_translate.recorded_calls();
     assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].thinking_level, "low");
+    assert_eq!(calls[0].thinking_level, "medium");
     assert!(calls[0]
         .prompt
         .contains("User: wann muss ich den antrag abgeben"));
