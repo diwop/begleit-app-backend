@@ -60,7 +60,15 @@ pub fn generate_session_token(admin_password: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"diwop-admin-session-v1:");
     hasher.update(admin_password.as_bytes());
-    format!("{:x}", hasher.finalize())
+    // `sha2` 0.11 digests no longer implement `LowerHex`, so encode each byte explicitly.
+    hasher
+        .finalize()
+        .iter()
+        .fold(String::with_capacity(64), |mut acc, b| {
+            use std::fmt::Write;
+            let _ = write!(acc, "{b:02x}");
+            acc
+        })
 }
 
 /// Validates whether a provided session token matches the active admin password in constant time.
