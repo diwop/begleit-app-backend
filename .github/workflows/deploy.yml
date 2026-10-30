@@ -47,11 +47,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Setup Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: deployment
-
       - name: Setup OpenTofu
         uses: opentofu/setup-opentofu@v2
 
@@ -164,11 +159,6 @@ jobs:
       TF_VAR_admin_password: ${{ secrets.ADMIN_PASSWORD || 'REPLACE_ME' }}
     steps:
       - uses: actions/checkout@v7
-
-      - name: Setup Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: deployment
 
       - name: Setup OpenTofu
         uses: opentofu/setup-opentofu@v2
