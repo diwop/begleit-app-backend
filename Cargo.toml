@@ -22,7 +22,7 @@ opentelemetry-otlp = { version = "0.33", features = ["grpc-tonic", "metrics", "t
 tracing-opentelemetry = "0.34"
 utoipa = "6"
 rig = { package = "rig-core", version = "0.42.0" }
-tokenizers = { version = "0.21", default-features = false, features = ["fancy-regex"] }
+tokenizers = { version = "0.23", default-features = false, features = ["fancy-regex"] }
 flate2 = "1.0"
 askama = "0.12"
 sha2 = "0.10"
