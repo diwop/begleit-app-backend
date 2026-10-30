@@ -14,6 +14,9 @@ permissions:
   id-token: write
   contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   cache:
     name: Cache
@@ -25,6 +28,9 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: pull-request
+
+      - name: Check clippy
+        run: cargo clippy
 
       - name: Compile tests
         run: cargo test --no-run
@@ -79,6 +85,7 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Set up QEMU
+        if: runner.arch != 'ARM64'
         uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx

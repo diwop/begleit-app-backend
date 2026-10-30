@@ -1,11 +1,11 @@
 use crate::api::{ConversationMessage, Role, TranslationType, Warning, WarningType};
+pub use crate::few_shots::count_gemma_tokens;
 use crate::few_shots::FewShotEntry;
 use rig::client::CompletionClient;
 use rig::completion::CompletionRequestBuilder;
 use rig::providers::gemini;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::LazyLock;
 
 /// System prompt for `/correct-transcript`.
 pub const CORRECT_TRANSCRIPT_SYSTEM_PROMPT: &str =
@@ -190,28 +190,6 @@ impl PromptRunner for GeminiPromptRunner {
             })
         })
     }
-}
-
-/// Lazily-loaded Gemma 4 tokenizer decompressed from bundled assets.
-static GEMMA_TOKENIZER: LazyLock<tokenizers::Tokenizer> = LazyLock::new(|| {
-    use flate2::read::GzDecoder;
-    use std::io::Read;
-
-    let compressed = include_bytes!("../assets/gemma-4-tokenizer.json.gz");
-    let mut decoder = GzDecoder::new(&compressed[..]);
-    let mut json_bytes = Vec::new();
-    decoder
-        .read_to_end(&mut json_bytes)
-        .expect("Failed to decompress gemma-4 tokenizer");
-    tokenizers::Tokenizer::from_bytes(&json_bytes).expect("Failed to parse gemma-4 tokenizer")
-});
-
-/// Counts the number of tokens in the given text using the Gemma 4 tokenizer.
-pub fn count_gemma_tokens(text: &str) -> u64 {
-    GEMMA_TOKENIZER
-        .encode(text, true)
-        .map(|encoding| encoding.get_ids().len() as u64)
-        .unwrap_or(0)
 }
 
 /// Fallback [`PromptRunner`] used in local debug/test builds when `GEMINI_API_KEY` is not set.
