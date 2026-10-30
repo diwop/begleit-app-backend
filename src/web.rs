@@ -92,7 +92,7 @@ pub fn is_valid_session(token: &str, admin_password: &str) -> bool {
 }
 
 /// Extracts the value of the `admin_session` cookie from the incoming request headers.
-fn extract_session_cookie(headers: &HeaderMap) -> Option<String> {
+pub fn extract_session_cookie(headers: &HeaderMap) -> Option<String> {
     let cookie_header = headers.get(header::COOKIE)?.to_str().ok()?;
     for pair in cookie_header.split(';') {
         let mut parts = pair.trim().splitn(2, '=');
@@ -120,6 +120,53 @@ pub fn validate_redirect_target(target: Option<&str>) -> &str {
         }
         _ => "/",
     }
+}
+
+/// Checks whether the incoming request headers carry a valid admin session cookie
+/// (`admin_session=<token>`), a valid `Authorization: Bearer <admin_password_or_session_token>` header,
+/// or a valid `X-Admin-Password: <admin_password_or_session_token>` header.
+///
+/// Rejects empty passwords and the unconfigured `"REPLACE_ME"` placeholder.
+pub fn is_admin_authenticated(headers: &HeaderMap, admin_password: &str) -> bool {
+    let trimmed_pw = admin_password.trim();
+    if trimmed_pw.is_empty() || trimmed_pw == "REPLACE_ME" {
+        return false;
+    }
+
+    if let Some(cookie_val) = extract_session_cookie(headers) {
+        if is_valid_session(&cookie_val, trimmed_pw) {
+            return true;
+        }
+    }
+
+    if let Some(auth_header) = headers.get(header::AUTHORIZATION) {
+        if let Ok(auth_str) = auth_header.to_str() {
+            if let Some(token) = auth_str.strip_prefix("Bearer ") {
+                let trimmed_token = token.trim();
+                if !trimmed_token.is_empty() {
+                    let matches_pw: bool =
+                        trimmed_token.as_bytes().ct_eq(trimmed_pw.as_bytes()).into();
+                    if matches_pw || is_valid_session(trimmed_token, trimmed_pw) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(admin_header) = headers.get("x-admin-password") {
+        if let Ok(admin_str) = admin_header.to_str() {
+            let trimmed_token = admin_str.trim();
+            if !trimmed_token.is_empty() {
+                let matches_pw: bool = trimmed_token.as_bytes().ct_eq(trimmed_pw.as_bytes()).into();
+                if matches_pw || is_valid_session(trimmed_token, trimmed_pw) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    false
 }
 
 /// Handler for `GET /`: Renders the authenticated dashboard if logged in, or the login form otherwise.
@@ -330,5 +377,64 @@ mod tests {
             Some("solo-token".to_string()),
             "Single cookie header should be cleanly extracted"
         );
+    }
+
+    /// Verifies `is_admin_authenticated` with session cookies, raw admin passwords, session Bearer tokens, and invalid inputs.
+    #[test]
+    fn test_is_admin_authenticated() {
+        let admin_pw = "my-admin-secret";
+        let session_token = generate_session_token(admin_pw);
+
+        let empty_headers = HeaderMap::new();
+        assert!(!is_admin_authenticated(&empty_headers, admin_pw));
+
+        // Valid admin_session cookie
+        let mut cookie_headers = HeaderMap::new();
+        cookie_headers.insert(
+            header::COOKIE,
+            HeaderValue::from_str(&format!("admin_session={session_token}")).unwrap(),
+        );
+        assert!(is_admin_authenticated(&cookie_headers, admin_pw));
+
+        // Valid Bearer raw admin password
+        let mut bearer_pw_headers = HeaderMap::new();
+        bearer_pw_headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {admin_pw}")).unwrap(),
+        );
+        assert!(is_admin_authenticated(&bearer_pw_headers, admin_pw));
+
+        // Valid Bearer session token
+        let mut bearer_tok_headers = HeaderMap::new();
+        bearer_tok_headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {session_token}")).unwrap(),
+        );
+        assert!(is_admin_authenticated(&bearer_tok_headers, admin_pw));
+
+        // Wrong Bearer token alone -> not admin
+        let mut wrong_headers = HeaderMap::new();
+        wrong_headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer regular-api-key"),
+        );
+        assert!(!is_admin_authenticated(&wrong_headers, admin_pw));
+
+        // Regular API key Bearer token + valid admin_session cookie (as sent by /dialog-translation) -> admin
+        let mut ui_headers = wrong_headers.clone();
+        ui_headers.insert(
+            header::COOKIE,
+            HeaderValue::from_str(&format!("admin_session={session_token}")).unwrap(),
+        );
+        assert!(is_admin_authenticated(&ui_headers, admin_pw));
+
+        // Regular API key Bearer token + X-Admin-Password header -> admin
+        let mut x_admin_headers = wrong_headers.clone();
+        x_admin_headers.insert("x-admin-password", HeaderValue::from_str(admin_pw).unwrap());
+        assert!(is_admin_authenticated(&x_admin_headers, admin_pw));
+
+        // Placeholder REPLACE_ME or empty password must always be rejected
+        assert!(!is_admin_authenticated(&bearer_pw_headers, "REPLACE_ME"));
+        assert!(!is_admin_authenticated(&bearer_pw_headers, "   "));
     }
 }

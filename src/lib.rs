@@ -6,7 +6,7 @@ pub mod prompts;
 pub mod web;
 
 pub use api::{
-    ConversationMessage, CorrectTranscriptResponse, ErrorDetail, ErrorResponse, Role,
+    ConversationMessage, CorrectTranscriptResponse, DebugInfo, ErrorDetail, ErrorResponse, Role,
     TranslateRequest, TranslationResponse, TranslationType, Warning, WarningType,
 };
 pub use few_shots::{FewShotBucketIndex, FewShotEntry};
@@ -33,6 +33,7 @@ use utoipa::OpenApi;
     components(schemas(
         Role,
         ConversationMessage,
+        DebugInfo,
         CorrectTranscriptResponse,
         TranslateRequest,
         TranslationType,
@@ -160,14 +161,25 @@ pub fn create_app_with_runner_and_readiness(
         }
     };
 
-    let mut api_router = api::router(runner);
+    let few_shots = FewShotBucketIndex::default_shared().unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "Failed to load default few-shot bucket index; using empty index");
+        Arc::new(FewShotBucketIndex::new(
+            Default::default(),
+            Arc::new(crate::few_shots::DeterministicHashEmbedder),
+        ))
+    });
+    let mut api_router = api::router_with_state(runner, few_shots, Arc::clone(&admin_password));
 
     let is_secured = expected_api_key.is_some();
 
     // Conditionally map the authentication middleware intercepting any access
     if let Some(ref api_key) = expected_api_key {
+        let auth_state = auth::AuthState {
+            api_key: Arc::clone(api_key),
+            admin_password: Arc::clone(&admin_password),
+        };
         api_router = api_router.route_layer(axum::middleware::from_fn_with_state(
-            Arc::clone(api_key),
+            auth_state,
             auth::validate_api_key,
         ));
     }

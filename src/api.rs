@@ -6,7 +6,7 @@ use crate::prompts::{
 };
 use axum::{
     extract::{rejection::JsonRejection, FromRequest, Request, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::post,
     Json, Router,
@@ -43,7 +43,27 @@ pub struct ConversationMessage {
     pub message: String,
 }
 
-/// Response returned by `/correct-transcript` containing the corrected plain-text message.
+/// Optional diagnostic information returned when a request carries a valid admin password or session token.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DebugInfo {
+    /// System prompt preamble sent to the language model.
+    pub system_prompt: String,
+    /// Rendered user prompt sent to the language model.
+    pub prompt: String,
+    /// Number of input prompt tokens reported by the language model.
+    pub input_tokens: u64,
+    /// Number of internal reasoning/thought tokens reported by the language model.
+    pub reasoning_tokens: u64,
+    /// Number of output response tokens reported by the language model.
+    pub response_tokens: u64,
+    /// Formatted dynamic few-shot example strings injected into the prompt; omitted when not applicable or empty.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub examples: Option<Vec<String>>,
+}
+
+/// Response returned by `/correct-transcript` containing the corrected plain-text message
+/// and optional diagnostic metadata when authenticated as admin.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[schema(example = json!({
     "message": "Sie müssen den Antrag bis Ende nächster Woche abgeben."
@@ -56,6 +76,9 @@ pub struct CorrectTranscriptResponse {
         example = "Sie müssen den Antrag bis Ende nächster Woche abgeben."
     )]
     pub message: String,
+    /// Optional diagnostic information; omitted unless the request carries a valid admin token.
+    #[serde(rename = "debugInfo", skip_serializing_if = "Option::is_none")]
+    pub debug_info: Option<DebugInfo>,
 }
 
 /// Request payload for `/translate` containing the chronological conversation history.
@@ -134,7 +157,8 @@ pub struct Warning {
     pub revealable: bool,
 }
 
-/// Response returned by `/translate` with the prepared Markdown content and optional warning.
+/// Response returned by `/translate` with the prepared Markdown content, optional warning,
+/// and optional diagnostic metadata when authenticated as admin.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct TranslationResponse {
     /// formatting structures/formats while largely preserving the wording.
@@ -153,6 +177,9 @@ pub struct TranslationResponse {
     /// Optional content warning; omitted when there is no warning.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warning: Option<Warning>,
+    /// Optional diagnostic information; omitted unless the request carries a valid admin token.
+    #[serde(rename = "debugInfo", skip_serializing_if = "Option::is_none")]
+    pub debug_info: Option<DebugInfo>,
 }
 
 /// Inner error object containing a stable error code and human-readable message.
@@ -224,6 +251,8 @@ pub struct ApiState {
     pub runner: Arc<dyn PromptRunner>,
     /// Embedded 6-bucket semantic few-shot index used by `/translate`.
     pub few_shots: Arc<FewShotBucketIndex>,
+    /// Configured admin password used to authorize optional `debugInfo` responses.
+    pub admin_password: Arc<String>,
 }
 
 /// Creates and returns the router for the conversation API endpoints using the provided [`PromptRunner`]
@@ -240,15 +269,33 @@ pub fn router(runner: Arc<dyn PromptRunner>) -> Router {
 }
 
 /// Creates and returns the router for the conversation API endpoints using the provided [`PromptRunner`]
-/// and [`FewShotBucketIndex`].
+/// and [`FewShotBucketIndex`], reading `ADMIN_PASSWORD` from the environment (or `"admin"` in debug builds).
 pub fn router_with_few_shots(
     runner: Arc<dyn PromptRunner>,
     few_shots: Arc<FewShotBucketIndex>,
 ) -> Router {
+    let admin_password = match std::env::var("ADMIN_PASSWORD") {
+        Ok(pw) if !pw.trim().is_empty() => Arc::new(pw),
+        _ => Arc::new("admin".to_string()),
+    };
+    router_with_state(runner, few_shots, admin_password)
+}
+
+/// Creates and returns the router for the conversation API endpoints using the provided [`PromptRunner`],
+/// [`FewShotBucketIndex`], and `admin_password`.
+pub fn router_with_state(
+    runner: Arc<dyn PromptRunner>,
+    few_shots: Arc<FewShotBucketIndex>,
+    admin_password: Arc<String>,
+) -> Router {
     Router::new()
         .route("/correct-transcript", post(correct_transcript))
         .route("/translate", post(translate))
-        .with_state(ApiState { runner, few_shots })
+        .with_state(ApiState {
+            runner,
+            few_shots,
+            admin_password,
+        })
 }
 
 /// Checks whether a string contains at least one non-whitespace character.
@@ -366,6 +413,7 @@ pub fn is_non_blank(text: &str) -> bool {
 )]
 pub async fn correct_transcript(
     State(state): State<ApiState>,
+    headers: HeaderMap,
     AppJson(request): AppJson<ConversationMessage>,
 ) -> Result<Json<CorrectTranscriptResponse>, (StatusCode, Json<ErrorResponse>)> {
     tracing::debug!(
@@ -432,7 +480,20 @@ pub async fn correct_transcript(
         trimmed.to_string()
     };
 
-    Ok(Json(CorrectTranscriptResponse { message }))
+    let debug_info =
+        crate::web::is_admin_authenticated(&headers, &state.admin_password).then(|| DebugInfo {
+            system_prompt: CORRECT_TRANSCRIPT_SYSTEM_PROMPT.to_string(),
+            prompt,
+            input_tokens: prompt_output.usage.input_tokens,
+            reasoning_tokens: prompt_output.usage.reasoning_tokens,
+            response_tokens: prompt_output.usage.output_tokens,
+            examples: None,
+        });
+
+    Ok(Json(CorrectTranscriptResponse {
+        message,
+        debug_info,
+    }))
 }
 
 /// Prepare the last statement from "partner" in German simple language.
@@ -587,6 +648,7 @@ pub async fn correct_transcript(
 )]
 pub async fn translate(
     State(state): State<ApiState>,
+    headers: HeaderMap,
     AppJson(request): AppJson<TranslateRequest>,
 ) -> Result<Json<TranslationResponse>, (StatusCode, Json<ErrorResponse>)> {
     let Some((last_message, history)) = request.messages.split_last() else {
@@ -707,10 +769,24 @@ pub async fn translate(
         model_content
     };
 
+    let debug_info =
+        crate::web::is_admin_authenticated(&headers, &state.admin_password).then(|| {
+            let example_strings: Vec<String> = examples.iter().map(|e| e.sample.clone()).collect();
+            DebugInfo {
+                system_prompt: TRANSLATE_SYSTEM_PROMPT.to_string(),
+                prompt,
+                input_tokens: prompt_output.usage.input_tokens,
+                reasoning_tokens: prompt_output.usage.reasoning_tokens,
+                response_tokens: prompt_output.usage.output_tokens,
+                examples: (!example_strings.is_empty()).then_some(example_strings),
+            }
+        });
+
     Ok(Json(TranslationResponse {
         r#type: directives.r#type.unwrap_or(model_type),
         content,
         warning: directives.warning,
+        debug_info,
     }))
 }
 
@@ -726,6 +802,7 @@ pub fn build_translation_response(message: &str, is_staging: bool) -> Translatio
         r#type: directives.r#type.unwrap_or(TranslationType::Formatting),
         content: directives.cleaned_message,
         warning: directives.warning,
+        debug_info: None,
     }
 }
 

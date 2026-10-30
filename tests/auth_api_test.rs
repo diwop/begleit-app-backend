@@ -58,6 +58,43 @@ async fn test_auth_header_validation() {
         .await
         .unwrap();
     assert_eq!(res.status(), reqwest::StatusCode::OK);
+    let raw_api_key: serde_json::Value = res.json().await.unwrap();
+    assert!(
+        raw_api_key.get("debugInfo").is_none(),
+        "Standard API_KEY must not expose debugInfo"
+    );
+
+    // Admin password Bearer token also authorizes the request and populates debugInfo
+    let res_admin = rest_client
+        .post(format!("{}/correct-transcript", base_url))
+        .header("Authorization", "Bearer admin")
+        .json(&payload)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res_admin.status(), reqwest::StatusCode::OK);
+    let raw_admin: serde_json::Value = res_admin.json().await.unwrap();
+    assert!(
+        raw_admin.get("debugInfo").is_some(),
+        "Valid admin token should authorize and populate debugInfo"
+    );
+
+    // API_KEY Bearer token + admin_session cookie (as sent by /dialog-translation) populates debugInfo
+    let session_token = diwop_begleitapp::web::generate_session_token("admin");
+    let res_ui = rest_client
+        .post(format!("{}/correct-transcript", base_url))
+        .header("Authorization", "Bearer test-auth-secret-123")
+        .header("Cookie", format!("admin_session={session_token}"))
+        .json(&payload)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res_ui.status(), reqwest::StatusCode::OK);
+    let raw_ui: serde_json::Value = res_ui.json().await.unwrap();
+    assert!(
+        raw_ui.get("debugInfo").is_some(),
+        "API_KEY + admin_session cookie should populate debugInfo"
+    );
 
     // Health check and readiness endpoints remain unauthenticated even when API_KEY is set
     let res = rest_client

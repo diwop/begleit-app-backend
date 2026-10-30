@@ -2,11 +2,32 @@
 FROM rust:bookworm AS builder
 
 WORKDIR /usr/src/app
-COPY . .
 
-# Build the application and precompute dynamic few-shot buckets and embeddings
-RUN cargo build --release \
-    && ./target/release/diwop-begleitapp --prepare-few-shots
+# Pre-download intfloat/multilingual-e5-base model files in a static cached layer
+RUN mkdir -p models/multilingual-e5-base \
+    && curl -fsSL https://huggingface.co/intfloat/multilingual-e5-base/resolve/main/config.json -o models/multilingual-e5-base/config.json \
+    && curl -fsSL https://huggingface.co/intfloat/multilingual-e5-base/resolve/main/tokenizer.json -o models/multilingual-e5-base/tokenizer.json \
+    && curl -fsSL https://huggingface.co/intfloat/multilingual-e5-base/resolve/main/model.safetensors -o models/multilingual-e5-base/model.safetensors
+
+# Pre-build and cache Rust dependencies in a dedicated layer that only invalidates when Cargo.toml or Cargo.lock changes
+COPY Cargo.toml Cargo.lock ./
+RUN mkdir src \
+    && echo "pub fn dummy() {}" > src/lib.rs \
+    && echo "fn main() {}" > src/main.rs \
+    && cargo build --release \
+    && rm -rf src target/release/diwop-begleitapp* target/release/deps/diwop_begleitapp* target/release/deps/libdiwop_begleitapp* target/release/.fingerprint/diwop-begleitapp-*
+
+# Copy application source and compile-time embedded assets, then build the application binary
+COPY src ./src
+COPY prompts ./prompts
+COPY assets ./assets
+COPY static ./static
+COPY templates ./templates
+RUN cargo build --release
+
+# Copy DVC raw dialogs and precompute dynamic few-shot buckets and embeddings
+COPY data ./data
+RUN ./target/release/diwop-begleitapp --prepare-few-shots
 
 # Production stage
 FROM debian:bookworm-slim

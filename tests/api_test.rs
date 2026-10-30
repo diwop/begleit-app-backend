@@ -211,8 +211,9 @@ async fn test_translate_echoes_last_partner_message() {
 
     assert_eq!(res.status(), reqwest::StatusCode::OK);
     let raw: serde_json::Value = res.json().await.unwrap();
-    // Ensure `warning` is omitted (not `null`) when None
+    // Ensure `warning` and `debugInfo` are omitted (not `null`) when None
     assert!(raw.get("warning").is_none());
+    assert!(raw.get("debugInfo").is_none());
 
     let body: TranslationResponse = serde_json::from_value(raw).unwrap();
     assert_eq!(
@@ -221,6 +222,7 @@ async fn test_translate_echoes_last_partner_message() {
             r#type: TranslationType::Formatting,
             content: "sie müssen den antrag bis ende nächste woche abgeben".to_string(),
             warning: None,
+            debug_info: None,
         }
     );
 }
@@ -311,6 +313,7 @@ async fn test_translate_directives_for_type_and_warning() {
             r#type: TranslationType::Formatting,
             content: msg.to_string(),
             warning: None,
+            debug_info: None,
         }
     );
 
@@ -341,6 +344,7 @@ async fn test_translate_directives_for_type_and_warning() {
                 r#type: WarningType::Warning,
                 revealable: true,
             }),
+            debug_info: None,
         }
     );
 }
@@ -411,6 +415,7 @@ async fn test_prompt_runner_integration_and_error_handling() {
             r#type: TranslationType::Translation,
             content: "Geben Sie den Antrag **bis Ende nächster Woche** ab.".to_string(),
             warning: None,
+            debug_info: None,
         }
     );
 
@@ -606,4 +611,96 @@ async fn test_translate_partner_simple_role_and_dynamic_few_shots() {
     assert_eq!(res_err.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
     let err: ErrorResponse = res_err.json().await.unwrap();
     assert_eq!(err.error.code, "LAST_MESSAGE_MUST_BE_PARTNER");
+}
+
+/// Verifies that `debugInfo` is omitted by default and populated on `/correct-transcript`
+/// and `/translate` only when a valid admin password or `admin_session` cookie is sent.
+#[tokio::test]
+async fn test_debug_info_populated_only_with_valid_admin_token() {
+    let client = reqwest::Client::new();
+    let mock_runner = MockPromptRunner::new(Ok(
+        "FORMATIERUNG\nBringen Sie **Ihren Ausweis** mit.".to_string()
+    ));
+    let base_url = start_server_with_runner(mock_runner).await;
+
+    // Default debug ADMIN_PASSWORD is "admin"
+    let admin_session = diwop_begleitapp::web::generate_session_token("admin");
+
+    // 1. /correct-transcript without admin token -> debugInfo is None
+    let res_no_admin = client
+        .post(format!("{}/correct-transcript", base_url))
+        .json(&ConversationMessage {
+            role: Role::Partner,
+            message: "bitte bringen sie ihren ausweis mit".to_string(),
+        })
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res_no_admin.status(), reqwest::StatusCode::OK);
+    let raw_no_admin: serde_json::Value = res_no_admin.json().await.unwrap();
+    assert!(raw_no_admin.get("debugInfo").is_none());
+
+    // 2. /correct-transcript with Bearer admin password -> debugInfo populated, examples omitted
+    let res_admin_ct = client
+        .post(format!("{}/correct-transcript", base_url))
+        .header("Authorization", "Bearer admin")
+        .json(&ConversationMessage {
+            role: Role::Partner,
+            message: "bitte bringen sie ihren ausweis mit".to_string(),
+        })
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res_admin_ct.status(), reqwest::StatusCode::OK);
+    let raw_ct: serde_json::Value = res_admin_ct.json().await.unwrap();
+    assert!(raw_ct["debugInfo"]["examples"].is_null());
+    let body_ct: CorrectTranscriptResponse = serde_json::from_value(raw_ct).unwrap();
+    let dbg_ct = body_ct
+        .debug_info
+        .expect("Expected debugInfo on admin /correct-transcript");
+    assert_eq!(
+        dbg_ct.system_prompt,
+        diwop_begleitapp::prompts::CORRECT_TRANSCRIPT_SYSTEM_PROMPT
+    );
+    assert!(dbg_ct
+        .prompt
+        .contains("bitte bringen sie ihren ausweis mit"));
+    assert_eq!(dbg_ct.input_tokens, 10);
+    assert_eq!(dbg_ct.reasoning_tokens, 5);
+    assert_eq!(dbg_ct.response_tokens, 15);
+    assert!(dbg_ct.examples.is_none());
+
+    // 3. /translate with admin_session cookie -> debugInfo populated with few-shot examples
+    let res_admin_tr = client
+        .post(format!("{}/translate", base_url))
+        .header("Cookie", format!("admin_session={admin_session}"))
+        .json(&TranslateRequest {
+            messages: vec![ConversationMessage {
+                role: Role::Partner,
+                message: "Bitte bringen Sie Ihren Ausweis mit.".to_string(),
+            }],
+        })
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res_admin_tr.status(), reqwest::StatusCode::OK);
+    let body_tr: TranslationResponse = res_admin_tr.json().await.unwrap();
+    let dbg_tr = body_tr
+        .debug_info
+        .expect("Expected debugInfo on admin /translate");
+    assert_eq!(
+        dbg_tr.system_prompt,
+        diwop_begleitapp::prompts::TRANSLATE_SYSTEM_PROMPT
+    );
+    assert!(dbg_tr
+        .prompt
+        .contains("Bitte bringen Sie Ihren Ausweis mit."));
+    assert_eq!(dbg_tr.input_tokens, 10);
+    assert_eq!(dbg_tr.reasoning_tokens, 5);
+    assert_eq!(dbg_tr.response_tokens, 15);
+    let examples = dbg_tr
+        .examples
+        .expect("Expected dynamic few-shot examples in translate debugInfo");
+    assert_eq!(examples.len(), 3);
+    assert!(examples[0].contains("```history"));
 }
