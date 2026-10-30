@@ -285,25 +285,44 @@
       const inTokens = typeof debugInfo.inputTokens === 'number' ? debugInfo.inputTokens : 0;
       const reasTokens = typeof debugInfo.reasoningTokens === 'number' ? debugInfo.reasoningTokens : 0;
       const respTokens = typeof debugInfo.responseTokens === 'number' ? debugInfo.responseTokens : 0;
+      const outTokens = reasTokens + respTokens;
 
       cumulativeInputTokens += inTokens;
-      cumulativeOutputTokens += (reasTokens + respTokens);
+      cumulativeOutputTokens += outTokens;
       updateHeaderStats();
 
-      // 1. Header row token badge: card total tokens
-      const cardTotal = typeof debugInfo.totalTokens === 'number'
-        ? debugInfo.totalTokens
-        : (reasTokens + respTokens);
+      // 1. Header row badges: step cost, total input tokens (Eingabetoken), total output tokens (Ausgabetoken)
+      const cardCost = (inTokens * 0.1 + outTokens * 0.3) / 1_000_000;
+      const formattedCost = formatPrice(cardCost);
 
       if (headerRowEl) {
-        let headerBadge = headerRowEl.querySelector('.card-tokens-badge');
-        if (!headerBadge) {
-          headerBadge = document.createElement('span');
-          headerBadge.className = 'debug-pill-badge card-tokens-badge';
-          headerRowEl.appendChild(headerBadge);
+        let badgesContainer = headerRowEl.querySelector('.card-header-badges');
+        if (!badgesContainer) {
+          badgesContainer = document.createElement('div');
+          badgesContainer.className = 'card-header-badges';
+          headerRowEl.appendChild(badgesContainer);
         }
-        headerBadge.textContent = `${formatTokens(cardTotal)} Tokens`;
-        headerBadge.title = `${formatTokens(cardTotal)} Tokens gesamt für diesen Schritt`;
+        badgesContainer.innerHTML = '';
+
+        if (formattedCost) {
+          const costBadge = document.createElement('span');
+          costBadge.className = 'debug-pill-badge card-cost-badge';
+          costBadge.title = 'Kosten für diesen Schritt';
+          costBadge.textContent = formattedCost;
+          badgesContainer.appendChild(costBadge);
+        }
+
+        const inBadge = document.createElement('span');
+        inBadge.className = 'debug-pill-badge card-input-tokens-badge';
+        inBadge.title = 'Eingabetoken gesamt für diesen Schritt';
+        inBadge.textContent = `${formatTokens(inTokens)} Eingabetoken`;
+        badgesContainer.appendChild(inBadge);
+
+        const outBadge = document.createElement('span');
+        outBadge.className = 'debug-pill-badge card-tokens-badge';
+        outBadge.title = 'Ausgabetoken gesamt für diesen Schritt';
+        outBadge.textContent = `${formatTokens(outTokens)} Ausgabetoken`;
+        badgesContainer.appendChild(outBadge);
       }
 
       // 2. Reasoning collapsible block at the top of the card body (if reasoning exists or reasTokens > 0)
@@ -350,16 +369,6 @@
       if (!responseTokensRow) {
         responseTokensRow = document.createElement('div');
         responseTokensRow.className = 'debug-response-tokens-row';
-
-        const cardCost = (inTokens * 0.1 + (reasTokens + respTokens) * 0.3) / 1_000_000;
-        const formattedCost = formatPrice(cardCost);
-        if (formattedCost) {
-          const costBadge = document.createElement('span');
-          costBadge.className = 'debug-pill-badge';
-          costBadge.title = 'Kosten für diesen Schritt';
-          costBadge.textContent = formattedCost;
-          responseTokensRow.appendChild(costBadge);
-        }
 
         const respBadge = document.createElement('span');
         respBadge.className = 'debug-pill-badge';

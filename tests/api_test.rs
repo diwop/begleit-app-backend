@@ -665,9 +665,12 @@ async fn test_debug_info_populated_only_with_valid_admin_token() {
     assert!(dbg_ct
         .prompt
         .contains("bitte bringen sie ihren ausweis mit"));
+    assert!(dbg_ct.system_prompt_tokens > 0);
+    assert!(dbg_ct.prompt_tokens > 0);
     assert_eq!(dbg_ct.input_tokens, 10);
     assert_eq!(dbg_ct.reasoning_tokens, 5);
     assert_eq!(dbg_ct.response_tokens, 15);
+    assert_eq!(dbg_ct.reasoning.as_deref(), Some("Mock reasoning"));
     assert!(dbg_ct.examples.is_none());
 
     // 3. /translate with admin_session cookie -> debugInfo populated with few-shot examples
@@ -695,9 +698,12 @@ async fn test_debug_info_populated_only_with_valid_admin_token() {
     assert!(dbg_tr
         .prompt
         .contains("Bitte bringen Sie Ihren Ausweis mit."));
+    assert!(dbg_tr.system_prompt_tokens > 0);
+    assert!(dbg_tr.prompt_tokens > 0);
     assert_eq!(dbg_tr.input_tokens, 10);
     assert_eq!(dbg_tr.reasoning_tokens, 5);
     assert_eq!(dbg_tr.response_tokens, 15);
+    assert_eq!(dbg_tr.reasoning.as_deref(), Some("Mock reasoning"));
     let examples = dbg_tr
         .examples
         .expect("Expected dynamic few-shot examples in translate debugInfo");

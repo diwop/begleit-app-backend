@@ -51,12 +51,21 @@ pub struct DebugInfo {
     pub system_prompt: String,
     /// Rendered user prompt sent to the language model.
     pub prompt: String,
-    /// Number of input prompt tokens reported by the language model.
+    /// Number of tokens in the system prompt preamble.
+    #[serde(default)]
+    pub system_prompt_tokens: u64,
+    /// Number of tokens in the user prompt.
+    #[serde(default)]
+    pub prompt_tokens: u64,
+    /// Total number of input prompt tokens reported by the language model.
     pub input_tokens: u64,
     /// Number of internal reasoning/thought tokens reported by the language model.
     pub reasoning_tokens: u64,
     /// Number of output response tokens reported by the language model.
     pub response_tokens: u64,
+    /// Optional internal reasoning/thought text reported by the language model.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
     /// Formatted dynamic few-shot example strings injected into the prompt; omitted when not applicable or empty.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub examples: Option<Vec<String>>,
@@ -481,13 +490,25 @@ pub async fn correct_transcript(
     };
 
     let debug_info =
-        crate::web::is_admin_authenticated(&headers, &state.admin_password).then(|| DebugInfo {
-            system_prompt: CORRECT_TRANSCRIPT_SYSTEM_PROMPT.to_string(),
-            prompt,
-            input_tokens: prompt_output.usage.input_tokens,
-            reasoning_tokens: prompt_output.usage.reasoning_tokens,
-            response_tokens: prompt_output.usage.output_tokens,
-            examples: None,
+        crate::web::is_admin_authenticated(&headers, &state.admin_password).then(|| {
+            let system_prompt_tokens =
+                crate::prompts::count_gemma_tokens(CORRECT_TRANSCRIPT_SYSTEM_PROMPT);
+            let prompt_tokens = if prompt_output.usage.input_tokens > system_prompt_tokens {
+                prompt_output.usage.input_tokens - system_prompt_tokens
+            } else {
+                crate::prompts::count_gemma_tokens(&prompt)
+            };
+            DebugInfo {
+                system_prompt: CORRECT_TRANSCRIPT_SYSTEM_PROMPT.to_string(),
+                prompt,
+                system_prompt_tokens,
+                prompt_tokens,
+                input_tokens: prompt_output.usage.input_tokens,
+                reasoning_tokens: prompt_output.usage.reasoning_tokens,
+                response_tokens: prompt_output.usage.output_tokens,
+                reasoning: prompt_output.reasoning,
+                examples: None,
+            }
         });
 
     Ok(Json(CorrectTranscriptResponse {
@@ -772,12 +793,21 @@ pub async fn translate(
     let debug_info =
         crate::web::is_admin_authenticated(&headers, &state.admin_password).then(|| {
             let example_strings: Vec<String> = examples.iter().map(|e| e.sample.clone()).collect();
+            let system_prompt_tokens = crate::prompts::count_gemma_tokens(TRANSLATE_SYSTEM_PROMPT);
+            let prompt_tokens = if prompt_output.usage.input_tokens > system_prompt_tokens {
+                prompt_output.usage.input_tokens - system_prompt_tokens
+            } else {
+                crate::prompts::count_gemma_tokens(&prompt)
+            };
             DebugInfo {
                 system_prompt: TRANSLATE_SYSTEM_PROMPT.to_string(),
                 prompt,
+                system_prompt_tokens,
+                prompt_tokens,
                 input_tokens: prompt_output.usage.input_tokens,
                 reasoning_tokens: prompt_output.usage.reasoning_tokens,
                 response_tokens: prompt_output.usage.output_tokens,
+                reasoning: prompt_output.reasoning,
                 examples: (!example_strings.is_empty()).then_some(example_strings),
             }
         });
