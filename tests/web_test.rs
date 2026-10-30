@@ -309,4 +309,36 @@ async fn test_authenticated_dialog_translation_serves_interface() {
         html.contains("Neuer Dialog"),
         "HTML should contain reset button"
     );
+    assert!(
+        html.contains("dialog-header-stats"),
+        "HTML should contain header stats container"
+    );
+    assert!(
+        html.contains("stats-input-badge"),
+        "HTML should contain input tokens badge"
+    );
+    assert!(
+        html.contains("stats-output-badge"),
+        "HTML should contain output tokens badge"
+    );
+    assert!(
+        html.contains("stats-cost-badge"),
+        "HTML should contain cost badge"
+    );
+    assert!(
+        html.contains("attachDebugInfo"),
+        "HTML should contain attachDebugInfo script logic"
+    );
+    assert!(
+        html.contains("Prompt-Details"),
+        "HTML should contain Prompt-Details label"
+    );
+    assert!(
+        html.contains("System-Prompt"),
+        "HTML should contain System-Prompt label"
+    );
+    assert!(
+        html.contains("Beispiel"),
+        "HTML should contain German Beispiel label for examples"
+    );
 }

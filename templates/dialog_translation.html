@@ -15,6 +15,11 @@
       </a>
       <h1 class="dialog-title">Dialog in Leichter Sprache</h1>
     </div>
+    <div id="dialog-header-stats" class="dialog-header-stats" style="display: none;" aria-label="Token-Statistiken">
+      <span class="stats-badge" id="stats-input-badge">0 Eingabetoken</span>
+      <span class="stats-badge" id="stats-output-badge">0 Ausgabetoken</span>
+      <span class="stats-badge stats-badge-cost" id="stats-cost-badge">0,00 €</span>
+    </div>
     <div class="dialog-header-right">
       <button type="button" id="reset-dialog-btn" class="btn btn-secondary btn-sm">
         <svg class="icon-svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -102,6 +107,8 @@
     let currentFinalTranscript = '';
     let currentInterimTranscript = '';
     let dialogHistory = []; // [ { role: 'user' | 'partner', message: string } ]
+    let cumulativeInputTokens = 0;
+    let cumulativeOutputTokens = 0;
 
     // DOM references
     const feedEl = document.getElementById('dialog-feed');
@@ -132,6 +139,64 @@
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#039;');
+    }
+
+    /**
+     * Formats an integer or numeric string into localized German number string (e.g. 1.234).
+     */
+    function formatTokens(val) {
+      if (val === null || val === undefined || val === '') return null;
+      const num = typeof val === 'number' ? val : Number(val);
+      if (!Number.isFinite(num) || num < 0) return null;
+      return num.toLocaleString('de-DE');
+    }
+
+    /**
+     * Formats a monetary cost in Euros (EUR) with German locale formatting.
+     * Uses 4 decimal places for amounts under 0.01 € and 2 decimal places for amounts >= 0.01 €.
+     */
+    function formatPrice(cost) {
+      if (cost === null || cost === undefined || !Number.isFinite(cost) || cost < 0) {
+        return null;
+      }
+      if (cost > 0 && cost < 0.00005) {
+        return '< 0,0001 €';
+      }
+      try {
+        return new Intl.NumberFormat('de-DE', {
+          style: 'currency',
+          currency: 'EUR',
+          minimumFractionDigits: cost < 0.01 ? (cost === 0 ? 2 : 4) : 2,
+          maximumFractionDigits: 4
+        }).format(cost);
+      } catch (e) {
+        return `${cost.toFixed(4)} €`;
+      }
+    }
+
+    /**
+     * Updates top cumulative statistics (Eingabetoken, Ausgabetoken, Kosten in €).
+     */
+    function updateHeaderStats() {
+      const statsContainer = document.getElementById('dialog-header-stats');
+      const inputEl = document.getElementById('stats-input-badge');
+      const outputEl = document.getElementById('stats-output-badge');
+      const costEl = document.getElementById('stats-cost-badge');
+
+      if (!statsContainer || !inputEl || !outputEl || !costEl) return;
+
+      if (cumulativeInputTokens === 0 && cumulativeOutputTokens === 0) {
+        statsContainer.style.display = 'none';
+        return;
+      }
+
+      statsContainer.style.display = 'flex';
+      inputEl.textContent = `${formatTokens(cumulativeInputTokens)} Eingabetoken`;
+      outputEl.textContent = `${formatTokens(cumulativeOutputTokens)} Ausgabetoken`;
+
+      const totalCost = (cumulativeInputTokens * 0.1 + cumulativeOutputTokens * 0.3) / 1_000_000;
+      costEl.textContent = formatPrice(totalCost);
+      costEl.title = `${formatTokens(cumulativeInputTokens)} Eingabetoken x 0,10 €/Mio + ${formatTokens(cumulativeOutputTokens)} Ausgabetoken x 0,30 €/Mio`;
     }
 
     /**
@@ -182,9 +247,13 @@
       const card = document.createElement('div');
       card.className = `dialog-card ${role === 'user' ? 'card-user' : 'card-partner'}`;
 
+      const headerRow = document.createElement('div');
+      headerRow.className = 'card-header-row';
+
       const title = document.createElement('div');
       title.className = 'card-role-title';
       title.textContent = role === 'user' ? 'NutzerIn' : 'GesprächspartnerIn';
+      headerRow.appendChild(title);
 
       const body = document.createElement('div');
       body.className = 'card-content';
@@ -198,13 +267,203 @@
 
       body.appendChild(textSpan);
       body.appendChild(indicator);
-      card.appendChild(title);
+      card.appendChild(headerRow);
       card.appendChild(body);
 
       feedEl.appendChild(card);
       scrollToBottom();
 
-      return { card, textSpan, indicator };
+      return { card, headerRow, body, textSpan, indicator };
+    }
+
+    /**
+     * Attaches debug information and token metrics to a dialogue card.
+     */
+    function attachDebugInfo(cardEl, headerRowEl, bodyEl, debugInfo, reasoningText) {
+      if (!cardEl || !debugInfo) return;
+
+      const inTokens = typeof debugInfo.inputTokens === 'number' ? debugInfo.inputTokens : 0;
+      const reasTokens = typeof debugInfo.reasoningTokens === 'number' ? debugInfo.reasoningTokens : 0;
+      const respTokens = typeof debugInfo.responseTokens === 'number' ? debugInfo.responseTokens : 0;
+
+      cumulativeInputTokens += inTokens;
+      cumulativeOutputTokens += (reasTokens + respTokens);
+      updateHeaderStats();
+
+      // 1. Header row token badge: card total tokens
+      const cardTotal = typeof debugInfo.totalTokens === 'number'
+        ? debugInfo.totalTokens
+        : (reasTokens + respTokens);
+
+      if (headerRowEl) {
+        let headerBadge = headerRowEl.querySelector('.card-tokens-badge');
+        if (!headerBadge) {
+          headerBadge = document.createElement('span');
+          headerBadge.className = 'debug-pill-badge card-tokens-badge';
+          headerRowEl.appendChild(headerBadge);
+        }
+        headerBadge.textContent = `${formatTokens(cardTotal)} Tokens`;
+        headerBadge.title = `${formatTokens(cardTotal)} Tokens gesamt für diesen Schritt`;
+      }
+
+      // 2. Reasoning collapsible block at the top of the card body (if reasoning exists or reasTokens > 0)
+      const thoughtText = reasoningText || debugInfo.reasoning || '';
+      if (thoughtText || reasTokens > 0) {
+        let reasoningDetails = cardEl.querySelector('.debug-reasoning-details');
+        if (!reasoningDetails) {
+          reasoningDetails = document.createElement('details');
+          reasoningDetails.className = 'debug-reasoning-details';
+
+          const reasoningSummary = document.createElement('summary');
+          reasoningSummary.className = 'debug-reasoning-summary';
+          reasoningSummary.innerHTML = `
+            <span>Reasoning</span>
+            <div class="debug-subsummary-right">
+              <span class="debug-pill-badge">${formatTokens(reasTokens)} Ausgabetoken</span>
+              <svg class="chevron-svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M19 9l-7 7-7-7"/>
+              </svg>
+            </div>
+          `;
+          reasoningDetails.appendChild(reasoningSummary);
+
+          const reasoningBody = document.createElement('div');
+          reasoningBody.className = 'debug-reasoning-body';
+          if (thoughtText) {
+            reasoningBody.innerHTML = `<div class="md-rendered-content">${renderSafeMarkdown(thoughtText)}</div>`;
+          } else {
+            reasoningBody.innerHTML = `<span class="empty-state-text italic">(${formatTokens(reasTokens)} Ausgabetoken für Gedankengang verwendet)</span>`;
+          }
+          reasoningDetails.appendChild(reasoningBody);
+
+          // Insert at the beginning of the card content body
+          if (bodyEl.firstChild) {
+            bodyEl.insertBefore(reasoningDetails, bodyEl.firstChild);
+          } else {
+            bodyEl.appendChild(reasoningDetails);
+          }
+        }
+      }
+
+      // 3. Response tokens row above Prompt-Details block
+      let responseTokensRow = cardEl.querySelector('.debug-response-tokens-row');
+      if (!responseTokensRow) {
+        responseTokensRow = document.createElement('div');
+        responseTokensRow.className = 'debug-response-tokens-row';
+
+        const cardCost = (inTokens * 0.1 + (reasTokens + respTokens) * 0.3) / 1_000_000;
+        const formattedCost = formatPrice(cardCost);
+        if (formattedCost) {
+          const costBadge = document.createElement('span');
+          costBadge.className = 'debug-pill-badge';
+          costBadge.title = 'Kosten für diesen Schritt';
+          costBadge.textContent = formattedCost;
+          responseTokensRow.appendChild(costBadge);
+        }
+
+        const respBadge = document.createElement('span');
+        respBadge.className = 'debug-pill-badge';
+        respBadge.textContent = `${formatTokens(respTokens)} Ausgabetoken`;
+        responseTokensRow.appendChild(respBadge);
+
+        bodyEl.appendChild(responseTokensRow);
+      }
+
+      // 4. Prompt-Details collapsible block
+      let promptDetails = cardEl.querySelector('.debug-prompt-details');
+      if (!promptDetails) {
+        promptDetails = document.createElement('details');
+        promptDetails.className = 'debug-prompt-details';
+
+        const promptSummary = document.createElement('summary');
+        promptSummary.className = 'debug-prompt-summary';
+        promptSummary.innerHTML = `
+          <span>Prompt-Details</span>
+          <svg class="chevron-svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M19 9l-7 7-7-7"/>
+          </svg>
+        `;
+        promptDetails.appendChild(promptSummary);
+
+        const promptBody = document.createElement('div');
+        promptBody.className = 'debug-prompt-body';
+
+        // Sub 1: System-Prompt
+        if (debugInfo.systemPrompt && debugInfo.systemPrompt.trim()) {
+          const sysDetails = document.createElement('details');
+          sysDetails.className = 'debug-subdetails';
+          const sysTokens = debugInfo.systemTokens ?? debugInfo.systemPromptTokens;
+          const sysTokensHtml = (sysTokens != null)
+            ? `<span class="debug-pill-badge">${formatTokens(sysTokens)} Eingabetoken</span>`
+            : '';
+          sysDetails.innerHTML = `
+            <summary class="debug-subsummary">
+              <span>System-Prompt</span>
+              <div class="debug-subsummary-right">
+                ${sysTokensHtml}
+                <svg class="chevron-svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M19 9l-7 7-7-7"/>
+                </svg>
+              </div>
+            </summary>
+            <div class="debug-subcontent">
+              <pre class="debug-pre">${escapeHtml(debugInfo.systemPrompt)}</pre>
+            </div>
+          `;
+          promptBody.appendChild(sysDetails);
+        }
+
+        // Sub 2: Prompt
+        if (debugInfo.prompt && debugInfo.prompt.trim()) {
+          const pDetails = document.createElement('details');
+          pDetails.className = 'debug-subdetails';
+          const pTokens = debugInfo.promptTokens ?? inTokens;
+          const pTokensHtml = (pTokens != null)
+            ? `<span class="debug-pill-badge">${formatTokens(pTokens)} Eingabetoken</span>`
+            : '';
+          pDetails.innerHTML = `
+            <summary class="debug-subsummary">
+              <span>Prompt</span>
+              <div class="debug-subsummary-right">
+                ${pTokensHtml}
+                <svg class="chevron-svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M19 9l-7 7-7-7"/>
+                </svg>
+              </div>
+            </summary>
+            <div class="debug-subcontent">
+              <pre class="debug-pre">${escapeHtml(debugInfo.prompt)}</pre>
+            </div>
+          `;
+          promptBody.appendChild(pDetails);
+        }
+
+        // Sub 3: Examples (Beispiel 1..n)
+        if (Array.isArray(debugInfo.examples) && debugInfo.examples.length > 0) {
+          debugInfo.examples.forEach((exText, idx) => {
+            if (!exText || !exText.trim()) return;
+            const exDetails = document.createElement('details');
+            exDetails.className = 'debug-subdetails';
+            exDetails.innerHTML = `
+              <summary class="debug-subsummary">
+                <span>Beispiel ${idx + 1}</span>
+                <div class="debug-subsummary-right">
+                  <svg class="chevron-svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M19 9l-7 7-7-7"/>
+                  </svg>
+                </div>
+              </summary>
+              <div class="debug-subcontent">
+                <div class="md-rendered-content">${renderSafeMarkdown(exText)}</div>
+              </div>
+            `;
+            promptBody.appendChild(exDetails);
+          });
+        }
+
+        promptDetails.appendChild(promptBody);
+        bodyEl.appendChild(promptDetails);
+      }
     }
 
     function startRecognition(role) {
@@ -316,7 +575,7 @@
       const historySnapshot = dialogHistory.slice();
 
       // 1. Parallel call to /correct-transcript
-      correctTranscript(role, rawTranscript, cardElements.textSpan);
+      correctTranscript(role, rawTranscript, cardElements.textSpan, cardElements.card, cardElements.headerRow, cardElements.body);
 
       // 2. Parallel call to /translate for GesprächspartnerIn
       if (role === 'partner') {
@@ -324,7 +583,7 @@
       }
     }
 
-    async function correctTranscript(role, rawMessage, textSpanEl) {
+    async function correctTranscript(role, rawMessage, textSpanEl, cardEl, headerRowEl, bodyEl) {
       try {
         const headers = { 'Content-Type': 'application/json' };
         if (EMBEDDED_API_KEY) {
@@ -342,6 +601,9 @@
           if (data && data.message) {
             textSpanEl.textContent = data.message;
           }
+          if (data && data.debugInfo) {
+            attachDebugInfo(cardEl, headerRowEl, bodyEl, data.debugInfo, data.reasoning);
+          }
         }
       } catch (e) {
         console.warn('Failed to correct transcript:', e);
@@ -353,9 +615,13 @@
       const leichteCard = document.createElement('div');
       leichteCard.className = 'dialog-card card-partner-leichte';
 
+      const headerRow = document.createElement('div');
+      headerRow.className = 'card-header-row';
+
       const title = document.createElement('div');
       title.className = 'card-role-title text-primary';
       title.textContent = 'GesprächspartnerIn (Leichte Sprache)';
+      headerRow.appendChild(title);
 
       const body = document.createElement('div');
       body.className = 'card-content';
@@ -366,7 +632,7 @@
         </div>
       `;
 
-      leichteCard.appendChild(title);
+      leichteCard.appendChild(headerRow);
       leichteCard.appendChild(body);
 
       // Insert immediately below the partner card
@@ -451,6 +717,10 @@
           }
 
           body.appendChild(contentContainer);
+
+          if (data && data.debugInfo) {
+            attachDebugInfo(leichteCard, headerRow, body, data.debugInfo, data.reasoning);
+          }
           scrollToBottom();
         } catch (err) {
           console.error('Translation error:', err);
@@ -503,6 +773,10 @@
       }
 
       dialogHistory = [];
+      cumulativeInputTokens = 0;
+      cumulativeOutputTokens = 0;
+      updateHeaderStats();
+
       feedEl.querySelectorAll('.dialog-card').forEach(card => card.remove());
       if (emptyStateEl) emptyStateEl.style.display = 'block';
     });
