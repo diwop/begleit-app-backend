@@ -4,6 +4,8 @@ target/
 .agent/
 .dvc/cache/
 models/
+data/few_shots_index.bin
+data/few_shots_index.json.gz
 infrastructure/
 docs/
 Dockerfile

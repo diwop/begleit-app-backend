@@ -1,4 +1,3 @@
-use crate::prompts::count_gemma_tokens;
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::xlm_roberta::{Config as XlmRobertaConfig, XLMRobertaModel};
@@ -9,6 +8,25 @@ use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
+
+/// Lazily-loaded Gemma 4 tokenizer decompressed from bundled assets.
+static GEMMA_TOKENIZER: LazyLock<tokenizers::Tokenizer> = LazyLock::new(|| {
+    let compressed = include_bytes!("../assets/gemma-4-tokenizer.json.gz");
+    let mut decoder = GzDecoder::new(&compressed[..]);
+    let mut json_bytes = Vec::new();
+    decoder
+        .read_to_end(&mut json_bytes)
+        .expect("Failed to decompress gemma-4 tokenizer");
+    tokenizers::Tokenizer::from_bytes(&json_bytes).expect("Failed to parse gemma-4 tokenizer")
+});
+
+/// Counts the number of tokens in the given text using the Gemma 4 tokenizer.
+pub fn count_gemma_tokens(text: &str) -> u64 {
+    GEMMA_TOKENIZER
+        .encode(text, true)
+        .map(|encoding| encoding.get_ids().len() as u64)
+        .unwrap_or(0)
+}
 
 /// Sample template used to format each dynamic few-shot demonstration block.
 pub const FEW_SHOT_SAMPLE_TEMPLATE: &str =
