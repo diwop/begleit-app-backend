@@ -47,15 +47,15 @@ variable "otel_exporter_otlp_endpoint" {
 }
 
 variable "cpu" {
-  description = "CPU units allocated to each ECS Fargate task (256 = 0.25 vCPU)."
+  description = "CPU units allocated to each ECS Fargate task (512 = 0.5 vCPU)."
   type        = string
-  default     = "256"
+  default     = "512"
 }
 
 variable "memory" {
   description = "Memory (in MB) allocated to each ECS Fargate task."
   type        = string
-  default     = "512"
+  default     = "2048"
 }
 
 variable "github_repository" {

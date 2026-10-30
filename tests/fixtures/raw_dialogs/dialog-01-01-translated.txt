@@ -1,0 +1,127 @@
+<partner>
+Guten Tag, Herr Schmidt. Nehmen Sie doch bitte Platz.
+Wie geht es Ihnen heute?
+</partner>
+<partner simple translation>
+Guten Tag, Herr Schmidt.
+Setzen Sie sich bitte.
+Wie geht es Ihnen heute?
+</partner>
+<user>
+Hallo, Frau Doktor. Eigentlich ganz gut.
+Nur das Wetter macht mir gerade ein bisschen zu schaffen.
+</user>
+<partner>
+Ja, das geht im Moment vielen so. Ich habe mir Ihre Blutdruckwerte angeschaut, die Sie uns geschickt haben. Die sind leider dauerhaft zu hoch.
+Wir müssen Ihre Medikamente anpassen und die Dosis erhöhen.
+</partner>
+<partner simple translation>
+Ja, das geht im Moment vielen so. 
+Jetzt sprechen wir über Ihren Blutdruck. 
+Sie haben uns Ihre Blutdruck-Werte geschickt. 
+Ich habe sie angeschaut. 
+Die Blutdruck-Werte sind leider zu hoch. 
+Sie nehmen schon Medikamente.
+Wir müssen die Medikamente anpassen: 
+Sie müssen mehr Medikamente nehmen.
+</partner>
+<user>
+Echt? Aber ich nehme die Tabletten doch schon jeden Morgen. Warum reicht das denn auf einmal nicht mehr?
+Ich will eigentlich nicht noch mehr Tabletten nehmen.
+</user>
+<partner>
+Ich verstehe Ihre Sorge. Wir nehmen aber keine neue Tablette dazu, sondern erhöhen nur die Dosis von dem Medikament, das Sie schon kennen. Wenn der Blutdruck dauerhaft so hoch bleibt, schadet das Ihren Gefäßen und dem Herzen.
+Das kann auf Dauer gefährlich werden und im schlimmsten Fall zu einem Schlaganfall oder Herzinfarkt führen. Die Tabletten helfen, die Gefäße weit zu stellen, damit das Blut wieder leichter fließen kann.
+</partner>
+<partner simple translation>
+Ich verstehe Ihre Sorge.
+Aber wir nehmen keine neue Tablette dazu.
+Sie bekommen weiter die Tabletten, die Sie schon kennen.
+Sie nehmen einfach stärkere Tabletten.
+
+**Warum ist das wichtig?**
+
+Wenn der Blutdruck immer so hoch ist,
+Schadet das Ihrem Körper.
+Zum Beispiel Ihrem Herz und Ihren Adern.
+Dann fließt das Blut schlechter durch den Körper.
+Wenn das so bleibt, kann es sehr gefährlich werden.
+Vielleicht bekommen Sie einen Herz-Infarkt. 
+Oder einen Schlag-Anfall.
+Darum bekommen Sie jetzt stärkere Tabletten:
+Die Tabletten helfen, damit Ihr Blut besser fließen kann.
+</partner>
+<user>
+Oh, okay, das klingt natürlich nicht gut. Aber ich habe Angst, dass mir dann schwindelig wird.
+Das hatte ich ganz am Anfang schon mal, als ich mit den Tabletten angefangen habe. Da konnte ich kaum richtig aufstehen.
+</user>
+<partner>
+Das ist eine typische Nebenwirkung, die wir aber gut vermeiden können. Wenn wir die Dosis ganz langsam steigern, kann sich Ihr Körper gut daran gewöhnen.
+Und ein kleiner Tipp: Setzen Sie sich morgens vor dem Aufstehen erst einen Moment an die Bettkante, bevor Sie aufstehen. Das hilft dem Kreislauf.
+</partner>
+<partner simple translation>
+Das ist eine Nebenwirkung.
+Wir können etwas dagegen machen.
+Wir erhöhen die Dosis Schritt für Schritt.
+Das bedeutet: Sie nehmen nicht sofort die ganze Dosis.
+Wir machen Ihnen einen Plan für die Tabletten.
+Dann kann sich Ihr Körper gut an die Tabletten gewöhnen.
+Und noch ein kleiner Tipp gegen den Schwindel:
+Wenn Sie morgens aus dem bett aufstehen,
+Bleiben Sie erst auf der Bettkante sitzen.
+Warten Sie einen Moment, bis Sie aufstehen.
+Das hilft gegen den Schwindel.
+</partner>
+<user>
+Hm, okay. Das kann ich versuchen. Aber woher weiß ich denn, ob die neue Dosis überhaupt richtig wirkt?
+</user>
+<partner>
+Dafür müssen Sie Ihren Blutdruck regelmäßig selbst messen. Am besten zweimal am Tag: einmal morgens vor den Tabletten und einmal abends.
+Die Werte schreiben Sie dann am besten in ein kleines Heft auf. Haben Sie ein Messgerät zu Hause?
+</partner>
+<partner simple translation>
+Dafür müssen Sie Ihren Blutdruck regelmäßig messen. 
+Und die Blutdruck-Werte aufschreiben.
+Am besten messen Sie 2 Mal am Tag: 
+einmal morgens vor den Tabletten und einmal abends.
+Die Werte schreiben Sie dann auf. 
+Zum Beispiel in ein kleines Heft.
+Haben Sie ein Messgerät zu Hause?
+</partner>
+<user>
+Ja, so ein Gerät für den Oberarm habe ich. Und ein Heft finde ich bestimmt auch noch.
+Das kann ich da jeden Tag reinschreiben.
+</user>
+<partner>
+Das ist perfekt. Ich schlage vor, wir probieren die höhere Dosis jetzt erst mal für zwei Wochen aus.
+Danach schauen wir uns Ihr Tagebuch gemeinsam an und entscheiden, ob die Werte so besser sind.
+</partner>
+<partner simple translation>
+Das ist perfekt. 
+Ich schlage vor:
+Wir probieren die stärkeren Tabletten jetzt aus.
+Sie nehmen die Tabletten jetzt 2 Wochen lang.
+Sie schreiben Ihre Blutdruck-Werte die ganze Zeit auf.
+Danach kommen Sie wieder zu mir
+und wir schauen uns die Blutdruck-Werte an.
+Dann entscheiden wir,
+ob die Blutdruck-Werte so besser sind.
+</partner>
+<user>
+Gut, zwei Wochen Testen klingt fair. Das mache ich. Aber wenn mir doch schwindelig wird, kann ich schon früher anrufen, oder?
+</user>
+<partner>
+Selbstverständlich. Wenn es Ihnen nicht gut geht, rufen Sie sofort an.
+Machen wir am besten direkt vorne an der Anmeldung einen Termin für in zwei Wochen aus.
+</partner>
+<partner simple translation>
+Na klar: 
+Wenn es Ihnen schlecht geht, 
+rufen Sie sofort an.
+Und sonst sehen wir uns in 2 Wochen.
+Am besten machen wir gleich den Termin aus.
+Wir gehen dafür zur Anmeldung.
+</partner>
+<user>
+Alles klar. Dann hole ich mir jetzt den Termin. Vielen Dank, Frau Doktor!
+</user>

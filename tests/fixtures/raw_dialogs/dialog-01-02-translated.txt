@@ -1,0 +1,110 @@
+<partner>
+Guten Tag, Frau Müller. Schön, dass Sie da sind. Nehmen Sie doch Platz.
+Heute wollen wir über die kleine Operation sprechen, bei der wir das Muttermal am Arm entfernen.
+</partner>
+<partner simple translation>
+Guten Tag, Frau Müller.
+Schön, dass Sie da sind.
+Setzen Sie sich gerne hin.
+Heute sprechen wir über die kleine **Operation**.
+Bei der Operation wollen wir das **Muttermal am Arm entfernen**.
+</partner>
+<user>
+Hallo. Ja, danke.
+Ich muss ehrlich sagen, ich habe ziemlich große Angst vor dem Eingriff. Tut das eigentlich sehr weh? Vor allem die Spritze?
+</user>
+<partner>
+Das kann ich gut verstehen, dass Sie nervös sind. Das ist völlig normal.
+Ich kann Sie aber beruhigen: Wir betäuben die Stelle vorher örtlich. Das ist nur ein kleiner Piks, ähnlich wie beim Blutabnehmen. Danach spüren Sie an der Stelle überhaupt keinen Schmerz mehr, sondern nur noch ein leichtes Ruckeln.
+</partner>
+<partner simple translation>
+Ich kann gut verstehen, 
+dass Sie nervös sind.
+Das ist ganz normal.
+Aber ich kann Sie beruhigen:
+Wir **betäuben** die Stelle vorher.
+Das ist nur ein kleiner Piks wie beim Blutabnehmen.
+Danach spüren Sie an der Stelle **keinen** **Schmerz** mehr.
+Sie spüren nur noch ein leichtes Ruckeln.
+</partner>
+<user>
+Okay, ein kleiner Piks klingt machbar.
+Und wie genau läuft das dann ab? Schneiden Sie das einfach weg?
+</user>
+<partner>
+Genau. Wenn die Betäubung wirkt, schneiden wir das Muttermal vorsichtig mit einem Skalpell heraus.
+Danach nähen wir die Wunde mit ein paar kleinen Stichen und kleben ein Pflaster darüber. Das Ganze dauert insgesamt vielleicht fünfzehn Minuten. Das Gewebe schicken wir dann ins Labor, um es ganz genau zu untersuchen.
+</partner>
+<partner simple translation>
+Genau.
+Wenn die Betäubung wirkt, 
+dann **schneiden** wir das Muttermal **vorsichtig** raus.
+Wir benutzen dafür ein Skalpell.
+Das ist wie ein sehr scharfes Messer.
+Danach **nähen** wir die Wunde mit ein paar kleinen Stichen.
+Und wir kleben ein **Pflaster** auf die Wunde.
+Das alles dauert insgesamt **etwa 15 Minuten**.
+
+Das Muttermal schicken wir dann in ein **Labor**.
+Im Labor untersuchen Fachleute das Muttermal dann ganz genau.
+</partner>
+<user>
+Fünfzehn Minuten ist ja wirklich schnell.
+Bleibt denn danach eine große Narbe zurück? Das Muttermal ist ja direkt am Arm, das sieht man doch bestimmt.
+</user>
+<partner>
+Eine kleine Narbe wird man sehen, das lässt sich leider nicht ganz vermeiden. Aber wir nähen das sehr feinfühlig, damit die Narbe so schmal und flach wie möglich wird.
+Ich muss Sie aber auch über die Risiken aufklären. Es kann in seltenen Fällen zu einer Nachblutung kommen oder die Wunde kann sich entzünden. Aber das passiert wirklich sehr selten, wenn Sie danach gut aufpassen.
+</partner>
+<partner simple translation>
+Man sieht wahrscheinlich eine **kleine Narbe**.
+Das können wir leider **nicht** ändern.
+Aber wir nähen die Wunde ganz vorsichtig.
+So wird die Narbe so schmal und so flach wie möglich.
+
+Ich muss Ihnen aber auch sagen, 
+was **schiefgehen** kann:
+Vielleicht **blutet** die Wunde später.
+Oder die Wunde **entzündet** sich.
+Aber das passiert **sehr selten**.
+Achten Sie einfach gut auf die Wunde.
+</partner>
+<user>
+Worauf muss ich denn nach der Operation achten?
+Darf ich ganz normal duschen und Sport machen?
+</user>
+<partner>
+In den ersten Tagen sollte die Wunde trocken bleiben. Das heißt, Sie dürfen beim Duschen die Stelle nicht nass machen.
+Auch auf Sport sollten Sie für etwa zwei Wochen verzichten, damit die Fäden nicht reißen. Nach etwa zehn Tagen ziehen wir dann die Fäden hier in der Praxis.
+</partner>
+<partner simple translation>
+In den ersten Tagen soll die Wunde **trocken** bleiben.
+Das heißt:
+Die Wunde darf beim Duschen **nicht** nass werden.
+
+Außerdem sollen Sie etwa 2 Wochen lang **keinen** **Sport** machen.
+Beim Sport können nämlich die Fäden in der Wunde reißen.
+
+Nach 10 Tagen kommen Sie hier in die Praxis.
+Dann ziehen wir die Fäden aus der Wunde raus.
+</partner>
+<user>
+Das klingt eigentlich gar nicht so schlimm, wie ich dachte.
+Ich glaube, ich schaffe das. Wo muss ich denn unterschreiben?
+</user>
+<partner>
+Das freut mich sehr zu hören. Sie machen das ganz bestimmt toll.
+Bitte unterschreiben Sie einmal hier unten auf diesem Aufklärungsbogen.
+Dann machen wir direkt vorne am Empfang einen Termin für die nächste Woche aus.
+</partner>
+<partner simple translation>
+Ich freue mich, das zu hören.
+Sie machen das bestimmt toll.
+
+Bitte **unterschreiben** Sie einmal hier **unten auf diesem Zettel**.
+Auf diesem Zettel steht, 
+dass ich Ihnen alles Wichtige erklärt habe.
+
+Danach machen wir einen **Termin für nächste Woche**.
+Das machen wir vorne am Empfang.
+</partner>

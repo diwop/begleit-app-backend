@@ -1,0 +1,85 @@
+<user>
+Hi Sarah! Ich wollte mal fragen, ob wir uns diese Woche treffen wollen.
+</user>
+<partner>
+Hallo! Ja, total gerne.
+Wollen wir uns vielleicht direkt heute Nachmittag ganz spontan treffen?
+</partner>
+<partner simple translation>
+Hallo.
+Ja, sehr gerne.
+Wollen wir uns vielleicht schon **heute Nachmittag** treffen?
+</partner>
+<user>
+Heute klappt leider gar nicht.
+Ich bin mir mit meiner Wochenplanung noch unsicher und muss erst mal schauen.
+</user>
+<partner>
+Ach so, kein Problem.
+Wie sieht es denn am Donnerstag bei dir aus? Da hätte ich auch Zeit.
+</partner>
+<partner simple translation>
+Ach so, **kein** Problem.
+Ich hab auch am Donnerstag Zeit.
+Hast du am **Donnerstag** auch Zeit?
+</partner>
+<user>
+Donnerstag ist bei mir auch schon verplant.
+Können wir vielleicht am Samstag schauen?
+</user>
+<partner>
+Ja, Samstag geht super bei mir.
+Wann würde es dir denn passen?
+</partner>
+<partner simple translation>
+Ja, Samstag ist super.
+Um **wieviel Uhr** denn?
+</partner>
+<user>
+Am Nachmittag wäre mir am liebsten.
+</user>
+<partner>
+Wie wäre es mit 15:00 Uhr?
+Wollen wir uns in den Park auf eine Bank setzen oder lieber in ein Café gehen?
+</partner>
+<partner simple translation>
+Wollen wir uns um **15 Uhr** treffen?
+Wollen wir uns im **Park** auf eine Bank setzen?
+Oder wollen wir lieber in ein **Café** gehen?
+</partner>
+<user>
+Ich würde lieber in ein Café gehen.
+Draußen ist es mir im Moment zu windig.
+</user>
+<partner>
+Alles klar. Dann lass uns doch ins Café am Markt gehen.
+Das ist doch gemütlich.
+</partner>
+<partner simple formatting>
+Alles klar.
+Dann lass uns doch ins **Café am Markt** gehen.
+Das ist doch gemütlich.
+</partner>
+<user>
+Ja, das Café am Markt ist super.
+Das machen wir so.
+</user>
+<partner>
+Abgemacht. Samstag um 15:00 Uhr am Café am Markt.
+Ich rufe da vorher an und reserviere uns einen Tisch.
+</partner>
+<partner simple translation>
+Abgemacht.
+Wir treffen uns **am Samstag um 15 Uhr am Café am Markt**.
+Ich rufe da vorher an und reserviere uns einen Tisch.
+</partner>
+<user>
+Klasse, danke dir.
+Bis Samstag dann!
+</user>
+<partner>
+Tschüss, ich freu mich!
+</partner>
+<partner simple formatting>
+Tschüss, ich freu mich!
+</partner>

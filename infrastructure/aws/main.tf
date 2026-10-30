@@ -517,6 +517,20 @@ data "aws_iam_policy_document" "github_actions_deploy" {
   }
 
   statement {
+    sid       = "DvcRawDialogsBucketList"
+    effect    = "Allow"
+    actions   = ["s3:ListBucket"]
+    resources = ["arn:aws:s3:::diwop-leichte-sprache"]
+  }
+
+  statement {
+    sid       = "DvcRawDialogsObjectsRead"
+    effect    = "Allow"
+    actions   = ["s3:GetObject"]
+    resources = ["arn:aws:s3:::diwop-leichte-sprache/dvc-hsuper/*"]
+  }
+
+  statement {
     sid       = "ECRAuthToken"
     effect    = "Allow"
     actions   = ["ecr:GetAuthorizationToken"]

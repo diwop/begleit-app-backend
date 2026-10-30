@@ -24,6 +24,8 @@ echo "cargo nextest" && \ # cargo install cargo-nextest --locked
 cargo nextest --version && \
 echo "tofu" && \ # mac: brew install opentofu; linux: snap install --classic opentofu; win: winget install OpenTofu.Tofu
 tofu --version && \
+echo "dvc" && \ # mac: brew install dvc; linux: pipx install "dvc[s3]"; win: winget install Iterative.DVC
+dvc --version && \
 echo "done"
 ```
 

@@ -1,0 +1,153 @@
+<user>
+Hallo Frau Doktor.
+</user>
+<partner>
+Guten Tag! Schön, dass Sie da sind.
+Nehmen Sie gerne Platz. Wie geht es Ihnen denn im Moment?
+</partner>
+<partner simple translation>
+Guten Tag.
+Es ist schön, dass Sie da sind.
+Setzen Sie sich gern hin.
+Wie geht es Ihnen im Moment?
+</partner>
+<user>
+Ehrlich gesagt nicht so gut. Ich bin einfach den ganzen Tag furchtbar müde und schlapp.
+Und ich friere ständig, selbst wenn die Heizung voll aufgedreht ist.
+</user>
+<partner>
+Das klingt wirklich anstrengend.
+Sie hatten beim letzten Mal auch erwähnt, dass Sie zugenommen haben?
+</partner>
+<partner simple translation>
+Das klingt wirklich anstrengend.
+Sie haben beim letzten Mal gesagt:
+Sie haben Gewicht zugenommen.
+Stimmt das?
+</partner>
+<user>
+Ja, genau. Schon fast vier Kilo in den letzten Wochen, obwohl ich ganz normal wie immer esse.
+Haben die Blutwerte von letzter Woche denn etwas gezeigt?
+</user>
+<partner>
+Ja, die Laborergebnisse liegen vor.
+Ihr sogenannter TSH-Wert im Blut ist deutlich erhöht.
+Das zeigt uns, dass Sie eine Schilddrüsenunterfunktion haben.
+</partner>
+<partner simple translation>
+Ja, ich habe die Ergebnisse aus dem Labor.
+Ihr TSH-Wert im Blut ist sehr hoch.
+Das bedeutet:
+Sie haben eine **Schilddrüsen-Unterfunktion**.
+Ihre Schilddrüse arbeitet **nicht** genug.
+</partner>
+<user>
+Eine Schilddrüsenunterfunktion?
+Was macht die Schilddrüse denn eigentlich genau?
+</user>
+<partner>
+Die Schilddrüse sitzt am Hals und steuert mit ihren Hormonen praktisch Ihren gesamten Stoffwechsel.
+Man kann sich das wie den Motor des Körpers vorstellen.
+Wenn zu wenige Hormone da sind, läuft der Körper nur noch auf Sparflamme. Das erklärt genau Ihre Müdigkeit, das Frieren und dass Sie zunehmen.
+</partner>
+<partner simple translation>
+Die Schilddrüse ist im Hals.
+Die Schilddrüse macht **Hormone**.
+Diese Hormone steuern Ihren Stoffwechsel.
+Das ist wie ein **Motor** für den Körper.
+Wenn zu wenige Hormone da sind,
+arbeitet der Körper **nicht** mehr gut.
+Deshalb sind Sie so müde und frieren.
+Und deshalb wiegen Sie mehr.
+Denn Ihr Körper verarbeitet das Essen **nicht** mehr so gut.
+</partner>
+<user>
+Ah, verstehe. Das passt wirklich genau zu dem, wie ich mich fühle.
+Und was können wir da jetzt machen?
+</user>
+<partner>
+Wir müssen Ihrem Körper das fehlende Hormon von außen geben.
+Dafür verschreibe ich Ihnen ein Medikament namens L-Thyroxin. Das ist eine kleine Tablette, die Sie täglich einnehmen.
+</partner>
+<partner simple translation>
+Wir geben Ihnen das fehlende Hormon.
+Ich verschreibe Ihnen ein Medikament.
+Das Medikament ist **L-Thyroxin**.
+Das ist eine kleine Tablette.
+Sie müssen die Tablette **jeden Tag** nehmen.
+</partner>
+<user>
+Muss ich die dann morgens oder abends nehmen?
+</user>
+<partner>
+Immer morgens, und dabei gibt es ganz feste Regeln.
+Sie müssen die Tablette direkt nach dem Aufstehen auf nüchternen Magen nehmen, nur mit einem Glas Leitungswasser.
+Danach müssen Sie mindestens eine halbe Stunde warten, bevor Sie frühstücken, Kaffee trinken oder andere Medikamente nehmen.
+</partner>
+<partner simple translation>
+Sie nehmen die Tablette **immer** **morgens**.
+Es gibt **feste** Regeln:
+Sie nehmen die Tablette direkt nach dem Aufstehen.
+Sie haben noch **Nichts** gegessen.
+Sie nehmen die Tablette mit einem Glas stillen Wasser.
+Dann warten Sie 30 Minuten oder länger.
+Danach können Sie frühstücken oder einen Kaffee trinken.
+Sie können dann auch andere Medikamente nehmen.
+</partner>
+<user>
+Warum ist denn dieses Warten so wichtig?
+</user>
+<partner>
+Der Wirkstoff ist sehr empfindlich.
+Wenn schon Essen, Kaffee oder Milch im Magen sind, kann der Körper das Hormon nicht richtig aufnehmen und die Tablette wirkt nicht gut.
+</partner>
+<partner simple translation>
+Das Medikament ist empfindlich.
+Das bedeutet:
+Haben Sie schon Essen, Kaffee oder Milch im Magen? 
+Dann nimmt der Körper das Medikament **nicht** richtig auf.
+Dann wirkt die Tablette **nicht** gut.
+</partner>
+<user>
+Okay, das merke ich mir. Also morgens aufstehen, Tablette nur mit Leitungswasser schlucken und dreißig Minuten bis zum Frühstück warten.
+Geht es mir denn dann direkt wieder besser?
+</user>
+<partner>
+Das geht leider nicht von heute auf morgen.
+Der Körper braucht etwas Zeit, um den Hormonspeicher wieder aufzufüllen. Es wird einige Wochen dauern, bis Sie spüren, dass die Kraft zurückkommt.
+</partner>
+<partner simple translation>
+Es geht Ihnen **nicht** sofort besser.
+Der Körper braucht Zeit.
+Der Hormon-Speicher füllt sich langsam auf.
+Sie müssen ein paar Wochen warten.
+Dann kommt die Kraft zurück.
+</partner>
+<user>
+Gut, dann stelle ich mich darauf ein. Hauptsache, es hilft auf Dauer.
+</user>
+<partner>
+Hier ist Ihr Rezept für das L-Thyroxin.
+Ganz wichtig ist noch: Wir müssen in sechs Wochen Ihr Blut kontrollieren. Dann sehen wir, ob die Dosis schon reicht oder ob wir sie noch anpassen müssen.
+</partner>
+<partner simple translation>
+Hier ist Ihr Rezept für das L-Thyroxin.
+In 6 Wochen kontrollieren wir Ihr Blut.
+Das ist ganz wichtig.
+Wir sehen dann:
+Reicht die Menge?
+Oder brauchen Sie mehr oder weniger von dem Medikament?
+</partner>
+<user>
+Vielen Dank.
+Ich nehme das Rezept mit und mache vorne an der Anmeldung direkt den Termin für die Blutabnahme in sechs Wochen.
+</user>
+<partner>
+Sehr gerne.
+Kommen Sie gut nach Hause und bis in sechs Wochen!
+</partner>
+<partner simple translation>
+Sehr gerne.
+Kommen Sie gut nach Hause.
+Bis in 6 Wochen!
+</partner>

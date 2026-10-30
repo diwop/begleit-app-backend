@@ -1,4 +1,5 @@
 use crate::api::{ConversationMessage, Role, TranslationType, Warning, WarningType};
+use crate::few_shots::FewShotEntry;
 use rig::client::CompletionClient;
 use rig::completion::CompletionRequestBuilder;
 use rig::providers::gemini;
@@ -14,19 +15,15 @@ pub const CORRECT_TRANSCRIPT_SYSTEM_PROMPT: &str =
 pub const CORRECT_TRANSCRIPT_PROMPT_TEMPLATE: &str =
     include_str!("../prompts/correct-transcript.md");
 
-/// Raw system prompt template for `/translate` containing the `%translate-few-shots.md%` placeholder.
-const TRANSLATE_SYSTEM_PROMPT_TEMPLATE: &str = include_str!("../prompts/translate-system.md");
+/// System prompt for `/translate` (`prompts/translate-system.md`).
+pub const TRANSLATE_SYSTEM_PROMPT: &str = include_str!("../prompts/translate-system.md");
 
-/// Few-shot examples injected into the `/translate` system prompt.
-const TRANSLATE_FEW_SHOTS: &str = include_str!("../prompts/translate-few-shots.md");
-
-/// Resolved system prompt for `/translate` with few-shot examples embedded.
-pub static TRANSLATE_SYSTEM_PROMPT: LazyLock<String> = LazyLock::new(|| {
-    TRANSLATE_SYSTEM_PROMPT_TEMPLATE.replace("%translate-few-shots.md%", TRANSLATE_FEW_SHOTS)
-});
-
-/// User prompt template for `/translate`.
+/// Zero-shot user prompt template for `/translate` (`prompts/translate.md`).
 pub const TRANSLATE_PROMPT_TEMPLATE: &str = include_str!("../prompts/translate.md");
+
+/// Dynamic few-shot user prompt template for `/translate` (`prompts/translate-dynamic-few-shots.md`).
+pub const TRANSLATE_DYNAMIC_FEW_SHOTS_PROMPT_TEMPLATE: &str =
+    include_str!("../prompts/translate-dynamic-few-shots.md");
 
 /// All recognized staging directive tokens that can be embedded in a message when `ENVIRONMENT=staging`.
 const STAGING_DIRECTIVE_TOKENS: &[&str] = &[
@@ -218,7 +215,7 @@ pub fn count_gemma_tokens(text: &str) -> u64 {
 }
 
 /// Fallback [`PromptRunner`] used in local debug/test builds when `GEMINI_API_KEY` is not set.
-/// Extracts the ```input block from the prompt and echoes it back deterministically,
+/// Extracts the final ```input block from the prompt and echoes it back deterministically,
 /// tokenized using the Gemma 4 tokenizer.
 #[derive(Debug, Default, Clone)]
 pub struct EchoPromptRunner;
@@ -266,12 +263,12 @@ impl PromptRunner for EchoPromptRunner {
     }
 }
 
-/// Extracts the text inside the ` ```input ... ``` ` fence of a rendered prompt template.
+/// Extracts the text inside the last ` ```input ... ``` ` fence of a rendered prompt template.
 fn extract_input_block(prompt: &str) -> Option<&str> {
     let marker = "```input\n";
-    let start = prompt.find(marker)? + marker.len();
+    let start = prompt.rfind(marker)? + marker.len();
     let rest = &prompt[start..];
-    let end = rest.rfind("\n```")?;
+    let end = rest.find("\n```")?;
     Some(&rest[..end])
 }
 
@@ -285,27 +282,93 @@ pub fn build_correct_transcript_prompt(input: &str) -> String {
     CORRECT_TRANSCRIPT_PROMPT_TEMPLATE.replace("%INPUT%", &sanitize(input))
 }
 
-/// Formats the prior conversation messages into Markdown blocks labeled `User:` or `Partner:`.
-pub fn format_translate_history(history: &[ConversationMessage]) -> String {
+/// Counts the number of `user` and `partner` turns in `history` (excluding `partner_simple` translations).
+pub fn count_history_turns(history: &[ConversationMessage]) -> usize {
     history
         .iter()
+        .filter(|m| matches!(m.role, Role::User | Role::Partner))
+        .count()
+}
+
+/// Determines the history-length bucket (`0..=5`) for a conversation history slice.
+pub fn determine_history_bucket(history: &[ConversationMessage]) -> usize {
+    count_history_turns(history).min(5)
+}
+
+/// Slices `history` so at most the last 5 `user`/`partner` turns (and any attached `partner_simple`
+/// messages following them) are retained.
+pub fn cap_history_turns(history: &[ConversationMessage]) -> &[ConversationMessage] {
+    let mut turn_count = 0usize;
+    let mut start_idx = 0usize;
+
+    for (idx, msg) in history.iter().enumerate().rev() {
+        if matches!(msg.role, Role::User | Role::Partner) {
+            turn_count += 1;
+            if turn_count == 5 {
+                start_idx = idx;
+                break;
+            }
+        }
+    }
+
+    &history[start_idx..]
+}
+
+/// Formats the prior conversation messages into `User: ...`, `Partner: ...`, and
+/// `Partner (Leichte Sprache): ...` blocks (capped to the last 5 `user`/`partner` turns),
+/// or `"keine Historie"` when empty.
+pub fn format_translate_history(history: &[ConversationMessage]) -> String {
+    let capped = cap_history_turns(history);
+    if capped.is_empty() {
+        return "keine Historie".to_string();
+    }
+
+    capped
+        .iter()
         .map(|entry| {
-            let headline = match entry.role {
+            let prefix = match entry.role {
                 Role::User => "User:",
                 Role::Partner => "Partner:",
+                Role::PartnerSimple => "Partner (Leichte Sprache):",
             };
-            format!("{}\n```\n{}\n```", headline, sanitize(&entry.message))
+            format!("{} {}", prefix, sanitize(&entry.message))
         })
         .collect::<Vec<_>>()
         .join("\n\n")
 }
 
-/// Renders the user prompt for `/translate` by injecting the formatted `history` and sanitized `input`.
+/// Renders the user prompt for `/translate` without few-shot examples (zero-shot fallback).
 pub fn build_translate_prompt(history: &[ConversationMessage], input: &str) -> String {
+    build_translate_prompt_with_few_shots(history, input, &[])
+}
+
+/// Renders the user prompt for `/translate` by injecting the retrieved dynamic few-shot examples,
+/// the formatted `history` (or `"keine Historie"`), and the sanitized `input`.
+/// Falls back to [`TRANSLATE_PROMPT_TEMPLATE`] when `examples` is empty.
+pub fn build_translate_prompt_with_few_shots(
+    history: &[ConversationMessage],
+    input: &str,
+    examples: &[FewShotEntry],
+) -> String {
     let history_value = format_translate_history(history);
-    TRANSLATE_PROMPT_TEMPLATE
+    let sanitized_input = sanitize(input);
+
+    if examples.is_empty() {
+        return TRANSLATE_PROMPT_TEMPLATE
+            .replace("%HISTORY%", &history_value)
+            .replace("%INPUT%", &sanitized_input);
+    }
+
+    let few_shots_str = examples
+        .iter()
+        .map(|ex| ex.sample.trim())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    TRANSLATE_DYNAMIC_FEW_SHOTS_PROMPT_TEMPLATE
+        .replace("%FEW_SHOTS%", &few_shots_str)
         .replace("%HISTORY%", &history_value)
-        .replace("%INPUT%", &sanitize(input))
+        .replace("%INPUT%", &sanitized_input)
 }
 
 /// Parses the raw output from the `/translate` model into a [`TranslationType`] and Markdown content.
@@ -431,9 +494,12 @@ mod tests {
         assert!(!prompt.contains("%HISTORY%"));
     }
 
-    /// Verifies that `format_translate_history` and `build_translate_prompt` format `User:` and `Partner:` blocks properly.
+    /// Verifies `format_translate_history`, `count_history_turns`, `determine_history_bucket`, and `partner_simple` capping.
     #[test]
-    fn test_build_translate_prompt() {
+    fn test_build_translate_prompt_and_partner_simple_history() {
+        assert_eq!(format_translate_history(&[]), "keine Historie");
+        assert_eq!(determine_history_bucket(&[]), 0);
+
         let history = vec![
             ConversationMessage {
                 role: Role::User,
@@ -443,22 +509,123 @@ mod tests {
                 role: Role::Partner,
                 message: "Antwort 1".to_string(),
             },
+            ConversationMessage {
+                role: Role::PartnerSimple,
+                message: "ÜBERSETZUNG\nEinfache Antwort 1".to_string(),
+            },
         ];
+        // partner_simple does not increment turn count
+        assert_eq!(count_history_turns(&history), 2);
+        assert_eq!(determine_history_bucket(&history), 2);
+
         let prompt = build_translate_prompt(&history, "Neue Aussage");
-        assert!(prompt.contains("User:\n```\nFrage 1\n```\n\nPartner:\n```\nAntwort 1\n```"));
-        assert!(prompt.contains("Partner:\n```input\nNeue Aussage\n```"));
+        assert!(prompt.contains(
+            "User: Frage 1\n\nPartner: Antwort 1\n\nPartner (Leichte Sprache): ÜBERSETZUNG\nEinfache Antwort 1"
+        ));
+        assert!(prompt.contains("```input\nNeue Aussage\n```"));
         assert!(!prompt.contains("%HISTORY%"));
         assert!(!prompt.contains("%INPUT%"));
     }
 
-    /// Verifies that `TRANSLATE_SYSTEM_PROMPT` embeds the few-shot examples without leftover placeholders.
+    /// Verifies that `cap_history_turns` retains at most the last 5 `user`/`partner` turns along with their `partner_simple` translations.
     #[test]
-    fn test_translate_system_prompt_includes_few_shots() {
-        let sys = &*TRANSLATE_SYSTEM_PROMPT;
-        assert!(sys.contains("## Eingabe 1"));
-        assert!(sys.contains("ÜBERSETZUNG"));
-        assert!(sys.contains("FORMATIERUNG"));
-        assert!(!sys.contains("%translate-few-shots.md%"));
+    fn test_cap_history_turns_to_last_5() {
+        let history = vec![
+            ConversationMessage {
+                role: Role::User,
+                message: "Turn 1 (dropped)".to_string(),
+            },
+            ConversationMessage {
+                role: Role::Partner,
+                message: "Turn 2 (dropped)".to_string(),
+            },
+            ConversationMessage {
+                role: Role::PartnerSimple,
+                message: "Simple 2 (dropped)".to_string(),
+            },
+            ConversationMessage {
+                role: Role::User,
+                message: "Turn 3 (kept 1)".to_string(),
+            },
+            ConversationMessage {
+                role: Role::Partner,
+                message: "Turn 4 (kept 2)".to_string(),
+            },
+            ConversationMessage {
+                role: Role::PartnerSimple,
+                message: "Simple 4 (kept)".to_string(),
+            },
+            ConversationMessage {
+                role: Role::User,
+                message: "Turn 5 (kept 3)".to_string(),
+            },
+            ConversationMessage {
+                role: Role::Partner,
+                message: "Turn 6 (kept 4)".to_string(),
+            },
+            ConversationMessage {
+                role: Role::PartnerSimple,
+                message: "Simple 6 (kept)".to_string(),
+            },
+            ConversationMessage {
+                role: Role::User,
+                message: "Turn 7 (kept 5)".to_string(),
+            },
+        ];
+
+        assert_eq!(count_history_turns(&history), 7);
+        assert_eq!(determine_history_bucket(&history), 5);
+
+        let formatted = format_translate_history(&history);
+        assert!(!formatted.contains("Turn 1 (dropped)"));
+        assert!(!formatted.contains("Turn 2 (dropped)"));
+        assert!(!formatted.contains("Simple 2 (dropped)"));
+        assert!(formatted.contains("User: Turn 3 (kept 1)"));
+        assert!(formatted.contains("Partner (Leichte Sprache): Simple 4 (kept)"));
+        assert!(formatted.contains("User: Turn 7 (kept 5)"));
+    }
+
+    /// Verifies that `build_translate_prompt_with_few_shots` injects `%FEW_SHOTS%` and that `EchoPromptRunner`
+    /// still extracts the final `input` block rather than a few-shot's `input` block.
+    #[tokio::test]
+    async fn test_build_translate_prompt_with_few_shots_and_echo() {
+        let sample_entry = FewShotEntry {
+            id: "dialog-01_00".to_string(),
+            dialog: "dialog-01.txt".to_string(),
+            exchange_idx: 0,
+            turn_idx: 0,
+            bucket: 0,
+            kind: "ÜBERSETZUNG".to_string(),
+            input: "Beispiel Eingabe".to_string(),
+            output: "ÜBERSETZUNG\nBeispiel Ausgabe".to_string(),
+            history: "keine Historie".to_string(),
+            sample: "### Beispiel\n\n```input\nBeispiel Eingabe\n```\n\n```output\nÜBERSETZUNG\nBeispiel Ausgabe\n```".to_string(),
+            tokens: 20,
+            embedding: vec![],
+        };
+
+        let rendered =
+            build_translate_prompt_with_few_shots(&[], "Echte Nutzer Eingabe", &[sample_entry]);
+        assert!(rendered
+            .contains("Hier sind Beispiele für Übersetzungen von Dialogen in Leichte Sprache:"));
+        assert!(rendered.contains("Beispiel Eingabe"));
+        assert!(rendered.contains("# Deine Übersetzung"));
+        assert!(rendered.contains("```input\nEchte Nutzer Eingabe\n```"));
+
+        let runner = EchoPromptRunner;
+        let out = runner
+            .run_prompt(TRANSLATE_SYSTEM_PROMPT, &rendered, "low")
+            .await
+            .unwrap();
+        assert_eq!(out.text, "FORMATIERUNG\nEchte Nutzer Eingabe");
+    }
+
+    /// Verifies that `TRANSLATE_SYSTEM_PROMPT` contains the core translation rules without unreplaced placeholders.
+    #[test]
+    fn test_translate_system_prompt() {
+        assert!(TRANSLATE_SYSTEM_PROMPT.contains("# Regeln für Leichte Sprache"));
+        assert!(TRANSLATE_SYSTEM_PROMPT.contains("ÜBERSETZUNG oder FORMATIERUNG"));
+        assert!(!TRANSLATE_SYSTEM_PROMPT.contains("%translate-few-shots.md%"));
     }
 
     /// Verifies that `parse_translate_output` extracts `TranslationType` from the first line (`ÜBERSETZUNG` vs `FORMATIERUNG`).

@@ -1,0 +1,140 @@
+<user>
+Hallo! Ich habe seit ein paar Wochen echt Probleme.
+Meine Augen jucken total und ich muss ständig niesen, seit das Frühlingswetter angefangen hat.
+Ich würde gern wissen, worauf ich da eigentlich allergisch reagiere.
+</user>
+<partner>
+Das klingt sehr nach einem klassischen Heuschnupfen.
+Im Frühjahr sind vor allem Baumpollen wie Birke, Hasel oder Erle in der Luft unterwegs.
+Hatten Sie solche Beschwerden früher auch schon einmal?
+</partner>
+<partner simple translation>
+Das klingt nach einem **Heu-Schnupfen**.
+Im Frühling fliegen bestimmte Pollen von Bäumen.
+Das sind vor allem diese Bäume:
+Birke
+Hasel
+Erle
+Sind die Probleme zum ersten Mal da?
+Oder kennen Sie die Probleme?
+</partner>
+<user>
+Letztes Jahr hatte ich das nur ganz leicht.
+Aber im Moment ist es wirklich schlimm, vor allem wenn ich draußen bin.
+</user>
+<partner>
+Verstehe. Um genau herauszufinden, welche Pollen Ihnen zu schaffen machen, sollten wir einen Allergietest durchführen.
+Dafür nutzen wir den sogenannten Prick-Test.
+</partner>
+<partner simple translation>
+Ich verstehe.
+Wir können einen **Allergie-Test** machen. 
+Dabei testen wir:
+Welche Pollen sind der Grund für Ihre Probleme?
+Es gibt viele verschiedene Allergie-Tests.
+Wir machen bei Ihnen einen **Prick-Test**.
+</partner>
+<user>
+Was genau passiert denn bei so einem Test?
+Tut das weh?
+</user>
+<partner>
+Nein, keine Sorge, das tut nicht wirklich weh.
+Wir tropfen verschiedene Testlösungen mit Allergenen auf die Innenseite Ihres Unterarms.
+Danach stechen wir mit einer winzigen Lanzette ganz leicht in die Haut, damit die Tropfen aufgenommen werden.
+Nach etwa zwanzig Minuten schauen wir, wo sich kleine Schwellungen oder Rötungen gebildet haben.
+</partner>
+<partner simple translation>
+**Nein**, haben Sie **keine** Angst.
+Das tut **nicht** weh.
+Der Test funktioniert so:
+Wir tropfen **Flüssigkeit** auf Ihren inneren Unterarm.
+In der Flüssigkeit sind Allergene.
+Das können Pollen sein.
+Wir stechen mit einer **Lanzette** in Ihre Haut.
+Lanzette ist ein Fach-Wort.
+Eine Lanzette ist wie eine kleine Nadel.
+Die Lanzette öffnet die Haut also ein ganz wenig.
+An diesen Stellen saugt die Haut die Flüssigkeit auf. 
+Wir warten **20 Minuten**.
+Dann schauen wir:
+Wo ist die Haut **dicker** geworden?
+Wo ist die Haut **rot** geworden?
+Das ist nämlich ein Zeichen für eine Allergie.
+</partner>
+<user>
+Okay, das hört sich gar nicht so schlimm an.
+Können wir den Test direkt heute machen?
+</user>
+<partner>
+Heute leider noch nicht, weil wir dafür eine kurze Vorbereitung brauchen.
+Das Wichtigste ist: Sie dürfen genau drei Tage vor der Untersuchung keine antiallergischen Tabletten einnehmen.
+Sonst unterdrücken die Medikamente die Reaktion auf der Haut und das Ergebnis ist verfälscht.
+</partner>
+<partner simple translation>
+**Nein**, wir können den Test heute **nicht** machen.
+Der Grund ist:
+Wir müssen den Test vorbereiten.
+Ganz wichtig ist:
+Sie dürfen **3 Tage** vor dem Test **keine** Tabletten gegen Allergien nehmen.
+Die Tabletten blockieren nämlich die Reaktion der Haut.
+Die Haut wird dann **nicht** dick oder rot.
+Das Ergebnis ist dann falsch.
+</partner>
+<user>
+Drei Tage gar keine Tabletten?
+Das wird ganz schön hart ohne Hilfe.
+</user>
+<partner>
+Bis zu diesen drei Tagen müssen Sie aber nicht leiden.
+Ich verschreibe Ihnen jetzt ein akut wirksames Antihistaminikum, das Sie bis dahin nehmen können.
+Erst drei Tage vor unserem Termin setzen Sie es dann ab.
+</partner>
+<partner simple translation>
+Vor den 3 Tagen müssen Sie **nicht** leiden.
+Ich verschreibe Ihnen ein Medikament.
+Das Medikament ist ein **Anti-Histaminikum**.
+Ein Anti-Histaminikum ist ein Medikament gegen Allergien.
+Das Medikament wirkt sehr schnell.
+
+Nehmen Sie das Medikament **bis 3 Tage** vor unserem Termin.
+Die 3 Tage vor unserem Termin nehmen Sie das Medikament **nicht**.
+</partner>
+<user>
+Gut, das schaffe ich.
+Gibt es noch etwas, was mir jetzt schon helfen kann?
+</user>
+<partner>
+Ja, ein paar einfache Maßnahmen bringen oft schon Erleichterung.
+Waschen Sie sich am besten abends vor dem Schlafen die Haare, damit keine Pollen auf dem Kopfkissen landen.
+Außerdem sollten Sie nachts die Fenster im Schlafzimmer geschlossen halten.
+</partner>
+<partner simple translation>
+Ja.
+Sie können diese einfachen Dinge machen:
+Waschen Sie Ihre Haare bevor Sie schlafen gehen.
+Dann sind **keine** Pollen auf Ihrem Kissen.
+Schließen Sie die Fenster in der Nacht.
+Dann fliegen **keine** Pollen in Ihr Zimmer. 
+Diese Dinge helfen oft schon.
+</partner>
+<user>
+Das probiere ich direkt heute Abend aus.
+</user>
+<partner>
+Sehr gut. Hier ist schon einmal das Rezept für die Tabletten und ein Merkblatt mit allen Verhaltensregeln vor dem Test.
+Wir vereinbaren vorne an der Anmeldung gleich einen festen Termin für nächste Woche.
+</partner>
+<partner simple translation>
+Sehr gut.
+Hier ist das Rezept für die Allergie-Tabletten.
+Ich gebe Ihnen auch ein Merk-Blatt.
+Darauf stehen alle Regeln vor dem Test.
+
+Gehen Sie jetzt zur Anmeldung.
+Machen Sie einen Termin für nächste Woche für den Test.
+</partner>
+<user>
+Vielen Dank für die Erklärung.
+Dann gehe ich gleich vor an den Empfang.
+</user>
