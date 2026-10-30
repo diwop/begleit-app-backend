@@ -1,0 +1,173 @@
+<partner>
+Guten Tag, Frau Becker. Setzen Sie sich gern.
+Wie geht es Ihnen heute?
+</partner>
+<partner simple formatting>
+Guten Tag, Frau Becker.
+Setzen Sie sich gern.
+Wie geht es Ihnen heute?
+</partner>
+<user>
+Hallo, Frau Doktor.
+Ehrlich gesagt nicht so gut. Ich fühle mich seit Wochen total schlapp und erschöpft.
+Und ich habe ständig so einen unendlichen Durst. Ich trinke literweise Wasser, aber der Mund bleibt trotzdem trocken.
+</user>
+<partner>
+Gut, dass Sie da sind. Die Ergebnisse von Ihrer Blutuntersuchung der letzten Woche liegen mir jetzt vor.
+Ihr Langzeitblutzuckerwert, man nennt das HbA1c, ist deutlich zu hoch.
+Das erklärt auch Ihre Erschöpfung und den starken Durst. Sie haben einen Typ-2-Diabetes.
+</partner>
+<partner simple translation>
+Es ist gut, dass Sie da sind.
+Letzte Woche haben wir Ihr Blut untersucht.
+Die Ergebnisse sind jetzt da.
+
+**Was haben wir herausgefunden?**
+Sie sind erschöpft.
+Und Sie haben starken Durst.
+Und ein bestimmter Wert in Ihrem Blut ist viel zu hoch.
+Der Wert ist Ihr Langzeit-Blutzucker-Wert.
+
+**Was bedeutet das?**
+Das bedeutet:
+Sie haben **Diabetes**.
+</partner>
+<user>
+Oh je, Diabetes?
+Das macht mir jetzt ehrlich gesagt ganz schön Angst.
+Muss ich mir denn jetzt mein Leben lang Insulin spritzen?
+</user>
+<partner>
+Nein, beruhigen Sie sich erst einmal. Sie müssen jetzt nicht sofort spritzen.
+Bei einem Typ-2-Diabetes stellt Ihr Körper zwar noch eigenes Insulin her, aber die Zellen können es nicht mehr richtig nutzen.
+Insulin funktioniert wie ein Schlüssel, der den Zucker aus dem Blut in die Körperzellen lässt. Wenn die Schlösser blockiert sind, staut sich der Zucker im Blut an.
+Wenn wir da nicht eingreifen, können dauerhaft hohe Werte die Blutgefäße, die Augen oder die Nieren schädigen. Aber wir können viel dagegen tun.
+</partner>
+<partner simple translation>
+**Nein**, beruhigen Sie sich erstmal.
+Sie müssen sich **nicht** sofort Insulin spritzen.
+
+Sie haben einen **Typ-2-Diabetes**.
+Ich erkläre Ihnen das.
+
+**Was macht Insulin normalerweise?**
+Insulin wird vom Körper gemacht.
+Insulin ist wie ein **Schlüssel** für die Zellen im Körper.
+Wenn Sie etwas mit Zucker essen,
+dann geht der Zucker zuerst ins Blut.
+Dann macht das Insulin die Zellen im Körper auf.
+So kann der Zucker aus dem Blut in die Zellen gehen.
+
+**Was ist das Problem bei einem Typ-2-Diabetes?**
+Ihr Körper macht noch Insulin.
+Aber die Zellen in Ihrem Körper können das Insulin **nicht** benutzen.
+Das Insulin kann die Zellen in Ihrem Körper also **nicht** aufmachen.
+Deshalb **bleibt** der Zucker in Ihrem Blut.
+Das kann gefährlich sein.
+Zu viel Zucker im Blut kann zum Beispiel 
+diese Dinge kaputt machen:
+Adern
+Augen
+Nieren
+
+Aber wir können viel dagegen tun.
+</partner>
+<user>
+Puh, da fällt mir schon mal ein Stein vom Herzen.
+Was muss ich denn jetzt am besten machen, damit die Werte wieder sinken?
+</user>
+<partner>
+Am wichtigsten sind für den Anfang regelmäßige Mahlzeiten und mehr Bewegung im Alltag.
+Schon ein kurzer Spaziergang nach dem Essen hilft den Muskeln, den Zucker besser zu verarbeiten.
+Außerdem sollten Sie lernen, Ihren Blutzucker selbst im Blick zu behalten.
+Ich zeige Ihnen hier direkt einmal das Blutzuckermessgerät.
+</partner>
+<partner simple translation>
+Machen Sie diese Dinge:
+**Essen** Sie **regelmäßig**.
+**Bewegen** Sie sich mehr im Alltag.
+Machen Sie zum Beispiel nach dem Essen einen kurzen Spaziergang.
+So können Ihre Muskeln den Zucker aus dem Essen besser benutzen.
+
+Und Sie müssen den **Zucker in Ihrem Blut beobachten**.
+Dafür gibt es ein Messgerät.
+Das nennt man: **Blutzucker-Messgerät**.
+Ich zeige Ihnen das Blutzucker-Messgerät.
+</partner>
+<user>
+Das sieht ganz schön kompliziert aus.
+Wie funktioniert denn so eine Messung überhaupt?
+</user>
+<partner>
+Das ist zum Glück schnell gelernt.
+Hier ist eine kleine Stechhilfe. Damit piksen Sie sich kurz und fast schmerzfrei seitlich in die Fingerkuppe.
+Den kleinen Blutstropfen halten Sie dann an diesen Teststreifen, den Sie zuvor in das Gerät gesteckt haben. Nach wenigen Sekunden erscheint Ihr genauer Wert auf dem Display.
+</partner>
+<partner simple translation>
+Das lernen Sie ganz schnell.
+Ich erkläre es Ihnen:
+Hier ist eine kleine **Stech-Hilfe**.
+Sie **piksen** sich mit der Stech-Hilfe kurz in den Finger.
+Piksen Sie am besten **oben an der Seite** von Ihrem Finger.
+Das tut kaum weh.
+Ein **kleiner Tropfen Blut** kommt dann aus Ihrem Finger.
+Stecken Sie einen **Test-Streifen** in das Messgerät.
+Halten Sie den Tropfen Blut an den Test-Streifen.
+**Warten** Sie ein paar Sekunden.
+Dann sehen Sie auf dem Bildschirm:
+So hoch ist Ihr **Blutzucker-Wert**.
+Also: So viel Zucker haben Sie im Blut.
+</partner>
+<user>
+Okay, das traue ich mir auf jeden Fall zu.
+Wie oft muss ich denn am Tag pieksen?
+</user>
+<partner>
+Für den Anfang reicht es meistens, morgens nüchtern und ab und zu nach den Hauptmahlzeiten zu messen.
+Ich gebe Ihnen jetzt ein komplettes Starter-Set mit Messgerät, Stechhilfe und Teststreifen mit.
+Die Werte tragen Sie bitte in dieses kleine Tagebuch ein.
+Zusätzlich stelle ich Ihnen eine Verordnung für eine Diabetesschulung aus. Dort lernen Sie mit anderen Betroffenen alles Wichtige über Ernährung und den Alltag mit der Erkrankung.
+</partner>
+<partner simple translation>
+Ich gebe Ihnen alles mit:
+ein Messgerät
+eine Stech-Hilfe
+Test-Streifen
+ein kleines Buch
+
+**Was müssen Sie jetzt tun?**
+Am Anfang reicht wahrscheinlich das:
+Piksen Sie einmal **morgens**.
+Sie sollen noch **nichts** gegessen haben.
+Und dann piksen Sie **nach jedem großen Essen**: 
+nach dem Frühstück
+nach dem Mittag-Essen 
+nach dem Abend-Essen
+Schreiben Sie Ihre Blutzucker-Werte bitte in das kleine Buch.
+
+Sie können auch einen **Diabetes-Kurs** machen.
+Dort sind auch andere Menschen mit Diabetes.
+Sie lernen alles Wichtige über den Alltag mit Diabetes.
+Zum Beispiel:
+Darauf müssen Sie beim Essen achten.
+</partner>
+<user>
+Vielen Dank, Frau Doktor.
+So ein Kurs hilft mir bestimmt, die ganze Sache besser zu verstehen.
+</user>
+<partner>
+Sehr gern. Wir vereinbaren jetzt vorne an der Anmeldung einen Kontrolltermin in vier Wochen.
+Bringen Sie dann bitte Ihr Blutzuckertagebuch mit, damit wir gemeinsam schauen können, wie Sie zurechtgekommen sind.
+</partner>
+<partner simple translation>
+Sehr gern.
+Wir gehen jetzt nach vorne zur Anmeldung.
+Dort machen wir einen **Termin** zur Kontrolle **in 4 Wochen**.
+Bringen Sie zu dem Termin bitte das **kleine Buch** mit.
+Dann können wir gemeinsam schauen:
+Wie gut hat alles geklappt?
+</partner>
+<user>
+Alles klar, das mache ich.
+Vielen Dank für die Hilfe und bis in vier Wochen!
+</user>

@@ -67,11 +67,18 @@ jobs:
             -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
             -backend-config="region=${{ env.AWS_REGION }}"
 
-      - name: Ensure ECR repository exists
+      - name: Ensure ECR repository and deployment IAM permissions exist
         id: ecr-repo
         run: |
-          tofu -chdir=infrastructure/aws apply -target=aws_ecr_repository.app -auto-approve
+          tofu -chdir=infrastructure/aws apply \
+            -target=aws_ecr_repository.app \
+            -target=aws_iam_role_policy.github_actions_deploy \
+            -auto-approve
           echo "ecr_url=$(tofu -chdir=infrastructure/aws output -raw ecr_repository_url)" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch raw training dialogs via DVC
+        run: |
+          pipx run --spec "dvc[s3]" dvc pull data/raw_dialogs.dvc
 
       - name: Log in to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2

@@ -18,8 +18,12 @@ The Docker image is built to run identically across AWS (ECS / App Runner / EKS)
   - **Traces & Metrics**: Exported via OTLP (gRPC) whenever `OTEL_EXPORTER_OTLP_ENDPOINT` is configured.
 - **Health Check & Lifecycle**:
   - `GET /healthz` returns `200 OK` without authentication for process liveness probes.
-  - `GET /readyz` returns `200 OK` without authentication for container readiness probes. On startup, the server initiates an asynchronous warmup check against the configured LLM API. The probe result is cached in-memory so recurring health checks do not incur LLM API costs or rate-limiting overhead.
+  - `GET /readyz` returns `200 OK` without authentication for container readiness probes. On startup, the server initiates an asynchronous warmup check verifying both the embedded semantic few-shot vector index (`intfloat/multilingual-e5-base`) and the configured LLM API. The probe result is cached in-memory so recurring health checks do not incur LLM API costs or rate-limiting overhead.
   - Handles `SIGTERM` and `SIGINT` to drain in-flight HTTP requests and flush OpenTelemetry trace/metric batches before exiting.
+- **Dynamic Few-Shot Vector Lookup (Build-Time Precomputation)**:
+  - Raw training dialogs are tracked via DVC (`data/raw_dialogs.dvc` pointing to `s3://diwop-leichte-sprache/dvc-hsuper`), with 10 representative dialogs tracked in `tests/fixtures/raw_dialogs/` for unit tests.
+  - During `docker build`, `./target/release/diwop-begleitapp --prepare-few-shots` parses the raw dialogs into 6 history-length buckets (`0..=5` preceding `user`/`partner` turns), downloads `intfloat/multilingual-e5-base`, and precomputes normalized 768-dimensional embeddings into `data/few_shots_index.json.gz`.
+  - At runtime, `/translate` embeds the incoming partner statement (`query: <message>`) in pure Rust (`candle-transformers` + `tokenizers`) and injects the top 3 semantically closest examples from the matching history bucket into `prompts/translate-dynamic-few-shots.md`.
 - **Zero-Downtime Rolling Deployments**:
   - Deployments add a new container instance first and only terminate the previous instance after `/readyz` passes.
   - On AWS ECS Fargate: `deployment_minimum_healthy_percent = 100`, `deployment_maximum_percent = 200`, ALB Target Group health check on `/readyz`, and circuit breaker with automatic rollback.
@@ -53,7 +57,7 @@ It is ready to go for local development and testing. All environment variables (
 Infrastructure as Code is managed with **OpenTofu** under [`infrastructure/`](../infrastructure), sharing a common container contract between cloud targets:
 
 - [`infrastructure/modules/app-config`](../infrastructure/modules/app-config): Shared module defining the container port (`3000`), `/healthz` path, and standard runtime/OpenTelemetry environment variables (`ENVIRONMENT` defaults to `"production"`).
-- [`infrastructure/aws`](../infrastructure/aws): **Test / Staging environment** configuration on AWS using Amazon ECR, AWS Secrets Manager, Amazon ECS Fargate (`0.25 vCPU` / `512 MB` `ARM64` on `FARGATE_SPOT` with overnight `00:00`–`08:00` `Europe/Berlin` downscaling to `0`), Application Load Balancer (ALB), ACM, and Route 53. See the [**AWS Setup Guide**](aws-setup.md).
+- [`infrastructure/aws`](../infrastructure/aws): **Test / Staging environment** configuration on AWS using Amazon ECR, AWS SSM Parameter Store, Amazon ECS Fargate (`0.5 vCPU` / `2048 MB` `ARM64` on `FARGATE_SPOT` with overnight `00:00`–`08:00` `Europe/Berlin` downscaling to `0`), Application Load Balancer (ALB), ACM, and Route 53. See the [**AWS Setup Guide**](aws-setup.md).
 - [`infrastructure/stackit`](../infrastructure/stackit): Sketched production deployment configuration targeting STACKIT Kubernetes Engine (SKE). See the [**STACKIT Setup Guide**](stackit-setup.md).
 - [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml): Automated Continuous Deployment workflow triggered on pushes to `main` (and `workflow_dispatch`). Builds the Docker image, pushes it to the target container registry (Amazon ECR or STACKIT OCI Registry), and runs `tofu apply` on AWS (`DEPLOY_TARGET=aws`) or STACKIT (`DEPLOY_TARGET=stackit`).
 

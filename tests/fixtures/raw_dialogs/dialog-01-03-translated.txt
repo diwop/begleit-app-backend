@@ -1,0 +1,91 @@
+<partner>
+Guten Tag! Nehmen Sie doch Platz. Was führt Sie heute zu mir?
+</partner>
+<partner simple translation>
+Guten Tag.
+Setzen Sie sich.
+Warum sind Sie heute hier?
+</partner>
+<user>
+Hallo. Ich habe seit Wochen so starke Rückenschmerzen hier unten im Lendenbereich. Ich kann kaum noch richtig sitzen. Ich brauche unbedingt eine Überweisung für ein MRT.
+</user>
+<partner>
+Das tut mir leid zu hören. Schmerzen im unteren Rücken können wirklich sehr quälend sein.
+Haben Sie denn auch Schmerzen im Bein, oder kribbelt es in den Füßen?
+</partner>
+<partner simple translation>
+Das tut mir leid.
+Schmerzen im unteren Rücken können wirklich sehr schlimm sein.
+Haben Sie auch **Schmerzen im Bein**?
+Oder **kribbelt** es in den **Füßen**?
+</partner>
+<user>
+Nein, das nicht. Es ist einfach ein dauerhafter, dumpfer Schmerz im Rücken. Mein Nachbar hatte das auch und bei dem war es ein Bandscheibenvorfall. Deshalb will ich das jetzt im MRT abklären lassen, damit wir Gewissheit haben.
+</user>
+<partner>
+Ich verstehe Ihre Sorge gut. Aber ein MRT ist jetzt am Anfang meistens gar nicht nötig.
+In den allermeisten Fällen stecken hinter solchen Schmerzen starke Muskelverspannungen und kein Bandscheibenvorfall. Ein MRT-Bild zeigt uns oft Veränderungen, die gar nichts mit Ihren eigentlichen Schmerzen zu tun haben.
+</partner>
+<partner simple translation>
+Ich verstehe Ihre Sorge.
+Aber ein MRT ist jetzt am Anfang meistens **nicht** nötig.
+Das MRT zeigt zwar Veränderungen.
+Aber diese Veränderungen haben oft **gar nichts** mit den Schmerzen zu tun.
+
+Der Grund für solche Schmerzen ist wahrscheinlich **kein** Bandscheiben-Vorfall.
+Der Grund für solche Schmerzen sind meistens **stark verspannte Muskeln**.
+</partner>
+<user>
+Aber wie soll man denn sonst herausfinden, was mir fehlt? Ich kann ja nicht einfach abwarten und hoffen, dass es weggeht.
+</user>
+<partner>
+Wir warten auch nicht einfach ab. Wir starten direkt mit einer aktiven Behandlung.
+Ich möchte Ihnen eine Überweisung zur Physiotherapie aufschreiben. Dort zeigt man Ihnen ganz gezielte Übungen, um die Muskeln zu lockern und zu stärken. Das hilft nachweislich viel besser und schneller als eine reine Untersuchung in der Röhre.
+</partner>
+<partner simple translation>
+Wir warten **nicht**.
+Wir fangen direkt mit einer Behandlung an.
+Ich möchte Ihnen eine Überweisung zur **Physio-Therapie** aufschreiben.
+Bei der Physio-Therapie lernen Sie bestimmte **Übungen**.
+Mit diesen Übungen können Sie Ihre **Muskeln lockern und stärker machen**.
+Das hilft viel besser und schneller
+als die Untersuchung im MRT.
+</partner>
+<user>
+Und wenn das alles nichts bringt? Ich will nicht noch wochenlang Schmerzen haben, ohne dass ein Spezialist draufgeschaut hat.
+</user>
+<partner>
+Das müssen Sie auch nicht. Wir machen einen Kompromiss.
+Ich gebe Ihnen heute das Rezept für die Krankengymnastik und zusätzlich eine Überweisung zum Orthopäden. Wenn die Schmerzen in den nächsten vier Wochen trotz der Übungen nicht besser werden, machen Sie einen Termin beim Orthopäden aus. Was halten Sie davon?
+</partner>
+<partner simple translation>
+Das müssen Sie auch **nicht**.
+Wir finden einen **Mittelweg**:
+Ich gebe Ihnen heute das **Rezept für die Physio-Therapie**.
+Und ich gebe Ihnen auch eine **Überweisung zum Orthopäden**.
+
+Sie machen in den nächsten **4 Wochen** die Übungen aus der Physio-Therapie.
+Werden die Schmerzen trotzdem **nicht** besser?
+Dann machen Sie einen Termin beim Orthopäden.
+
+Was denken Sie?
+</partner>
+<user>
+Das klingt eigentlich vernünftig. Dann probiere ich das mit der Krankengymnastik erst mal aus.
+Wo bekomme ich denn die Zettel jetzt?
+</user>
+<partner>
+Das Rezept und die Überweisung drucken Ihnen meine Kolleginnen vorne an der Anmeldung direkt aus.
+Gehen Sie die Sache in Ruhe an. Gute Besserung für Ihren Rücken!
+</partner>
+<partner simple translation>
+Meine Kolleginnen drucken das Rezept und die Überweisung 
+**vorne an der Anmeldung** aus.
+Dort können Sie das Rezept und die Überweisung abholen.
+
+Machen Sie alles ganz in Ruhe.
+Gute Besserung für Ihren Rücken!
+</partner>
+<user>
+Vielen Dank, Herr Doktor. Auf Wiedersehen!
+</user>

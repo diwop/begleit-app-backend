@@ -2,6 +2,8 @@ target/
 .git/
 .github/
 .agent/
+.dvc/cache/
+models/
 infrastructure/
 docs/
 Dockerfile

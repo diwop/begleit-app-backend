@@ -4,7 +4,7 @@ This guide explains how to deploy `diwop-begleitapp` to AWS using OpenTofu (`inf
 
 > [!NOTE]
 > **Designed for Test / Staging Environments**: The AWS infrastructure in [`infrastructure/aws`](../infrastructure/aws) is intentionally cost-optimized for temporary test and staging deployments:
-> - Runs a single `0.25 vCPU` (`256`) / `512 MB` `ARM64` container on **`FARGATE_SPOT`** in the default VPC (avoiding NAT Gateway costs).
+> - Runs a single `0.5 vCPU` (`512`) / `2048 MB` `ARM64` container on **`FARGATE_SPOT`** in the default VPC (avoiding NAT Gateway costs), sized to host the in-memory `intfloat/multilingual-e5-base` embedding model alongside the HTTP server.
 > - Automatically scales down to **`0` tasks overnight (`00:00`–`08:00` `Europe/Berlin`)** and scales back up to `1` task at `08:00`.
 > - Even when used for staging inside a shared AWS account, `var.environment` defaults to `"production"` so that containers never accidentally enable staging-only `%...%` test directives unless `environment = "staging"` is explicitly passed.
 
@@ -89,10 +89,12 @@ export TF_VAR_api_key="<generate-a-strong-api-key>"
 tofu -chdir=infrastructure/aws apply -target=aws_ecr_repository.app
 ```
 
-Authenticate Docker with ECR, build the `linux/arm64` container image from the repository root, and push it:
+Authenticate Docker with ECR, pull the raw DVC dialogs, build the `linux/arm64` container image from the repository root, and push it:
 
 ```bash
 export ECR_URL=$(tofu -chdir=infrastructure/aws output -raw ecr_repository_url)
+
+dvc pull data/raw_dialogs.dvc
 
 aws ecr get-login-password --region "$AWS_REGION" | \
   docker login --username AWS --password-stdin "$ECR_URL"
@@ -103,7 +105,7 @@ docker push "$ECR_URL:latest"
 
 ## 4. Deploy Full AWS Stack & Set LLM API Key
 
-Apply the complete configuration to create the AWS SSM Parameter Store parameters (`/<app_name>-<environment>/api-key` and `/<app_name>-<environment>/gemini-api-key`), least-privilege IAM roles, ACM certificate + Route 53 validation, Application Load Balancer with zero-downtime rolling deployment (`deployment_minimum_healthy_percent = 100`, `deployment_maximum_percent = 200`, circuit breaker rollback, target group health check targeting `/readyz`), ECS Fargate `ARM64` `FARGATE_SPOT` service (`0.25 vCPU`, `512 MB`), and scheduled scaling (`00:00` down to `0`, `08:00` up to `1` `Europe/Berlin`):
+Apply the complete configuration to create the AWS SSM Parameter Store parameters (`/<app_name>-<environment>/api-key` and `/<app_name>-<environment>/gemini-api-key`), least-privilege IAM roles, ACM certificate + Route 53 validation, Application Load Balancer with zero-downtime rolling deployment (`deployment_minimum_healthy_percent = 100`, `deployment_maximum_percent = 200`, circuit breaker rollback, target group health check targeting `/readyz`), ECS Fargate `ARM64` `FARGATE_SPOT` service (`0.5 vCPU`, `2048 MB`), and scheduled scaling (`00:00` down to `0`, `08:00` up to `1` `Europe/Berlin`):
 
 ```bash
 tofu -chdir=infrastructure/aws apply -var="image_tag=latest"

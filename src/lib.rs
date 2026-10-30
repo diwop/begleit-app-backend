@@ -1,5 +1,6 @@
 pub mod api;
 pub mod auth;
+pub mod few_shots;
 pub mod metrics;
 pub mod prompts;
 pub mod web;
@@ -8,6 +9,7 @@ pub use api::{
     ConversationMessage, CorrectTranscriptResponse, ErrorDetail, ErrorResponse, Role,
     TranslateRequest, TranslationResponse, TranslationType, Warning, WarningType,
 };
+pub use few_shots::{FewShotBucketIndex, FewShotEntry};
 pub use prompts::{
     EchoPromptRunner, GeminiPromptRunner, PromptError, PromptOutput, PromptRunner, TokenUsage,
 };
@@ -66,18 +68,33 @@ pub fn create_app() -> Router {
 
 /// Creates and configures the main application router with an explicit [`PromptRunner`].
 ///
-/// Spawns a single asynchronous background warmup check against `runner` to verify LLM API connectivity.
+/// Spawns a single asynchronous background warmup check against the embedded few-shot vector index
+/// and `runner` to verify both semantic lookup and LLM API connectivity.
 /// While warmup is in progress or if all attempts fail, `/readyz` returns `503 Service Unavailable`.
 /// Once warmup succeeds, the readiness state is cached as `true`, and subsequent `/readyz` queries
 /// return `200 OK` in-memory without recurring LLM API calls.
 pub fn create_app_with_runner(runner: Arc<dyn PromptRunner>) -> Router {
     let readiness = Arc::new(AtomicBool::new(false));
+    let few_shots_res = FewShotBucketIndex::default_shared();
 
     // Spawn an asynchronous startup warmup probe if running within an active Tokio runtime
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
         let runner_clone = Arc::clone(&runner);
         let readiness_clone = Arc::clone(&readiness);
         handle.spawn(async move {
+            let few_shots = match few_shots_res {
+                Ok(idx) => idx,
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to load few-shot bucket index during startup warmup. Service remains unready.");
+                    return;
+                }
+            };
+
+            if let Err(e) = few_shots.get_closest_examples("ping", 0, 1) {
+                tracing::error!(error = %e, "Few-shot embedding warmup check failed. Service remains unready.");
+                return;
+            }
+
             for attempt in 1..=3 {
                 tracing::info!(attempt, "Running LLM API startup warmup check for readiness probe...");
                 match runner_clone
@@ -85,7 +102,7 @@ pub fn create_app_with_runner(runner: Arc<dyn PromptRunner>) -> Router {
                     .await
                 {
                     Ok(_) => {
-                        tracing::info!("LLM API startup warmup succeeded. Service is ready.");
+                        tracing::info!("LLM API and few-shot index startup warmup succeeded. Service is ready.");
                         readiness_clone.store(true, Ordering::SeqCst);
                         return;
                     }
@@ -99,7 +116,7 @@ pub fn create_app_with_runner(runner: Arc<dyn PromptRunner>) -> Router {
             }
             tracing::error!("LLM API startup warmup failed after 3 attempts. Service remains unready.");
         });
-    } else {
+    } else if few_shots_res.is_ok() {
         // Fallback for non-Tokio contexts (e.g. synchronous router instantiation in tests)
         readiness.store(true, Ordering::SeqCst);
     }

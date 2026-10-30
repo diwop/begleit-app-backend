@@ -1,0 +1,114 @@
+<user>
+Hallo! Entschuldigung, ich suche Zutaten für ein Curry-Rezept. Können Sie mir helfen?
+</user>
+<partner>
+Hallo! Na klar, helfe ich Ihnen gerne. Was genau suchen Sie denn?
+</partner>
+<partner simple translation>
+Hallo.
+Na klar, ich helfe Ihnen gerne.
+Was genau suchen Sie denn?
+</partner>
+<user>
+Ich brauche Kokosmilch und rote Currypaste. Ich habe schon gesucht, aber ich finde sie einfach nicht.
+</user>
+<partner>
+Ah, die asiatischen Produkte sind ein bisschen versteckt.
+Gehen Sie am besten in Gang vier. Das ist der übernächste Gang auf der linken Seite. Die Kokosmilch steht ganz unten im Regal und die Currypaste direkt darüber in den kleinen Gläsern.
+</partner>
+<partner simple translation>
+Ah, das sind Zutaten aus Asien.
+Diese Zutaten sind ein bisschen versteckt.
+Gehen Sie am besten in **Gang 4**.
+Gang 4 ist auf der linken Seite nach dem nächsten Gang.
+
+Die **Kokos-Milch** ist in Gang 4 ganz unten im Regal.
+Die **Curry-Paste** ist in kleinen Gläsern direkt über der Kokos-Milch.
+</partner>
+<user>
+Super, danke! Dann gehe ich da mal gucken.
+</user>
+<partner>
+Gerne! Wenn Sie noch etwas suchen, melden Sie sich einfach.
+</partner>
+<partner simple translation>
+Gerne.
+Wenn Sie noch etwas suchen, 
+dann sagen Sie einfach Bescheid.
+</partner>
+<user>
+Hallo, ich bin es wieder. Ich bin jetzt an der Kasse. Ich habe hier auch noch diesen Rabattcoupon. Kann ich den für die Sachen benutzen? Ich weiß nicht genau, wie das geht.
+</user>
+<partner>
+Hallo! Schön, dass Sie alles gefunden haben. Zeigen Sie mir den Coupon mal kurz.
+Das ist ein Rabatt von fünf Euro. Dafür müssen wir auf zwei Dinge achten: Der Einkauf muss mindestens zwanzig Euro kosten und der Coupon darf noch nicht abgelaufen sein.
+</partner>
+<partner simple translation>
+Hallo.
+Schön, dass Sie alles gefunden haben.
+
+Zeigen Sie mir den Rabatt-Coupon mal kurz.
+Das ist ein Rabatt von **5 Euro**.
+
+Aber wir müssen auf 2 Dinge achten:
+Ihr Einkauf muss **20 Euro oder mehr** kosten.
+Und der Coupon muss noch **gültig** sein.
+</partner>
+<user>
+Ah, okay. Kostet mein Einkauf denn schon zwanzig Euro? Und gilt der heute noch?
+</user>
+<partner>
+Ich ziehe die Sachen erst mal alle über den Scanner.
+So, das macht insgesamt zweiundzwanzig Euro und fünfzig Cent. Damit haben wir den Mindestwert geschafft. Und das Datum auf dem Coupon ist der dreißigste November. Der ist also heute noch gültig.
+</partner>
+<partner simple translation>
+Ich scanne Ihre Sachen erstmal.
+
+So, Ihr Einkauf kostet insgesamt 22 Euro und 50 Cent.
+Ihr Einkauf kostet also **mehr als 20 Euro**.
+
+Und das Datum auf dem Rabatt-Coupon ist der 30. November.
+Der Rabatt-Coupon ist also noch **gültig**.
+
+Sie können den Rabatt-Coupon also benutzen.
+</partner>
+<user>
+Super! Dann habe ich ja Glück gehabt.
+</user>
+<partner>
+Ganz genau. Ich scanne den Coupon jetzt ein.
+So, die fälligen fünf Euro sind abgezogen. Das macht dann jetzt noch siebzehn Euro und fuffzig Cent. Wie möchten Sie bezahlen?
+</partner>
+<partner simple translation>
+Genau.
+
+Ich scanne den Rabatt-Coupon jetzt ein.
+So, Ihr Einkauf kostet jetzt 5 Euro weniger.
+Ihr Einkauf kostet jetzt noch **17 Euro und 50 Cent**.
+
+Wie möchten Sie bezahlen?
+</partner>
+<user>
+Mit meiner Bankkarte bitte.
+</user>
+<partner>
+Gerne. Halten Sie die Karte einfach vorne an das Lesegerät.
+</partner>
+<partner simple formatting>
+Gerne.
+Halten Sie die Karte einfach vorne an das Lese-Gerät.
+</partner>
+<user>
+Es hat Piep gemacht. Hat es geklappt?
+</user>
+<partner>
+Ja, das war erfolgreich. Hier ist Ihr Kassenbon. Ich wünsche Ihnen viel Spaß beim Kochen!
+</partner>
+<partner simple translation>
+Ja, das hat geklappt.
+Hier ist Ihr Kassen-Bon.
+Viel Spaß beim Kochen!
+</partner>
+<user>
+Vielen Dank für Ihre Hilfe. Tschüss!
+</user>

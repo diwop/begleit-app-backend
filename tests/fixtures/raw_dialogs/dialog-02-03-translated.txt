@@ -1,0 +1,133 @@
+<user>
+Hallo, ich brauche Hilfe. Mein Ladekabel für mein Handy ist kaputtgegangen. Ich brauche ganz schnell ein neues.
+</user>
+<partner>
+Hallo! Kein Problem, da finden wir bestimmt das passende Kabel.
+Weißt du denn, was für ein Handy du hast?
+</partner>
+<partner simple translation>
+Hallo.
+**Kein** Problem.
+Wir finden bestimmt ein passendes Kabel.
+**Welches Handy** hast du denn?
+Weißt du das?
+</partner>
+<user>
+Es ist ein Samsung-Handy. Aber ich weiß nicht genau, wie das Modell heißt. Es ist schon ein bisschen älter.
+</user>
+<partner>
+Kein Problem. Weißt du denn, wie der Stecker aussieht, den du in das Handy steckst?
+Ist er an beiden Seiten abgerundet oder hat er eine flache Seite?
+</partner>
+<partner simple translation>
+**Kein** Problem.
+Du steckst ja immer einen **Stecker** in dein Handy.
+Wie **sieht** der Stecker **aus**?
+Ist der Stecker **an beiden Seiten rund**?
+Oder hat der Stecker **eine flache Seite**?
+Weißt du das?
+</partner>
+<user>
+Ich muss beim Reinstecken immer genau aufpassen. Der Stecker geht nur in eine Richtung rein. Wenn ich ihn falsch herum halte, passt er nicht.
+</user>
+<partner>
+Das hilft mir schon sehr weiter! Wenn der Stecker nur in eine Richtung passt, ist es wahrscheinlich ein sogenannter Micro-USB-Anschluss.
+Die neueren Anschlüsse heißen USB-C. Da ist es egal, wie herum man den Stecker in das Handy steckt, der passt immer.
+</partner>
+<partner simple translation>
+Das hilft mir schon sehr!
+Der Stecker passt nur in eine Richtung.
+Dann hat dein Handy wahrscheinlich einen **Micro-USB-Anschluss**.
+
+Bei den neuen Anschlüssen ist das nämlich egal.
+Der Stecker passt in jeder Richtung.
+Die neuen Anschlüsse heißen: USB-C.
+</partner>
+<user>
+Ah, verstehe. Bei mir ist es auf jeden Fall nicht egal. Ich muss ihn immer richtig herum drehen. Also brauche ich wohl dieses Micro-USB.
+</user>
+<partner>
+Schau mal, ich zeige dir die beiden Stecker hier mal direkt.
+Der hier ist Micro-USB. Siehst du die flache Oberseite und die zwei kleinen Haken unten? Sieht dein Stecker so aus?
+</partner>
+<partner simple translation>
+Schau mal:
+Ich zeige dir beide Stecker.
+Das hier ist ein **Micro-USB-Stecker**.
+Dieser Stecker ist **oben flach**.
+Unten sind **2 Haken**.
+Sieht dein Stecker so aus?
+</partner>
+<user>
+Ja, genau so sieht mein Stecker aus! Den brauche ich.
+</user>
+<partner>
+Sehr gut, dann haben wir das schon mal geschafft.
+Brauchst du denn nur das Kabel selbst oder auch das Steckerteil für die Steckdose?
+</partner>
+<partner simple translation>
+Sehr gut, das haben wir geschafft.
+
+Ich habe noch eine Frage:
+Brauchst du **nur das Kabel**?
+Oder brauchst du auch den **Stecker für die Steckdose**?
+</partner>
+<user>
+Ich dachte, das gehört zusammen? Ich stecke das Kabel zu Hause immer in dieses weiße Teil an der Wand.
+</user>
+<partner>
+Das weiße Teil an der Wand ist der Netzstecker. Da steckt man das Kabel meistens nur mit einem großen USB-Stecker hinein.
+Ist dieses weiße Teil denn auch kaputt oder funktioniert das noch?
+</partner>
+<partner simple translation>
+Das weiße Teil an der Wand ist der **Netz-Stecker**.
+Man steckt das Kabel meistens 
+mit einem großen USB-Stecker in den Netz-Stecker.
+Ist das weiße Teil auch **kaputt**?
+Oder **funktioniert** das weiße Teil noch?
+</partner>
+<user>
+Nein, das weiße Teil ist okay. Nur das Kabel hat einen Wackelkontakt. Das lädt nicht mehr richtig, wenn ich es bewege.
+</user>
+<partner>
+Alles klar. Dann brauchst du wirklich nur das Kabel zu kaufen. Das kannst du dann einfach in dein weißes Teil zu Hause stecken. Das ist auch günstiger für dich.
+Ich hole dir mal ein passendes Kabel aus dem Regal.
+</partner>
+<partner simple translation>
+Alles klar.
+Dann musst du **nur das Kabel kaufen**.
+Dann kannst du das Kabel in dein weißes Teil zuhause stecken.
+Das ist **günstiger** für dich.
+Ich hole mal ein passendes Kabel für dich aus dem Regal.
+</partner>
+<user>
+Das ist ja praktisch, das wusste ich gar nicht. Danke, dass Sie mir das so gut erklären!
+</user>
+<partner>
+Gerne doch! Schau mal, hier habe ich ein passendes Kabel für dich. Es ist zwei Meter lang, damit hast du etwas mehr Spielraum beim Laden.
+</partner>
+<partner simple translation>
+Sehr gerne.
+Schau mal:
+Hier habe ich ein passendes Kabel für dich.
+Das Kabel ist **2 Meter lang**.
+So muss dein Handy beim Laden
+**nicht** direkt neben der Steckdose sein.
+</partner>
+<user>
+Das ist perfekt. Vielen Dank für die tolle Hilfe! Jetzt weiß ich auch endlich, was für einen Anschluss mein Handy hat.
+Ich gehe dann direkt damit zur Kasse.
+</user>
+<partner>
+Sehr gerne, dafür bin ich ja da. Die Kasse ist dort drüben auf der linken Seite.
+Schönen Tag noch!
+</partner>
+<partner simple translation>
+Sehr gerne.
+Das ist ja meine Aufgabe.
+Die **Kasse** ist da drüben auf der **linken Seite**.
+Ich wünsche dir noch einen schönen Tag!
+</partner>
+<user>
+Danke, Ihnen auch! Tschüss.
+</user>

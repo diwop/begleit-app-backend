@@ -8,6 +8,11 @@ target/
 
 # Local env / Scratch
 .env
+.worktrees/
+models/
+.cache/
+.dvc/config.local
+.dvc/tmp
 
 # OpenTofu / Terraform
 **/.terraform/

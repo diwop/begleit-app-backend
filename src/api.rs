@@ -1,7 +1,8 @@
+use crate::few_shots::{FewShotBucketIndex, DEFAULT_FEW_SHOT_K};
 use crate::prompts::{
-    build_correct_transcript_prompt, build_translate_prompt, extract_staging_directives,
-    parse_translate_output, PromptRunner, CORRECT_TRANSCRIPT_SYSTEM_PROMPT,
-    TRANSLATE_SYSTEM_PROMPT,
+    build_correct_transcript_prompt, build_translate_prompt_with_few_shots, count_history_turns,
+    determine_history_bucket, extract_staging_directives, parse_translate_output, PromptRunner,
+    CORRECT_TRANSCRIPT_SYSTEM_PROMPT, TRANSLATE_SYSTEM_PROMPT,
 };
 use axum::{
     extract::{rejection::JsonRejection, FromRequest, Request, State},
@@ -14,12 +15,14 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use utoipa::ToSchema;
 
-/// Speaker role in a conversation: `user` is the app user, `partner` is the conversation partner.
+/// Speaker role in a conversation: `user` is the app user, `partner` is the conversation partner,
+/// and `partner_simple` is a previously translated simple-language partner contribution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum Role {
     User,
     Partner,
+    PartnerSimple,
 }
 
 /// Spoken contribution in a conversation with speaker role and plain-text message.
@@ -29,7 +32,7 @@ pub enum Role {
     "message": "sie müssen den antrag bis ende nächste woche abgeben"
 }))]
 pub struct ConversationMessage {
-    /// user is the app user, partner is the conversation partner.
+    /// `user` is the app user, `partner` is the conversation partner, and `partner_simple` is a previously translated simple-language partner contribution.
     pub role: Role,
     /// Originally recognized spoken text as plain text.
     #[schema(
@@ -214,12 +217,38 @@ where
     }
 }
 
-/// Creates and returns the router for the conversation API endpoints using the provided [`PromptRunner`].
+/// Shared application state for the conversation API endpoints.
+#[derive(Clone)]
+pub struct ApiState {
+    /// Language model prompt runner used by `/correct-transcript` and `/translate`.
+    pub runner: Arc<dyn PromptRunner>,
+    /// Embedded 6-bucket semantic few-shot index used by `/translate`.
+    pub few_shots: Arc<FewShotBucketIndex>,
+}
+
+/// Creates and returns the router for the conversation API endpoints using the provided [`PromptRunner`]
+/// and the process-wide default [`FewShotBucketIndex`].
 pub fn router(runner: Arc<dyn PromptRunner>) -> Router {
+    let few_shots = FewShotBucketIndex::default_shared().unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "Failed to load default few-shot bucket index; using empty index");
+        Arc::new(FewShotBucketIndex::new(
+            Default::default(),
+            Arc::new(crate::few_shots::DeterministicHashEmbedder),
+        ))
+    });
+    router_with_few_shots(runner, few_shots)
+}
+
+/// Creates and returns the router for the conversation API endpoints using the provided [`PromptRunner`]
+/// and [`FewShotBucketIndex`].
+pub fn router_with_few_shots(
+    runner: Arc<dyn PromptRunner>,
+    few_shots: Arc<FewShotBucketIndex>,
+) -> Router {
     Router::new()
         .route("/correct-transcript", post(correct_transcript))
         .route("/translate", post(translate))
-        .with_state(runner)
+        .with_state(ApiState { runner, few_shots })
 }
 
 /// Checks whether a string contains at least one non-whitespace character.
@@ -336,7 +365,7 @@ pub fn is_non_blank(text: &str) -> bool {
     )
 )]
 pub async fn correct_transcript(
-    State(runner): State<Arc<dyn PromptRunner>>,
+    State(state): State<ApiState>,
     AppJson(request): AppJson<ConversationMessage>,
 ) -> Result<Json<CorrectTranscriptResponse>, (StatusCode, Json<ErrorResponse>)> {
     tracing::debug!(
@@ -361,7 +390,8 @@ pub async fn correct_transcript(
     }
 
     let prompt = build_correct_transcript_prompt(&request.message);
-    let prompt_output = runner
+    let prompt_output = state
+        .runner
         .run_prompt(CORRECT_TRANSCRIPT_SYSTEM_PROMPT, &prompt, "minimal")
         .await
         .map_err(|e| {
@@ -556,7 +586,7 @@ pub async fn correct_transcript(
     )
 )]
 pub async fn translate(
-    State(runner): State<Arc<dyn PromptRunner>>,
+    State(state): State<ApiState>,
     AppJson(request): AppJson<TranslateRequest>,
 ) -> Result<Json<TranslationResponse>, (StatusCode, Json<ErrorResponse>)> {
     let Some((last_message, history)) = request.messages.split_last() else {
@@ -604,12 +634,14 @@ pub async fn translate(
         ));
     }
 
-    let history_len = history.len();
+    let history_len = count_history_turns(history);
+    let bucket = determine_history_bucket(history);
     crate::metrics::record_translate_history_length(history_len);
 
     tracing::debug!(
         endpoint = "/translate",
         history_length = history_len,
+        bucket = bucket,
         "Handling translate request"
     );
 
@@ -618,10 +650,23 @@ pub async fn translate(
         .eq_ignore_ascii_case("staging");
 
     let directives = extract_staging_directives(&last_message.message, is_staging);
-    let prompt = build_translate_prompt(history, &directives.cleaned_message);
+    let examples = state
+        .few_shots
+        .get_closest_examples(&directives.cleaned_message, bucket, DEFAULT_FEW_SHOT_K)
+        .unwrap_or_else(|e| {
+            tracing::warn!(
+                endpoint = "/translate",
+                error = %e,
+                "Failed to retrieve dynamic few-shot examples; falling back to zero-shot prompt"
+            );
+            Vec::new()
+        });
+    let prompt =
+        build_translate_prompt_with_few_shots(history, &directives.cleaned_message, &examples);
 
-    let prompt_output = runner
-        .run_prompt(&TRANSLATE_SYSTEM_PROMPT, &prompt, "low")
+    let prompt_output = state
+        .runner
+        .run_prompt(TRANSLATE_SYSTEM_PROMPT, &prompt, "low")
         .await
         .map_err(|e| {
             tracing::error!(

@@ -419,7 +419,10 @@ async fn test_prompt_runner_integration_and_error_handling() {
     assert_eq!(calls[0].thinking_level, "low");
     assert!(calls[0]
         .prompt
-        .contains("User:\n```\nwann muss ich den antrag abgeben\n```"));
+        .contains("User: wann muss ich den antrag abgeben"));
+    assert!(calls[0]
+        .prompt
+        .contains("Hier sind Beispiele für Übersetzungen von Dialogen in Leichte Sprache:"));
     assert!(calls[0]
         .prompt
         .contains("sie müssen den antrag bis ende nächste woche abgeben"));
@@ -529,4 +532,78 @@ async fn test_readyz_startup_warmup_transition() {
         became_ready,
         "Server failed to become ready via background warmup probe"
     );
+}
+
+/// Verifies that `POST /translate` supports `partner_simple` in history, formats it as
+/// `Partner (Leichte Sprache): ...`, injects dynamic few-shot examples from the matching bucket,
+/// and rejects `partner_simple` when it is the final message.
+#[tokio::test]
+async fn test_translate_partner_simple_role_and_dynamic_few_shots() {
+    let client = reqwest::Client::new();
+    let mock_translate = MockPromptRunner::new(Ok(
+        "FORMATIERUNG\nBringen Sie **Ihren Ausweis** mit.".to_string(),
+    ));
+    let base_url = start_server_with_runner(mock_translate.clone()).await;
+
+    let res = client
+        .post(format!("{}/translate", base_url))
+        .json(&serde_json::json!({
+            "messages": [
+                {
+                    "role": "partner",
+                    "message": "Guten Tag, Sie möchten Ihren Reisepass abholen?"
+                },
+                {
+                    "role": "partner_simple",
+                    "message": "Guten Tag!\nWollen Sie Ihren **Reisepass** abholen?"
+                },
+                {
+                    "role": "user",
+                    "message": "Ja, genau."
+                },
+                {
+                    "role": "partner",
+                    "message": "Bitte bringen Sie Ihren Ausweis mit."
+                }
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), reqwest::StatusCode::OK);
+    let body: TranslationResponse = res.json().await.unwrap();
+    assert_eq!(body.r#type, TranslationType::Formatting);
+    assert_eq!(body.content, "Bringen Sie **Ihren Ausweis** mit.");
+
+    let calls = mock_translate.recorded_calls();
+    assert_eq!(calls.len(), 1);
+    assert!(calls[0].prompt.contains(
+        "Partner: Guten Tag, Sie möchten Ihren Reisepass abholen?\n\nPartner (Leichte Sprache): Guten Tag!\nWollen Sie Ihren **Reisepass** abholen?\n\nUser: Ja, genau."
+    ));
+    assert!(calls[0]
+        .prompt
+        .contains("Hier sind Beispiele für Übersetzungen von Dialogen in Leichte Sprache:"));
+
+    // Last message is partner_simple -> 422 LAST_MESSAGE_MUST_BE_PARTNER
+    let res_err = client
+        .post(format!("{}/translate", base_url))
+        .json(&serde_json::json!({
+            "messages": [
+                {
+                    "role": "partner",
+                    "message": "Hallo"
+                },
+                {
+                    "role": "partner_simple",
+                    "message": "Hallo!"
+                }
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res_err.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
+    let err: ErrorResponse = res_err.json().await.unwrap();
+    assert_eq!(err.error.code, "LAST_MESSAGE_MUST_BE_PARTNER");
 }

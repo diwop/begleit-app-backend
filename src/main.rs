@@ -6,12 +6,20 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 /// Main entry point for the application:
 ///
 /// - Initializes OpenTelemetry (via `OTEL_EXPORTER_OTLP_ENDPOINT`) and structured logging,
+/// - handles the build-time `--prepare-few-shots` subcommand when passed, or
 /// - configures the application router,
 /// - starts the server with graceful `SIGTERM`/`SIGINT` shutdown, and
 /// - flushes OpenTelemetry trace and metric providers on exit.
 #[tokio::main]
 async fn main() {
     let (tracer_provider, meter_provider) = init_tracing();
+
+    if std::env::args().any(|arg| arg == "--prepare-few-shots") {
+        diwop_begleitapp::few_shots::run_prepare_few_shots_cli()
+            .await
+            .expect("Failed to prepare dynamic few-shot bucket index");
+        return;
+    }
 
     let port: u16 = std::env::var("PORT")
         .unwrap_or_else(|_| "3000".to_string())

@@ -1,0 +1,132 @@
+<partner>
+Guten Tag, Frau Müller. Nehmen Sie bitte Platz.
+Was führt Sie heute zu mir?
+</partner>
+<partner simple translation>
+Guten Tag, Frau Müller.
+Setzen Sie sich bitte.
+Warum sind Sie heute hier?
+</partner>
+<user>
+Hallo, Herr Doktor.
+Ich habe seit ein paar Tagen furchtbare Kopfschmerzen. Besonders an den Wangen und an der Stirn drückt es total.
+</user>
+<partner>
+Tut es in bestimmten Momenten besonders weh?
+</partner>
+<partner simple formatting>
+Tut es in bestimmten Momenten besonders weh?
+</partner>
+<user>
+Ja, vor allem wenn ich mich nach vorne bücke.
+Dann fühlt es sich an, als würde mein Kopf gleich platzen.
+</user>
+<partner>
+Das klingt ganz typisch nach einer akuten Nasennebenhöhlenentzündung. Ich schaue mir kurz Ihre Nase und den Rachen an.
+Ja, die Schleimhäute sind sehr stark geschwollen.
+</partner>
+<partner simple translation>
+Sie haben bestimmte Anzeichen für diese Krankheit:
+eine **Nasen-Nebenhöhlen-Entzündung**.
+Ich schaue mir Ihre Nase und Ihren Rachen an.
+
+Ja, ich sehe:
+Ihr **Schleimhäute** sind sehr stark geschwollen.
+</partner>
+<user>
+Brauche ich denn jetzt ein Antibiotikum?
+Ich möchte einfach, dass der Druck schnell aufhört.
+</user>
+<partner>
+In den allermeisten Fällen stecken Viren hinter so einer Entzündung. Da helfen Antibiotika leider gar nicht, weil sie nur gegen Bakterien wirken.
+Wir sollten erst einmal den Schleim lösen und die Belüftung der Nebenhöhlen verbessern.
+</partner>
+<partner simple translation>
+Der Grund für die Entzündung sind meistens **Viren**.
+Ein Antibiotikum hilft da **nicht**.
+Ein Antibiotikum hilft nämlich nur gegen Bakterien.
+
+Zuerst sind diese Dinge wichtig:
+Der **Schleim** soll sich **lösen**.
+Ihre **Nebenhöhlen** sollen wieder mehr **Luft** bekommen.
+</partner>
+<user>
+Was kann ich denn stattdessen machen?
+</user>
+<partner>
+Sie können für ein paar Tage ein abschwellendes Nasenspray benutzen. Das nimmt schnell den Druck.
+Ganz wichtig dabei: Nehmen Sie das Spray bitte maximal eine Woche lang.
+Sonst gewöhnt sich die Schleimhaut daran und schwillt ohne das Spray immer wieder zu.
+</partner>
+<partner simple translation>
+Sie können das machen:
+Benutzen Sie ein **Nasen-Spray**.
+So sind Ihre Schleimhäute **nicht** mehr geschwollen.
+Dann fühlt sich der Druck in Ihrem Kopf weniger an.
+
+Wichtig ist:
+Nehmen Sie das Nasen-Spray **nicht** länger als eine Woche.
+Nehmen Sie das Nasen-Spray **nur ein paar Tage** lang.
+Sonst gewöhnen sich Ihre Schleimhäute an das Nasen-Spray.
+Dann brauchen Ihre Schleimhäute **immer** das Nasen-Spray.
+</partner>
+<user>
+Okay, maximal sieben Tage, das merke ich mir.
+Gibt es noch etwas, das hilft?
+</user>
+<partner>
+Ja, machen Sie am besten regelmäßig Nasenspülungen mit Kochsalzlösung. Das befeuchtet und spült das Sekret heraus.
+Zusätzlich können Sie pflanzliche Schleimlöser aus der Apotheke einnehmen, damit der Schleim besser abfließt.
+</partner>
+<partner simple translation>
+Ja, Sie können auch diese Dinge tun:
+Machen Sie **Nasen-Spülungen**.
+Spülen Sie Ihre Nase mit Wasser mit Kochsalz.
+Das macht Ihre Nase feucht.
+Und das spült den Schleim aus Ihrer Nase.
+Nehmen Sie einen **Schleim-Löser** aus Pflanzen.
+So geht der Schleim besser weg.
+Sie bekommen den Schleim-Löser in der Apotheke.
+</partner>
+<user>
+Gut, dann besorge ich mir so eine Nasendusche und pflanzliche Tabletten.
+</user>
+<partner>
+Bitte achten Sie aber gut auf Warnzeichen.
+Sollten Sie plötzlich hohes Fieber bekommen, starke Schwellungen um die Augen bemerken oder Sehstörungen auftreten, müssen Sie sofort wieder in die Praxis kommen.
+</partner>
+<partner simple translation>
+Achten Sie auf diese Anzeichen:
+plötzliches hohes **Fieber**
+stark geschwollene **Augen**
+Probleme beim **Sehen**
+Wenn Sie eins von diesen Anzeichen haben,
+dann müssen Sie **sofort** wieder hierher kommen.
+</partner>
+<user>
+Verstanden. Wenn ich Fieber kriege oder schlecht sehe, komme ich direkt vorbei.
+</user>
+<partner>
+Sehr gut. Ich schreibe Sie jetzt erst einmal für vier Tage krank, damit Sie sich richtig auskurieren können.
+Trinken Sie viel Tee oder Wasser und ruhen Sie sich aus.
+</partner>
+<partner simple translation>
+Sehr gut.
+Ich schreibe auf:
+Sie sind **4 Tage** lang krank.
+So können Sie in Ruhe wieder gesund werden.
+Trinken Sie viel **Tee** oder **Wasser**.
+Und **ruhen** Sie sich **aus**.
+</partner>
+<user>
+Vielen Dank, Herr Doktor.
+Ich hole mir die Sachen aus der Apotheke und lege mich dann direkt ins Bett.
+</user>
+<partner>
+Gute Besserung! Melden Sie sich einfach, falls es sich verschlimmert.
+</partner>
+<partner simple translation>
+Gute Besserung.
+Wenn es schlimmer wird,
+dann sagen Sie Bescheid.
+</partner>
