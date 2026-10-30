@@ -449,7 +449,7 @@ pub async fn correct_transcript(
     let prompt = build_correct_transcript_prompt(&request.message);
     let prompt_output = state
         .runner
-        .run_prompt(CORRECT_TRANSCRIPT_SYSTEM_PROMPT, &prompt, "minimal")
+        .run_prompt(CORRECT_TRANSCRIPT_SYSTEM_PROMPT, &prompt, "low")
         .await
         .map_err(|e| {
             tracing::error!(
@@ -749,7 +749,7 @@ pub async fn translate(
 
     let prompt_output = state
         .runner
-        .run_prompt(TRANSLATE_SYSTEM_PROMPT, &prompt, "low")
+        .run_prompt(TRANSLATE_SYSTEM_PROMPT, &prompt, "medium")
         .await
         .map_err(|e| {
             tracing::error!(

@@ -67,7 +67,7 @@ impl std::error::Error for PromptError {}
 
 /// Trait abstracting prompt execution so production uses Gemini via `rig` and tests can inject mocks.
 pub trait PromptRunner: Send + Sync {
-    /// Executes a prompt with the given system preamble and thinking level (`"minimal"` or `"low"`).
+    /// Executes a prompt with the given system preamble and thinking level (e.g. `"minimal"`, `"low"`, or `"medium"`).
     fn run_prompt<'a>(
         &'a self,
         system_prompt: &'a str,
@@ -203,15 +203,15 @@ impl PromptRunner for EchoPromptRunner {
         &'a self,
         system_prompt: &'a str,
         prompt: &'a str,
-        thinking_level: &'a str,
+        _thinking_level: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<PromptOutput, PromptError>> + Send + 'a>> {
         Box::pin(async move {
             let input = extract_input_block(prompt).unwrap_or(prompt);
             let mocked_reasoning = format!("I am thinking about '{input}'");
-            let output_text = if thinking_level == "minimal" {
-                input.to_string()
-            } else {
+            let output_text = if system_prompt == TRANSLATE_SYSTEM_PROMPT {
                 format!("FORMATIERUNG\n{input}")
+            } else {
+                input.to_string()
             };
 
             let combined_input = format!("{system_prompt}\n{prompt}");
@@ -592,7 +592,7 @@ mod tests {
 
         let runner = EchoPromptRunner;
         let out = runner
-            .run_prompt(TRANSLATE_SYSTEM_PROMPT, &rendered, "low")
+            .run_prompt(TRANSLATE_SYSTEM_PROMPT, &rendered, "medium")
             .await
             .unwrap();
         assert_eq!(out.text, "FORMATIERUNG\nEchte Nutzer Eingabe");
@@ -652,7 +652,7 @@ mod tests {
         let runner = EchoPromptRunner;
         let prompt = "```input\nHallo Welt\n```";
         let output = runner
-            .run_prompt("System Prompt", prompt, "minimal")
+            .run_prompt(CORRECT_TRANSCRIPT_SYSTEM_PROMPT, prompt, "low")
             .await
             .unwrap();
 
