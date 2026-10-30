@@ -11,6 +11,9 @@
     </div>
 
     <form method="post" action="/login" class="form-body">
+      {% if let Some(n) = next %}
+        <input type="hidden" name="next" value="{{ n }}">
+      {% endif %}
       <div class="form-field">
         <label for="admin-password" class="field-label">Admin-Passwort</label>
         <input
