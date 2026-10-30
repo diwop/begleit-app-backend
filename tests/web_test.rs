@@ -341,4 +341,16 @@ async fn test_authenticated_dialog_translation_serves_interface() {
         html.contains("Beispiel"),
         "HTML should contain German Beispiel label for examples"
     );
+    assert!(
+        html.contains("card-header-badges"),
+        "HTML should contain card header badges container"
+    );
+    assert!(
+        html.contains("card-cost-badge"),
+        "HTML should contain card cost badge"
+    );
+    assert!(
+        html.contains("card-input-tokens-badge"),
+        "HTML should contain card input tokens badge"
+    );
 }
