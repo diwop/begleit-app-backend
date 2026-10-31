@@ -6,11 +6,13 @@ pub mod prompts;
 pub mod web;
 
 pub use api::{
-    ConversationMessage, CorrectTranscriptResponse, DebugInfo, ErrorDetail, ErrorResponse, Role,
-    TranslateRequest, TranslationResponse, TranslationType, Warning, WarningType,
+    ClassificationDebugInfo, ConversationMessage, CorrectTranscriptResponse, DebugInfo,
+    ErrorDetail, ErrorResponse, Role, TranslateRequest, TranslationResponse, TranslationType,
+    Warning, WarningType,
 };
 pub use few_shots::{FewShotBucketIndex, FewShotEntry};
 pub use prompts::{
+    ClassificationCategory, ClassificationLevel, DialogClassification, DialogTopic,
     EchoPromptRunner, GeminiPromptRunner, PromptError, PromptOutput, PromptRunner, TokenUsage,
 };
 
@@ -27,12 +29,16 @@ use utoipa::OpenApi;
     info(
         title = "DiWoP Conversation API",
         version = "0.1.0",
-        description = "Contract draft for alignment.\nFor partner contributions, both endpoints are called in parallel and independently.\n/correct-transcript is used exclusively for the UI display. /translate receives the originally recognized spoken texts for the entire conversation history.\nAdditional headers and timeouts are configured in the client."
+        description = "Contract draft for alignment.\nFor partner contributions, both endpoints are called in parallel and independently.\n/correct-transcript corrects spoken texts for the UI and updates the stored conversation history. /translate receives the chronological conversation history (using corrected transcripts and partner_simple entries wherever available), prepares the latest partner contribution in Leichte Sprache, and classifies the result for EU AI Act / safety disclaimers and topic monitoring.\nAdditional headers and timeouts are configured in the client."
     ),
     paths(api::correct_transcript, api::translate),
     components(schemas(
         Role,
         ConversationMessage,
+        DialogTopic,
+        ClassificationLevel,
+        ClassificationCategory,
+        ClassificationDebugInfo,
         DebugInfo,
         CorrectTranscriptResponse,
         TranslateRequest,

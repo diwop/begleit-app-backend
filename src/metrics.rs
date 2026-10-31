@@ -13,6 +13,7 @@ pub struct Metrics {
     pub http_request_duration: Histogram<f64>,
     pub gen_ai_token_usage: Histogram<u64>,
     pub translate_history_length: Histogram<u64>,
+    pub translate_classification_count: Counter<u64>,
 }
 
 impl Metrics {
@@ -41,11 +42,19 @@ impl Metrics {
             .with_unit("{message}")
             .build();
 
+        let translate_classification_count = meter
+            .u64_counter("diwop.translate.classification.count")
+            .with_description(
+                "Total number of /translate dialog classifications by topic, classification type, and category",
+            )
+            .build();
+
         Self {
             http_request_count,
             http_request_duration,
             gen_ai_token_usage,
             translate_history_length,
+            translate_classification_count,
         }
     }
 }
@@ -104,6 +113,22 @@ pub fn record_translate_history_length(history_len: usize) {
         .record(history_len as u64, &[]);
 }
 
+/// Records a completed `/translate` dialog classification with `topic`, `classification_type`, and `classification_category` attributes.
+pub fn record_translate_classification(
+    topic: &'static str,
+    classification_type: &'static str,
+    classification_category: &'static str,
+) {
+    METRICS.translate_classification_count.add(
+        1,
+        &[
+            KeyValue::new("topic", topic),
+            KeyValue::new("classification_type", classification_type),
+            KeyValue::new("classification_category", classification_category),
+        ],
+    );
+}
+
 /// Axum middleware to track HTTP request count and duration for monitored endpoints (`/correct-transcript` and `/translate`).
 pub async fn track_http_metrics(req: Request, next: Next) -> Response {
     let path = req.uri().path().to_string();
@@ -137,7 +162,9 @@ mod tests {
         record_http_request("/translate", 422, 0.010);
         record_token_usage("/correct-transcript", 50, 15, 25);
         record_token_usage("/translate", 120, 30, 45);
+        record_token_usage("/translate/classify", 80, 10, 12);
         record_translate_history_length(4);
+        record_translate_classification("juridical", "warning", "juridical");
     }
 
     #[test]
@@ -170,6 +197,14 @@ mod tests {
             ],
         );
         metrics.translate_history_length.record(3, &[]);
+        metrics.translate_classification_count.add(
+            1,
+            &[
+                KeyValue::new("topic", "medical"),
+                KeyValue::new("classification_type", "warning"),
+                KeyValue::new("classification_category", "medical"),
+            ],
+        );
 
         provider.force_flush().unwrap();
         let finished_metrics = exporter.get_finished_metrics().unwrap();

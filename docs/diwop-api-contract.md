@@ -114,8 +114,8 @@ The request uses an object with `messages` instead of a bare array so that addit
 - Consecutive contributions with the same role are allowed; alternating roles is not required.
 - For `user` and `partner` contributions, corrected transcripts from `/correct-transcript` are transmitted whenever already available; otherwise (such as for the latest `partner` contribution, or if a correction is still pending or failed), the plain recognized spoken text is transmitted.
 - `/translate` does not wait for `/correct-transcript`. For a completed partner contribution, both endpoints are called in parallel.
-- Completed `/translate` preparations (`content`) are recorded in the conversation history with role `partner_simple` immediately after the corresponding `partner` contribution and sent along in subsequent `/translate` requests.
-- The response refers to the last partner contribution and takes the previous history into account as context.
+- Completed `/translate` preparations (`content`, when non-empty) are recorded in the conversation history with role `partner_simple` immediately after the corresponding `partner` contribution and sent along in subsequent `/translate` requests.
+- The response refers to the last partner contribution, takes the previous history into account as context, and runs a post-translation safety and EU AI Act classification step (see [Classification & Disclaimers](classification-and-disclaimers.md)).
 
 ### Successful Response without Warning: `200 OK`
 
@@ -146,7 +146,7 @@ The following example illustrates the response format independently of the reque
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
 | `type` | `"formatting" \| "translation"` | Yes | Type of preparation. Use `%type=formatting%` or `%type=translation%` on staging environment to enforce. |
-| `content` | `string` | Yes | Complete prepared response as non-empty Markdown text |
+| `content` | `string` | Yes | Complete prepared response as Markdown text; empty (`""`) only when blocked by a `danger` classification (`safety` or `youth-protection`) |
 | `warning` | `Warning` | No | Optional warning; omitted when there is no warning, not transmitted as `null` |
 | `warning.headline` | `string` | If warning present | Short, non-empty headline as plain text |
 | `warning.body` | `string` | If warning present | Non-empty explanation as Markdown |
@@ -163,12 +163,14 @@ The following example illustrates the response format independently of the reque
 | Situation | Display in the App |
 | --- | --- |
 | No `warning` | `content` is immediately visible. |
-| `warning.revealable: false` | Warning and `content` are immediately visible. |
-| `warning.revealable: true` | The warning with headline and explanation as well as the button **„Antwort anzeigen“** are visible. `content` is only displayed after pressing the button. |
+| `warning.revealable: false` and non-empty `content` | Warning and `content` are immediately visible (e.g., `info` / `uncertain`). |
+| `warning.revealable: false` and `content: ""` | Only the `danger` warning is displayed; the translation was blocked (`safety` or `youth-protection`) and no reveal button is shown. |
+| `warning.revealable: true` | The warning with headline and explanation as well as the button **„Antwort anzeigen“** are visible. `content` is only displayed after pressing the button (e.g., EU AI Act / RDG `warning` disclaimers or `danger` for `hate-speech` / `injection`). |
 
 - `revealable` refers to `content`, not to `warning.body`.
 - The warning level does not automatically trigger hiding. Exclusively `revealable` controls this behavior.
 - Even when `revealable: true`, `content` is completely included in the response. Revealing is a local display action without another API call.
+- Static *Leichte Sprache* headlines, bodies, and regulatory rationale for all categories are documented in [Classification & Disclaimers](classification-and-disclaimers.md).
 
 ### Markdown
 

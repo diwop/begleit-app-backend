@@ -287,12 +287,21 @@
       const respTokens = typeof debugInfo.responseTokens === 'number' ? debugInfo.responseTokens : 0;
       const outTokens = reasTokens + respTokens;
 
-      cumulativeInputTokens += inTokens;
-      cumulativeOutputTokens += outTokens;
+      const cls = debugInfo.classification || null;
+      const clsInTokens = cls && typeof cls.inputTokens === 'number' ? cls.inputTokens : 0;
+      const clsReasTokens = cls && typeof cls.reasoningTokens === 'number' ? cls.reasoningTokens : 0;
+      const clsRespTokens = cls && typeof cls.responseTokens === 'number' ? cls.responseTokens : 0;
+      const clsOutTokens = clsReasTokens + clsRespTokens;
+
+      const totalInTokens = inTokens + clsInTokens;
+      const totalOutTokens = outTokens + clsOutTokens;
+
+      cumulativeInputTokens += totalInTokens;
+      cumulativeOutputTokens += totalOutTokens;
       updateHeaderStats();
 
       // 1. Header row badges: step cost, total input tokens (Eingabetoken), total output tokens (Ausgabetoken)
-      const cardCost = (inTokens * 0.1 + outTokens * 0.3) / 1_000_000;
+      const cardCost = (totalInTokens * 0.1 + totalOutTokens * 0.3) / 1_000_000;
       const formattedCost = formatPrice(cardCost);
 
       if (headerRowEl) {
@@ -315,13 +324,13 @@
         const inBadge = document.createElement('span');
         inBadge.className = 'debug-pill-badge card-input-tokens-badge';
         inBadge.title = 'Eingabetoken gesamt für diesen Schritt';
-        inBadge.textContent = `${formatTokens(inTokens)} Eingabetoken`;
+        inBadge.textContent = `${formatTokens(totalInTokens)} Eingabetoken`;
         badgesContainer.appendChild(inBadge);
 
         const outBadge = document.createElement('span');
         outBadge.className = 'debug-pill-badge card-tokens-badge';
         outBadge.title = 'Ausgabetoken gesamt für diesen Schritt';
-        outBadge.textContent = `${formatTokens(outTokens)} Ausgabetoken`;
+        outBadge.textContent = `${formatTokens(totalOutTokens)} Ausgabetoken`;
         badgesContainer.appendChild(outBadge);
       }
 
@@ -379,7 +388,7 @@
       }
 
       // 4. Prompt-Details collapsible block
-      let promptDetails = cardEl.querySelector('.debug-prompt-details');
+      let promptDetails = cardEl.querySelector('.debug-prompt-details:not(.debug-classification-details)');
       if (!promptDetails) {
         promptDetails = document.createElement('details');
         promptDetails.className = 'debug-prompt-details';
@@ -472,6 +481,135 @@
 
         promptDetails.appendChild(promptBody);
         bodyEl.appendChild(promptDetails);
+      }
+
+      // 5. Klassifizierung collapsible block (when post-translation classification debug info is present)
+      if (cls) {
+        let clsDetails = cardEl.querySelector('.debug-classification-details');
+        if (!clsDetails) {
+          clsDetails = document.createElement('details');
+          clsDetails.className = 'debug-prompt-details debug-classification-details';
+
+          const clsSummary = document.createElement('summary');
+          clsSummary.className = 'debug-prompt-summary';
+          const topicBadgeHtml = cls.topic
+            ? `<span class="debug-pill-badge">Thema: ${escapeHtml(cls.topic)}</span>`
+            : '';
+          const typeCatBadgeHtml = (cls.classificationType && cls.category)
+            ? `<span class="debug-pill-badge">${escapeHtml(cls.classificationType)} / ${escapeHtml(cls.category)}</span>`
+            : '';
+          clsSummary.innerHTML = `
+            <span>Klassifizierung</span>
+            <div class="debug-subsummary-right">
+              ${topicBadgeHtml}
+              ${typeCatBadgeHtml}
+              <svg class="chevron-svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M19 9l-7 7-7-7"/>
+              </svg>
+            </div>
+          `;
+          clsDetails.appendChild(clsSummary);
+
+          const clsBody = document.createElement('div');
+          clsBody.className = 'debug-prompt-body';
+
+          // Sub 1: Classification Reasoning
+          if ((cls.reasoning && cls.reasoning.trim()) || clsReasTokens > 0) {
+            const clsReasDetails = document.createElement('details');
+            clsReasDetails.className = 'debug-subdetails';
+            const clsReasContent = (cls.reasoning && cls.reasoning.trim())
+              ? `<div class="md-rendered-content">${renderSafeMarkdown(cls.reasoning)}</div>`
+              : `<span class="empty-state-text italic">(${formatTokens(clsReasTokens)} Ausgabetoken für Gedankengang verwendet)</span>`;
+            clsReasDetails.innerHTML = `
+              <summary class="debug-subsummary">
+                <span>Reasoning</span>
+                <div class="debug-subsummary-right">
+                  <span class="debug-pill-badge">${formatTokens(clsReasTokens)} Ausgabetoken</span>
+                  <svg class="chevron-svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M19 9l-7 7-7-7"/>
+                  </svg>
+                </div>
+              </summary>
+              <div class="debug-subcontent">
+                ${clsReasContent}
+              </div>
+            `;
+            clsBody.appendChild(clsReasDetails);
+          }
+
+          // Sub 2: Classification System-Prompt
+          if (cls.systemPrompt && cls.systemPrompt.trim()) {
+            const clsSysDetails = document.createElement('details');
+            clsSysDetails.className = 'debug-subdetails';
+            const clsSysTokensHtml = (cls.systemPromptTokens != null)
+              ? `<span class="debug-pill-badge">${formatTokens(cls.systemPromptTokens)} Eingabetoken</span>`
+              : '';
+            clsSysDetails.innerHTML = `
+              <summary class="debug-subsummary">
+                <span>System-Prompt</span>
+                <div class="debug-subsummary-right">
+                  ${clsSysTokensHtml}
+                  <svg class="chevron-svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M19 9l-7 7-7-7"/>
+                  </svg>
+                </div>
+              </summary>
+              <div class="debug-subcontent">
+                <pre class="debug-pre">${escapeHtml(cls.systemPrompt)}</pre>
+              </div>
+            `;
+            clsBody.appendChild(clsSysDetails);
+          }
+
+          // Sub 3: Classification Prompt
+          if (cls.prompt && cls.prompt.trim()) {
+            const clsPDetails = document.createElement('details');
+            clsPDetails.className = 'debug-subdetails';
+            const clsPTokens = cls.promptTokens ?? clsInTokens;
+            const clsPTokensHtml = (clsPTokens != null)
+              ? `<span class="debug-pill-badge">${formatTokens(clsPTokens)} Eingabetoken</span>`
+              : '';
+            clsPDetails.innerHTML = `
+              <summary class="debug-subsummary">
+                <span>Prompt</span>
+                <div class="debug-subsummary-right">
+                  ${clsPTokensHtml}
+                  <svg class="chevron-svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M19 9l-7 7-7-7"/>
+                  </svg>
+                </div>
+              </summary>
+              <div class="debug-subcontent">
+                <pre class="debug-pre">${escapeHtml(cls.prompt)}</pre>
+              </div>
+            `;
+            clsBody.appendChild(clsPDetails);
+          }
+
+          // Sub 4: Classification JSON Output
+          if (cls.rawResponse && cls.rawResponse.trim()) {
+            const clsOutDetails = document.createElement('details');
+            clsOutDetails.className = 'debug-subdetails';
+            clsOutDetails.innerHTML = `
+              <summary class="debug-subsummary">
+                <span>JSON-Ausgabe</span>
+                <div class="debug-subsummary-right">
+                  <span class="debug-pill-badge">${formatTokens(clsRespTokens)} Ausgabetoken</span>
+                  <svg class="chevron-svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M19 9l-7 7-7-7"/>
+                  </svg>
+                </div>
+              </summary>
+              <div class="debug-subcontent">
+                <pre class="debug-pre">${escapeHtml(cls.rawResponse)}</pre>
+              </div>
+            `;
+            clsBody.appendChild(clsOutDetails);
+          }
+
+          clsDetails.appendChild(clsBody);
+          bodyEl.appendChild(clsDetails);
+        }
       }
     }
 
@@ -739,28 +877,30 @@
             body.appendChild(warningEl);
           }
 
-          // Content container
-          const contentContainer = document.createElement('div');
-          contentContainer.className = 'md-rendered-content';
-          contentContainer.innerHTML = renderSafeMarkdown(data.content);
+          // Content container (omitted when content is empty, e.g. blocked safety / youth-protection danger response)
+          if (data.content) {
+            const contentContainer = document.createElement('div');
+            contentContainer.className = 'md-rendered-content';
+            contentContainer.innerHTML = renderSafeMarkdown(data.content);
 
-          if (data.warning && data.warning.revealable) {
-            contentContainer.style.display = 'none';
+            if (data.warning && data.warning.revealable) {
+              contentContainer.style.display = 'none';
 
-            const revealBtn = document.createElement('button');
-            revealBtn.type = 'button';
-            revealBtn.className = 'btn btn-secondary btn-sm reveal-btn';
-            revealBtn.textContent = 'Antwort anzeigen';
-            revealBtn.addEventListener('click', () => {
-              contentContainer.style.display = 'block';
-              revealBtn.remove();
-              scrollToBottom();
-            });
+              const revealBtn = document.createElement('button');
+              revealBtn.type = 'button';
+              revealBtn.className = 'btn btn-secondary btn-sm reveal-btn';
+              revealBtn.textContent = 'Antwort anzeigen';
+              revealBtn.addEventListener('click', () => {
+                contentContainer.style.display = 'block';
+                revealBtn.remove();
+                scrollToBottom();
+              });
 
-            body.appendChild(revealBtn);
+              body.appendChild(revealBtn);
+            }
+
+            body.appendChild(contentContainer);
           }
-
-          body.appendChild(contentContainer);
 
           if (data && data.debugInfo) {
             attachDebugInfo(leichteCard, headerRow, body, data.debugInfo, data.reasoning);

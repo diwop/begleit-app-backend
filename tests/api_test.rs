@@ -1,8 +1,8 @@
 use diwop_begleitapp::{
-    create_app, create_app_with_runner_and_readiness, ConversationMessage,
-    CorrectTranscriptResponse, EchoPromptRunner, ErrorResponse, PromptError, PromptOutput,
-    PromptRunner, Role, TokenUsage, TranslateRequest, TranslationResponse, TranslationType,
-    Warning, WarningType,
+    create_app, create_app_with_runner_and_readiness, ClassificationCategory, ClassificationLevel,
+    ConversationMessage, CorrectTranscriptResponse, DialogTopic, EchoPromptRunner, ErrorResponse,
+    PromptError, PromptOutput, PromptRunner, Role, TokenUsage, TranslateRequest,
+    TranslationResponse, TranslationType, Warning, WarningType,
 };
 use std::future::Future;
 use std::pin::Pin;
@@ -16,43 +16,67 @@ struct RecordedCall {
     system_prompt: String,
     prompt: String,
     thinking_level: String,
+    has_json_schema: bool,
 }
 
-/// Configurable mock [`PromptRunner`] that records calls and returns a canned response.
+/// Configurable mock [`PromptRunner`] that records calls and returns canned responses for primary and classification prompts.
 struct MockPromptRunner {
     calls: Mutex<Vec<RecordedCall>>,
     response: Result<String, String>,
+    classify_response: Result<String, String>,
 }
 
 impl MockPromptRunner {
-    /// Creates a new [`MockPromptRunner`] that returns `response` on every invocation.
+    /// Creates a new [`MockPromptRunner`] that returns `response` for primary prompts and a default
+    /// `pass`/`ok`/`other` classification response (or propagates `Err` if `response` is `Err`).
     fn new(response: Result<String, String>) -> Arc<Self> {
+        let classify_response = match &response {
+            Ok(_) => Ok(r#"{"type":"pass","category":"ok","topic":"other"}"#.to_string()),
+            Err(e) => Err(e.clone()),
+        };
+        Self::with_classification(response, classify_response)
+    }
+
+    /// Creates a new [`MockPromptRunner`] with explicit canned responses for primary prompts and dialog classification.
+    fn with_classification(
+        response: Result<String, String>,
+        classify_response: Result<String, String>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             calls: Mutex::new(Vec::new()),
             response,
+            classify_response,
         })
     }
 
-    /// Returns a snapshot of all recorded [`PromptRunner::run_prompt`] calls.
+    /// Returns a snapshot of all recorded [`PromptRunner`] calls.
     fn recorded_calls(&self) -> Vec<RecordedCall> {
         self.calls.lock().unwrap().clone()
     }
-}
 
-impl PromptRunner for MockPromptRunner {
-    fn run_prompt<'a>(
-        &'a self,
-        system_prompt: &'a str,
-        prompt: &'a str,
-        thinking_level: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<PromptOutput, PromptError>> + Send + 'a>> {
+    /// Records a call and produces the configured [`PromptOutput`] or [`PromptError`].
+    fn handle_call(
+        &self,
+        system_prompt: &str,
+        prompt: &str,
+        thinking_level: &str,
+        has_json_schema: bool,
+    ) -> Result<PromptOutput, PromptError> {
         self.calls.lock().unwrap().push(RecordedCall {
             system_prompt: system_prompt.to_string(),
             prompt: prompt.to_string(),
             thinking_level: thinking_level.to_string(),
+            has_json_schema,
         });
-        let res = self
-            .response
+
+        let selected =
+            if system_prompt == diwop_begleitapp::prompts::CLASSIFY_DIALOG_SYSTEM_PROMPT.as_str() {
+                &self.classify_response
+            } else {
+                &self.response
+            };
+
+        selected
             .clone()
             .map(|text| PromptOutput {
                 text,
@@ -63,7 +87,29 @@ impl PromptRunner for MockPromptRunner {
                     output_tokens: 15,
                 },
             })
-            .map_err(PromptError);
+            .map_err(PromptError)
+    }
+}
+
+impl PromptRunner for MockPromptRunner {
+    fn run_prompt<'a>(
+        &'a self,
+        system_prompt: &'a str,
+        prompt: &'a str,
+        thinking_level: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<PromptOutput, PromptError>> + Send + 'a>> {
+        let res = self.handle_call(system_prompt, prompt, thinking_level, false);
+        Box::pin(async move { res })
+    }
+
+    fn run_prompt_with_schema<'a>(
+        &'a self,
+        system_prompt: &'a str,
+        prompt: &'a str,
+        thinking_level: &'a str,
+        _json_schema: &'a serde_json::Value,
+    ) -> Pin<Box<dyn Future<Output = Result<PromptOutput, PromptError>> + Send + 'a>> {
+        let res = self.handle_call(system_prompt, prompt, thinking_level, true);
         Box::pin(async move { res })
     }
 }
@@ -349,12 +395,14 @@ async fn test_translate_directives_for_type_and_warning() {
     );
 }
 
-/// Verifies that `POST /correct-transcript` and `POST /translate` render prompts, parse model outputs, and map runner errors to 503.
+/// Verifies that `POST /correct-transcript` (`"minimal"` reasoning) and `POST /translate`
+/// (`"medium"` translation followed by `"low"` structured JSON classification) render prompts,
+/// parse model outputs, and map runner errors to 503.
 #[tokio::test]
 async fn test_prompt_runner_integration_and_error_handling() {
     let client = reqwest::Client::new();
 
-    // 1. /correct-transcript with MockPromptRunner
+    // 1. /correct-transcript with MockPromptRunner ("minimal" thinking)
     let mock_correct = MockPromptRunner::new(Ok(
         "Sie müssen den Antrag bis Ende nächster Woche abgeben.".to_string(),
     ));
@@ -378,12 +426,13 @@ async fn test_prompt_runner_integration_and_error_handling() {
 
     let calls = mock_correct.recorded_calls();
     assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].thinking_level, "low");
+    assert_eq!(calls[0].thinking_level, "minimal");
+    assert!(!calls[0].has_json_schema);
     assert!(calls[0]
         .prompt
         .contains("sie müssen den antrag bis ende nächste woche abgeben"));
 
-    // 2. /translate with MockPromptRunner returning ÜBERSETZUNG
+    // 2. /translate with MockPromptRunner returning ÜBERSETZUNG + pass/ok classification
     let mock_translate = MockPromptRunner::new(Ok(
         "ÜBERSETZUNG\nGeben Sie den Antrag **bis Ende nächster Woche** ab.".to_string(),
     ));
@@ -420,8 +469,10 @@ async fn test_prompt_runner_integration_and_error_handling() {
     );
 
     let calls = mock_translate.recorded_calls();
-    assert_eq!(calls.len(), 1);
+    assert_eq!(calls.len(), 2);
+    // Step 1: translate ("medium", free-text header + markdown)
     assert_eq!(calls[0].thinking_level, "medium");
+    assert!(!calls[0].has_json_schema);
     assert!(calls[0]
         .prompt
         .contains("User: wann muss ich den antrag abgeben"));
@@ -431,6 +482,19 @@ async fn test_prompt_runner_integration_and_error_handling() {
     assert!(calls[0]
         .prompt
         .contains("sie müssen den antrag bis ende nächste woche abgeben"));
+
+    // Step 2: classify-dialog ("low", structured JSON schema)
+    assert_eq!(calls[1].thinking_level, "low");
+    assert!(calls[1].has_json_schema);
+    assert!(calls[1]
+        .prompt
+        .contains("User: wann muss ich den antrag abgeben"));
+    assert!(calls[1]
+        .prompt
+        .contains("```input\nsie müssen den antrag bis ende nächste woche abgeben\n```"));
+    assert!(calls[1]
+        .prompt
+        .contains("```translation\nGeben Sie den Antrag **bis Ende nächster Woche** ab.\n```"));
 
     // 3. Model error -> 503 SERVICE_UNAVAILABLE
     let mock_err = MockPromptRunner::new(Err("Gemini timeout".to_string()));
@@ -465,9 +529,168 @@ async fn test_prompt_runner_integration_and_error_handling() {
     assert_eq!(err.error.code, "SERVICE_UNAVAILABLE");
 }
 
-/// Verifies that `GET /healthz` returns `200 OK`.
+/// Verifies `POST /translate` warning boxes, `revealable` gating, empty-answer blocking for
+/// `safety` and `youth-protection`, and fail-closed `503 SERVICE_UNAVAILABLE` when classification fails.
 #[tokio::test]
-async fn test_healthz_endpoint() {
+async fn test_translate_classification_categories_and_fail_closed() {
+    std::env::remove_var("ENVIRONMENT");
+    let client = reqwest::Client::new();
+    let sample_req = TranslateRequest {
+        messages: vec![ConversationMessage {
+            role: Role::Partner,
+            message: "Beispielaussage des Gesprächspartners.".to_string(),
+        }],
+    };
+
+    // 1. info / uncertain -> revealable: false, content preserved
+    let mock_info = MockPromptRunner::with_classification(
+        Ok("ÜBERSETZUNG\nVielleicht meint die Person das so.".to_string()),
+        Ok(r#"{"type":"info","category":"uncertain","topic":"shopping"}"#.to_string()),
+    );
+    let url_info = start_server_with_runner(mock_info).await;
+    let body_info: TranslationResponse = client
+        .post(format!("{}/translate", url_info))
+        .json(&sample_req)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body_info.content, "Vielleicht meint die Person das so.");
+    let w_info = body_info.warning.expect("Expected info warning");
+    assert_eq!(w_info.r#type, WarningType::Info);
+    assert!(!w_info.revealable);
+    assert_eq!(w_info.headline, "Unsichere Übersetzung");
+
+    // 2. warning / juridical -> revealable: true, content preserved
+    let mock_warn = MockPromptRunner::with_classification(
+        Ok("ÜBERSETZUNG\nDas bedeutet eine gesetzliche Frist.".to_string()),
+        Ok(r#"{"type":"warning","category":"juridical","topic":"juridical"}"#.to_string()),
+    );
+    let url_warn = start_server_with_runner(mock_warn).await;
+    let body_warn: TranslationResponse = client
+        .post(format!("{}/translate", url_warn))
+        .json(&sample_req)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body_warn.content, "Das bedeutet eine gesetzliche Frist.");
+    let w_warn = body_warn.warning.expect("Expected juridical warning");
+    assert_eq!(w_warn.r#type, WarningType::Warning);
+    assert!(w_warn.revealable);
+    assert_eq!(w_warn.headline, "Hinweis zu Rechts-Themen");
+
+    // 3. danger / hate-speech -> revealable: true, content preserved
+    let mock_hate = MockPromptRunner::with_classification(
+        Ok("ÜBERSETZUNG\nBeleidigende Aussage.".to_string()),
+        Ok(r#"{"type":"danger","category":"hate-speech","topic":"social"}"#.to_string()),
+    );
+    let url_hate = start_server_with_runner(mock_hate).await;
+    let body_hate: TranslationResponse = client
+        .post(format!("{}/translate", url_hate))
+        .json(&sample_req)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body_hate.content, "Beleidigende Aussage.");
+    let w_hate = body_hate.warning.expect("Expected hate-speech danger box");
+    assert_eq!(w_hate.r#type, WarningType::Danger);
+    assert!(w_hate.revealable);
+    assert_eq!(w_hate.headline, "Verletzende Sprache erkannt");
+
+    // 4. danger / safety -> blocked empty content "", forced TranslationType::Translation, revealable: false
+    let mock_safety = MockPromptRunner::with_classification(
+        Ok("FORMATIERUNG\nGefährliche Anleitung.".to_string()),
+        Ok(r#"{"type":"danger","category":"safety","topic":"emergency"}"#.to_string()),
+    );
+    let url_safety = start_server_with_runner(mock_safety).await;
+    let body_safety: TranslationResponse = client
+        .post(format!("{}/translate", url_safety))
+        .json(&sample_req)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body_safety.r#type, TranslationType::Translation);
+    assert_eq!(body_safety.content, "");
+    let w_safety = body_safety.warning.expect("Expected safety danger box");
+    assert_eq!(w_safety.r#type, WarningType::Danger);
+    assert!(!w_safety.revealable);
+    assert_eq!(
+        w_safety.headline,
+        "Aussage aus Sicherheits-Gründen blockiert"
+    );
+
+    // 5. danger / youth-protection -> blocked empty content "", revealable: false
+    let mock_youth = MockPromptRunner::with_classification(
+        Ok("ÜBERSETZUNG\nUngeeigneter Inhalt.".to_string()),
+        Ok(r#"{"type":"danger","category":"youth-protection","topic":"social"}"#.to_string()),
+    );
+    let url_youth = start_server_with_runner(mock_youth).await;
+    let body_youth: TranslationResponse = client
+        .post(format!("{}/translate", url_youth))
+        .json(&sample_req)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body_youth.content, "");
+    let w_youth = body_youth
+        .warning
+        .expect("Expected youth-protection danger box");
+    assert_eq!(w_youth.r#type, WarningType::Danger);
+    assert!(!w_youth.revealable);
+    assert_eq!(w_youth.headline, "Aussage zum Jugend-Schutz blockiert");
+
+    // 6. Classification LLM failure -> fail closed with 503 SERVICE_UNAVAILABLE
+    let mock_cls_err = MockPromptRunner::with_classification(
+        Ok("ÜBERSETZUNG\nNormaler Text.".to_string()),
+        Err("Classification model timeout".to_string()),
+    );
+    let url_cls_err = start_server_with_runner(mock_cls_err).await;
+    let res_cls_err = client
+        .post(format!("{}/translate", url_cls_err))
+        .json(&sample_req)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        res_cls_err.status(),
+        reqwest::StatusCode::SERVICE_UNAVAILABLE
+    );
+
+    // 7. Classification invalid JSON / mismatched hierarchy -> fail closed with 503 SERVICE_UNAVAILABLE
+    let mock_bad_json = MockPromptRunner::with_classification(
+        Ok("ÜBERSETZUNG\nNormaler Text.".to_string()),
+        Ok(r#"{"type":"pass","category":"safety","topic":"other"}"#.to_string()),
+    );
+    let url_bad_json = start_server_with_runner(mock_bad_json).await;
+    let res_bad_json = client
+        .post(format!("{}/translate", url_bad_json))
+        .json(&sample_req)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        res_bad_json.status(),
+        reqwest::StatusCode::SERVICE_UNAVAILABLE
+    );
+}
+
+/// Verifies that `GET /healthz` and `GET /api-docs/openapi.json` return `200 OK` with registered classification schemas.
+#[tokio::test]
+async fn test_healthz_and_openapi_endpoints() {
     let base_url = start_server().await;
     let client = reqwest::Client::new();
 
@@ -476,8 +699,17 @@ async fn test_healthz_endpoint() {
         .send()
         .await
         .unwrap();
-
     assert_eq!(res.status(), reqwest::StatusCode::OK);
+
+    let openapi_res = client
+        .get(format!("{}/api-docs/openapi.json", base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(openapi_res.status(), reqwest::StatusCode::OK);
+    let openapi_json = openapi_res.text().await.unwrap();
+    assert!(openapi_json.contains("ClassificationDebugInfo"));
+    assert!(openapi_json.contains("DialogTopic"));
 }
 
 /// Verifies that `GET /readyz` returns `200 OK` when the readiness flag is `true`.
@@ -540,8 +772,8 @@ async fn test_readyz_startup_warmup_transition() {
 }
 
 /// Verifies that `POST /translate` supports `partner_simple` in history, formats it as
-/// `Partner (Leichte Sprache): ...`, injects dynamic few-shot examples from the matching bucket,
-/// and rejects `partner_simple` when it is the final message.
+/// `Partner (Leichte Sprache): ...` in both translation and classification prompts,
+/// injects dynamic few-shot examples from the matching bucket, and rejects `partner_simple` as the final message.
 #[tokio::test]
 async fn test_translate_partner_simple_role_and_dynamic_few_shots() {
     let client = reqwest::Client::new();
@@ -582,10 +814,10 @@ async fn test_translate_partner_simple_role_and_dynamic_few_shots() {
     assert_eq!(body.content, "Bringen Sie **Ihren Ausweis** mit.");
 
     let calls = mock_translate.recorded_calls();
-    assert_eq!(calls.len(), 1);
-    assert!(calls[0].prompt.contains(
-        "Partner: Guten Tag, Sie möchten Ihren Reisepass abholen?\n\nPartner (Leichte Sprache): Guten Tag!\nWollen Sie Ihren **Reisepass** abholen?\n\nUser: Ja, genau."
-    ));
+    assert_eq!(calls.len(), 2);
+    let expected_history = "Partner: Guten Tag, Sie möchten Ihren Reisepass abholen?\n\nPartner (Leichte Sprache): Guten Tag!\nWollen Sie Ihren **Reisepass** abholen?\n\nUser: Ja, genau.";
+    assert!(calls[0].prompt.contains(expected_history));
+    assert!(calls[1].prompt.contains(expected_history));
     assert!(calls[0]
         .prompt
         .contains("Hier sind Beispiele für Übersetzungen von Dialogen in Leichte Sprache:"));
@@ -613,14 +845,16 @@ async fn test_translate_partner_simple_role_and_dynamic_few_shots() {
     assert_eq!(err.error.code, "LAST_MESSAGE_MUST_BE_PARTNER");
 }
 
-/// Verifies that `debugInfo` is omitted by default and populated on `/correct-transcript`
-/// and `/translate` only when a valid admin password or `admin_session` cookie is sent.
+/// Verifies that `debugInfo` (including `debugInfo.classification` on `/translate`) is omitted by default
+/// and populated only when a valid admin password or `admin_session` cookie is sent.
 #[tokio::test]
 async fn test_debug_info_populated_only_with_valid_admin_token() {
+    std::env::remove_var("ENVIRONMENT");
     let client = reqwest::Client::new();
-    let mock_runner = MockPromptRunner::new(Ok(
-        "FORMATIERUNG\nBringen Sie **Ihren Ausweis** mit.".to_string()
-    ));
+    let mock_runner = MockPromptRunner::with_classification(
+        Ok("FORMATIERUNG\nBringen Sie **Ihren Ausweis** mit.".to_string()),
+        Ok(r#"{"type":"warning","category":"authorities","topic":"authorities"}"#.to_string()),
+    );
     let base_url = start_server_with_runner(mock_runner).await;
 
     // Default debug ADMIN_PASSWORD is "admin"
@@ -640,7 +874,7 @@ async fn test_debug_info_populated_only_with_valid_admin_token() {
     let raw_no_admin: serde_json::Value = res_no_admin.json().await.unwrap();
     assert!(raw_no_admin.get("debugInfo").is_none());
 
-    // 2. /correct-transcript with Bearer admin password -> debugInfo populated, examples omitted
+    // 2. /correct-transcript with Bearer admin password -> debugInfo populated, examples & classification omitted
     let res_admin_ct = client
         .post(format!("{}/correct-transcript", base_url))
         .header("Authorization", "Bearer admin")
@@ -654,6 +888,7 @@ async fn test_debug_info_populated_only_with_valid_admin_token() {
     assert_eq!(res_admin_ct.status(), reqwest::StatusCode::OK);
     let raw_ct: serde_json::Value = res_admin_ct.json().await.unwrap();
     assert!(raw_ct["debugInfo"]["examples"].is_null());
+    assert!(raw_ct["debugInfo"]["classification"].is_null());
     let body_ct: CorrectTranscriptResponse = serde_json::from_value(raw_ct).unwrap();
     let dbg_ct = body_ct
         .debug_info
@@ -672,8 +907,9 @@ async fn test_debug_info_populated_only_with_valid_admin_token() {
     assert_eq!(dbg_ct.response_tokens, 15);
     assert_eq!(dbg_ct.reasoning.as_deref(), Some("Mock reasoning"));
     assert!(dbg_ct.examples.is_none());
+    assert!(dbg_ct.classification.is_none());
 
-    // 3. /translate with admin_session cookie -> debugInfo populated with few-shot examples
+    // 3. /translate with admin_session cookie -> debugInfo populated with few-shot examples and classification details
     let res_admin_tr = client
         .post(format!("{}/translate", base_url))
         .header("Cookie", format!("admin_session={admin_session}"))
@@ -688,6 +924,10 @@ async fn test_debug_info_populated_only_with_valid_admin_token() {
         .unwrap();
     assert_eq!(res_admin_tr.status(), reqwest::StatusCode::OK);
     let body_tr: TranslationResponse = res_admin_tr.json().await.unwrap();
+    assert_eq!(
+        body_tr.warning.as_ref().map(|w| w.headline.as_str()),
+        Some("Hinweis zu Amts-Themen")
+    );
     let dbg_tr = body_tr
         .debug_info
         .expect("Expected debugInfo on admin /translate");
@@ -709,4 +949,18 @@ async fn test_debug_info_populated_only_with_valid_admin_token() {
         .expect("Expected dynamic few-shot examples in translate debugInfo");
     assert_eq!(examples.len(), 3);
     assert!(examples[0].contains("```history"));
+
+    let cls = dbg_tr
+        .classification
+        .expect("Expected classification debug details on /translate");
+    assert_eq!(cls.topic, DialogTopic::Authorities);
+    assert_eq!(cls.classification_type, ClassificationLevel::Warning);
+    assert_eq!(cls.category, ClassificationCategory::Authorities);
+    assert!(cls.system_prompt_tokens > 0);
+    assert!(cls.prompt_tokens > 0);
+    assert_eq!(cls.input_tokens, 10);
+    assert_eq!(cls.reasoning_tokens, 5);
+    assert_eq!(cls.response_tokens, 15);
+    assert_eq!(cls.reasoning.as_deref(), Some("Mock reasoning"));
+    assert!(cls.raw_response.contains("\"authorities\""));
 }

@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DialogClassification",
+  "$defs": {
+    "topic": {
+      "type": "string",
+      "enum": [
+        "medical",
+        "shopping",
+        "social",
+        "education",
+        "emergency",
+        "authorities",
+        "financial",
+        "mobility",
+        "juridical",
+        "other"
+      ]
+    }
+  },
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["type", "category", "topic"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string", "enum": ["pass"] },
+        "category": { "type": "string", "enum": ["ok"] },
+        "topic": { "$ref": "#/$defs/topic" }
+      }
+    },
+    {
+      "type": "object",
+      "required": ["type", "category", "topic"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string", "enum": ["info"] },
+        "category": { "type": "string", "enum": ["uncertain"] },
+        "topic": { "$ref": "#/$defs/topic" }
+      }
+    },
+    {
+      "type": "object",
+      "required": ["type", "category", "topic"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string", "enum": ["warning"] },
+        "category": {
+          "type": "string",
+          "enum": ["medical", "financial", "juridical", "authorities"]
+        },
+        "topic": { "$ref": "#/$defs/topic" }
+      }
+    },
+    {
+      "type": "object",
+      "required": ["type", "category", "topic"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string", "enum": ["danger"] },
+        "category": {
+          "type": "string",
+          "enum": ["safety", "hate-speech", "youth-protection", "injection"]
+        },
+        "topic": { "$ref": "#/$defs/topic" }
+      }
+    }
+  ]
+}
