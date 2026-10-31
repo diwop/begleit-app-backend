@@ -34,7 +34,7 @@ pub enum Role {
 pub struct ConversationMessage {
     /// `user` is the app user, `partner` is the conversation partner, and `partner_simple` is a previously translated simple-language partner contribution.
     pub role: Role,
-    /// Originally recognized spoken text as plain text.
+    /// Corrected transcript if available (otherwise plain recognized text) for `user` and `partner`, or prepared Markdown content for `partner_simple`.
     #[schema(
         min_length = 1,
         pattern = r"\S",
@@ -312,15 +312,16 @@ pub fn is_non_blank(text: &str) -> bool {
     !text.trim().is_empty()
 }
 
-/// Correct spoken contribution for the UI.
+/// Correct spoken contribution for the UI and subsequent conversation history.
 ///
 /// For user and partner. Corrects recognition errors, spelling, and
 /// punctuation; preserves meaning, language, and tone and does not add
 /// information. If no correction is needed, the text is returned unchanged.
 /// Processes only the individual contribution, without conversation history.
-/// The corrected text replaces only the UI display, not the original text
-/// for /translate. In case of an error, the original remains visible;
-/// the correction can be retried independently of /translate.
+/// The corrected text replaces the UI display and updates the stored
+/// conversation history entry for subsequent /translate requests. In case of
+/// an error, the original remains visible and in history; the correction can
+/// be retried independently of /translate.
 #[utoipa::path(
     post,
     path = "/correct-transcript",
@@ -519,16 +520,17 @@ pub async fn correct_transcript(
 
 /// Prepare the last statement from "partner" in German simple language.
 ///
-/// Receives the conversation history chronologically with the originally recognized
-/// spoken texts, not the UI corrections. Generated preparations are not sent along
-/// as conversation contributions. Earlier contributions provide context; the response
-/// refers to the last statement from "partner".
+/// Receives the conversation history chronologically, using corrected transcripts
+/// for earlier "user" and "partner" contributions whenever already available
+/// (falling back to plain recognized texts when still pending or failed, such as
+/// for the latest "partner" contribution) and including completed preparations as
+/// "partner_simple" contributions. Earlier contributions provide context; the
+/// response refers to the last statement from "partner".
 /// The last message MUST have the role "partner" (server-side validation;
 /// otherwise 422 LAST_MESSAGE_MUST_BE_PARTNER).
 /// Consecutive contributions with the same role are allowed.
 /// Starts in parallel with /correct-transcript and does not wait for its result.
 /// The order of responses is arbitrary; errors do not block the respective other call.
-/// Retries continue to use the original texts.
 #[utoipa::path(
     post,
     path = "/translate",

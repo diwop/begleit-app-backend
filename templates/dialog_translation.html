@@ -106,7 +106,7 @@
     let activeCardElements = null;
     let currentFinalTranscript = '';
     let currentInterimTranscript = '';
-    let dialogHistory = []; // [ { role: 'user' | 'partner', message: string } ]
+    let dialogHistory = []; // [ { role: 'user' | 'partner' | 'partner_simple', message: string, forEntry?: object } ]
     let cumulativeInputTokens = 0;
     let cumulativeOutputTokens = 0;
 
@@ -575,24 +575,36 @@
 
       cardElements.textSpan.textContent = rawTranscript;
 
-      // Add to conversation history snapshot
+      // Add to conversation history (initially plain transcript; updated in place when /correct-transcript completes)
       const currentEntry = {
         role: role === 'user' ? 'user' : 'partner',
         message: rawTranscript
       };
       dialogHistory.push(currentEntry);
-      const historySnapshot = dialogHistory.slice();
 
       // 1. Parallel call to /correct-transcript
-      correctTranscript(role, rawTranscript, cardElements.textSpan, cardElements.card, cardElements.headerRow, cardElements.body);
+      correctTranscript(role, rawTranscript, currentEntry, cardElements.textSpan, cardElements.card, cardElements.headerRow, cardElements.body);
 
       // 2. Parallel call to /translate for GesprächspartnerIn
       if (role === 'partner') {
-        runTranslation(historySnapshot, cardElements.card, rawTranscript);
+        runTranslation(currentEntry, cardElements.card);
       }
     }
 
-    async function correctTranscript(role, rawMessage, textSpanEl, cardEl, headerRowEl, bodyEl) {
+    /**
+     * Builds the chronological messages payload up to (and including) targetPartnerEntry,
+     * sending corrected transcripts and partner_simple entries wherever already available.
+     */
+    function buildTranslateMessages(targetPartnerEntry) {
+      const idx = dialogHistory.indexOf(targetPartnerEntry);
+      const slice = idx !== -1 ? dialogHistory.slice(0, idx + 1) : [targetPartnerEntry];
+      return slice.map(item => ({
+        role: item.role,
+        message: item.message
+      }));
+    }
+
+    async function correctTranscript(role, rawMessage, historyEntry, textSpanEl, cardEl, headerRowEl, bodyEl) {
       try {
         const headers = { 'Content-Type': 'application/json' };
         if (EMBEDDED_API_KEY) {
@@ -607,7 +619,11 @@
 
         if (res.ok) {
           const data = await res.json();
+          if (dialogHistory.indexOf(historyEntry) === -1) {
+            return;
+          }
           if (data && data.message) {
+            historyEntry.message = data.message;
             textSpanEl.textContent = data.message;
           }
           if (data && data.debugInfo) {
@@ -619,7 +635,7 @@
       }
     }
 
-    async function runTranslation(historySnapshot, partnerCardEl, rawMessage) {
+    async function runTranslation(partnerEntry, partnerCardEl) {
       // Immediately create a loading card for GesprächspartnerIn (Leichte Sprache)
       const leichteCard = document.createElement('div');
       leichteCard.className = 'dialog-card card-partner-leichte';
@@ -666,10 +682,11 @@
             headers['Authorization'] = `Bearer ${EMBEDDED_API_KEY}`;
           }
 
+          const messagesPayload = buildTranslateMessages(partnerEntry);
           const res = await fetch('/translate', {
             method: 'POST',
             headers,
-            body: JSON.stringify({ messages: historySnapshot })
+            body: JSON.stringify({ messages: messagesPayload })
           });
 
           if (!res.ok) {
@@ -677,6 +694,24 @@
           }
 
           const data = await res.json();
+
+          // Record prepared simple-language content immediately after partnerEntry in dialogHistory
+          const partnerIdx = dialogHistory.indexOf(partnerEntry);
+          if (partnerIdx === -1) {
+            return;
+          }
+          if (data && data.content) {
+            const nextEntry = dialogHistory[partnerIdx + 1];
+            if (nextEntry && nextEntry.role === 'partner_simple' && nextEntry.forEntry === partnerEntry) {
+              nextEntry.message = data.content;
+            } else {
+              dialogHistory.splice(partnerIdx + 1, 0, {
+                role: 'partner_simple',
+                message: data.content,
+                forEntry: partnerEntry
+              });
+            }
+          }
 
           // If type is formatting: remove original partner card
           if (data.type === 'formatting' && partnerCardEl.parentNode) {

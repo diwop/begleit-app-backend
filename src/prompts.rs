@@ -472,7 +472,8 @@ mod tests {
         assert!(!prompt.contains("%HISTORY%"));
     }
 
-    /// Verifies `format_translate_history`, `count_history_turns`, `determine_history_bucket`, and `partner_simple` capping.
+    /// Verifies `format_translate_history`, `count_history_turns`, `determine_history_bucket`, `partner_simple` capping,
+    /// and raw Speech-to-Text guidance in the zero-shot fallback prompt.
     #[test]
     fn test_build_translate_prompt_and_partner_simple_history() {
         assert_eq!(format_translate_history(&[]), "keine Historie");
@@ -497,6 +498,7 @@ mod tests {
         assert_eq!(determine_history_bucket(&history), 2);
 
         let prompt = build_translate_prompt(&history, "Neue Aussage");
+        assert!(prompt.contains("rohes, unkorrigiertes Speech-to-Text-Transkript"));
         assert!(prompt.contains(
             "User: Frage 1\n\nPartner: Antwort 1\n\nPartner (Leichte Sprache): ÜBERSETZUNG\nEinfache Antwort 1"
         ));
@@ -563,8 +565,8 @@ mod tests {
         assert!(formatted.contains("User: Turn 7 (kept 5)"));
     }
 
-    /// Verifies that `build_translate_prompt_with_few_shots` injects `%FEW_SHOTS%` and that `EchoPromptRunner`
-    /// still extracts the final `input` block rather than a few-shot's `input` block.
+    /// Verifies that `build_translate_prompt_with_few_shots` injects `%FEW_SHOTS%`, contrasts clean few-shot transcripts
+    /// with raw STT input, and that `EchoPromptRunner` extracts the final `input` block rather than a few-shot's `input` block.
     #[tokio::test]
     async fn test_build_translate_prompt_with_few_shots_and_echo() {
         let sample_entry = FewShotEntry {
@@ -588,6 +590,10 @@ mod tests {
             .contains("Hier sind Beispiele für Übersetzungen von Dialogen in Leichte Sprache:"));
         assert!(rendered.contains("Beispiel Eingabe"));
         assert!(rendered.contains("# Deine Übersetzung"));
+        assert!(rendered.contains(
+            "In den Beispielen oben liegen alle Transkripte bereits sprachlich bereinigt vor."
+        ));
+        assert!(rendered.contains("rohes, unkorrigiertes Speech-to-Text-Transkript"));
         assert!(rendered.contains("```input\nEchte Nutzer Eingabe\n```"));
 
         let runner = EchoPromptRunner;
@@ -598,12 +604,26 @@ mod tests {
         assert_eq!(out.text, "FORMATIERUNG\nEchte Nutzer Eingabe");
     }
 
-    /// Verifies that `TRANSLATE_SYSTEM_PROMPT` contains the core translation rules without unreplaced placeholders.
+    /// Verifies that `TRANSLATE_SYSTEM_PROMPT` contains the raw STT transcript correction guidance
+    /// and core translation rules without unreplaced placeholders or direct references to model reasoning.
     #[test]
     fn test_translate_system_prompt() {
+        assert!(TRANSLATE_SYSTEM_PROMPT.contains("# Eingabe (Rohes Sprach-Transkript)"));
+        assert!(TRANSLATE_SYSTEM_PROMPT
+            .contains("Prüfe auf Basis der sprachlich korrigierten Aussage von Partner"));
         assert!(TRANSLATE_SYSTEM_PROMPT.contains("# Regeln für Leichte Sprache"));
         assert!(TRANSLATE_SYSTEM_PROMPT.contains("ÜBERSETZUNG oder FORMATIERUNG"));
         assert!(!TRANSLATE_SYSTEM_PROMPT.contains("%translate-few-shots.md%"));
+
+        for template in [
+            TRANSLATE_SYSTEM_PROMPT,
+            TRANSLATE_PROMPT_TEMPLATE,
+            TRANSLATE_DYNAMIC_FEW_SHOTS_PROMPT_TEMPLATE,
+        ] {
+            let lower = template.to_lowercase();
+            assert!(!lower.contains("reasoning"));
+            assert!(!lower.contains("chain-of-thought"));
+        }
     }
 
     /// Verifies that `parse_translate_output` extracts `TranslationType` from the first line (`ÜBERSETZUNG` vs `FORMATIERUNG`).

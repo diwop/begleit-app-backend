@@ -353,4 +353,16 @@ async fn test_authenticated_dialog_translation_serves_interface() {
         html.contains("card-input-tokens-badge"),
         "HTML should contain card input tokens badge"
     );
+    assert!(
+        html.contains("buildTranslateMessages"),
+        "HTML should build chronological translate messages from updated history"
+    );
+    assert!(
+        html.contains("historyEntry.message = data.message"),
+        "HTML should update historyEntry.message when /correct-transcript completes"
+    );
+    assert!(
+        html.contains("role: 'partner_simple'"),
+        "HTML should record partner_simple entries in dialogHistory"
+    );
 }

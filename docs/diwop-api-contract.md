@@ -16,7 +16,7 @@ The following specifications describe the proposed contract, not the current imp
 - Requests send `Content-Type: application/json` and `Accept: application/json`.
 - A configured API key is transmitted as `Authorization: Bearer <api-key>`.
 - Additionally configured headers and the configured timeout apply to both endpoints.
-- Roles are exclusively `user` (app user) and `partner` (conversation partner).
+- Speaker roles are `user` (app user) and `partner` (conversation partner). In `/translate` conversation histories, `partner_simple` represents a previously prepared simple-language partner contribution.
 - A message field `message` is a string with at least one non-whitespace character.
 - Errors use HTTP error status codes and the common error format below.
 
@@ -64,16 +64,15 @@ Initially, no conversation history is transmitted. The correction processes the 
 
 ### App Behavior
 
-- The app only replaces the displayed text of the associated contribution with `message` from the response. The correction serves only for UI display.
-- The originally recognized spoken text is kept separately and is used for `/translate`, including in subsequent conversation histories.
-- The correction is independent of `/translate` and is not a prerequisite for calling it.
-- In case of an error, the original text is retained. The correction can be retried.
+- The app replaces the displayed text of the associated contribution with `message` from the response and updates that contribution in the stored conversation history so subsequent `/translate` requests use the corrected transcript.
+- The correction is independent of an already running `/translate` call and is not a prerequisite for starting `/translate`: for the latest `partner` contribution, `/translate` starts immediately in parallel using the plain (uncorrected) transcript, while earlier contributions in `messages` use their corrected transcripts whenever available (falling back to the plain transcript if a correction is still pending or failed).
+- In case of an error, the plain recognized text is retained in the UI and conversation history. The correction can be retried.
 
 ## 2. Prepare Partner Contribution
 
 ### `POST /translate`
 
-The endpoint prepares the last partner contribution. Earlier conversation contributions provide the context.
+The endpoint prepares the last partner contribution. Earlier conversation contributions (including previously prepared `partner_simple` responses) provide the context.
 
 The request uses an object with `messages` instead of a bare array so that additional options can be added later.
 
@@ -83,8 +82,16 @@ The request uses an object with `messages` instead of a bare array so that addit
 {
   "messages": [
     {
+      "role": "partner",
+      "message": "Guten Tag, wie kann ich Ihnen helfen?"
+    },
+    {
+      "role": "partner_simple",
+      "message": "Guten Tag.  \nWie kann ich Ihnen helfen?"
+    },
+    {
       "role": "user",
-      "message": "wann muss ich den antrag abgeben"
+      "message": "Wann muss ich den Antrag abgeben?"
     },
     {
       "role": "partner",
@@ -96,18 +103,18 @@ The request uses an object with `messages` instead of a bare array so that addit
 
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
-| `messages` | `ConversationMessage[]` | Yes | Previous conversation history in chronological order |
-| `messages[].role` | `"user" \| "partner"` | Yes | Speaker of the contribution |
-| `messages[].message` | `string` | Yes | Originally recognized spoken contribution as plain text; non-empty |
+| `messages` | `ConversationMessage[]` | Yes | Conversation history in chronological order ending with the partner contribution to prepare |
+| `messages[].role` | `"user" \| "partner" \| "partner_simple"` | Yes | Speaker role (`user`, `partner`) or previously prepared simple-language partner contribution (`partner_simple`) |
+| `messages[].message` | `string` | Yes | Corrected transcript if available (otherwise the plain recognized spoken text) for `user` and `partner`, or the prepared Markdown `content` for `partner_simple`; non-empty |
 
 ### Validation and Processing Rules
 
 - `messages` contains at least one contribution.
-- The last message must have the role `partner`.
+- The last message must have the role `partner` (typically still as a plain, uncorrected transcript because `/translate` starts in parallel with `/correct-transcript`).
 - Consecutive contributions with the same role are allowed; alternating roles is not required.
-- For all contributions, the originally recognized spoken texts are transmitted, not the texts corrected for the UI.
+- For `user` and `partner` contributions, corrected transcripts from `/correct-transcript` are transmitted whenever already available; otherwise (such as for the latest `partner` contribution, or if a correction is still pending or failed), the plain recognized spoken text is transmitted.
 - `/translate` does not wait for `/correct-transcript`. For a completed partner contribution, both endpoints are called in parallel.
-- Generated preparations are not sent along as additional conversation contributions.
+- Completed `/translate` preparations (`content`) are recorded in the conversation history with role `partner_simple` immediately after the corresponding `partner` contribution and sent along in subsequent `/translate` requests.
 - The response refers to the last partner contribution and takes the previous history into account as context.
 
 ### Successful Response without Warning: `200 OK`
@@ -208,16 +215,18 @@ Content-related warnings are transmitted as `warning` in a successful `/translat
 
 ```text
 Spoken contribution by user or partner completed
-    → retain originally recognized text for the conversation history
-    ├─ POST /correct-transcript with the originally recognized text
+    → append plain recognized text to the conversation history
+    ├─ POST /correct-transcript with the plain recognized text
     │   → replace displayed text of the contribution in the UI
+    │   → update this contribution in the conversation history with the corrected text
     └─ if role is partner: in parallel POST /translate
-        → pass conversation history with originally recognized texts
+        → pass conversation history (using corrected texts and partner_simple entries where available, and plain text for the latest partner contribution)
         → display prepared response and, if applicable, warning
+        → insert prepared content as partner_simple right after this partner contribution in the conversation history
 ```
 
-- For a `user` contribution, transcript correction takes place, but no immediate `/translate` call is made.
+- For a `user` contribution, transcript correction takes place and updates both the UI and the stored conversation history entry when completed, without triggering an immediate `/translate` call.
 - For a `partner` contribution, `/correct-transcript` and `/translate` start in parallel and are processed independently of each other. There is no prescribed order of responses.
-- The app keeps the originally recognized text and the corrected display text separate. A UI correction does not change either an ongoing or a subsequent `/translate` request.
-- If the correction fails, the original remains visible in the UI. The preparation continues independently; the correction can be retried separately.
-- If the preparation fails, the UI correction continues independently. The preparation can be requested again with the originally recognized texts.
+- When `/correct-transcript` completes, the contribution's entry in the conversation history is updated in place so subsequent `/translate` requests receive the corrected transcript. When `/translate` completes, its `content` is inserted into the conversation history with role `partner_simple` immediately after that `partner` entry.
+- If the correction fails, the plain recognized text remains visible in the UI and in the conversation history. The preparation continues independently; the correction can be retried separately.
+- If the preparation fails, the UI correction continues independently. The preparation can be requested again using the current conversation history up to that `partner` contribution (including any transcript correction that completed in the meantime).
