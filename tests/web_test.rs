@@ -365,4 +365,16 @@ async fn test_authenticated_dialog_translation_serves_interface() {
         html.contains("role: 'partner_simple'"),
         "HTML should record partner_simple entries in dialogHistory"
     );
+    assert!(
+        html.contains("Klassifizierung"),
+        "HTML should render classification debug disclosure"
+    );
+    assert!(
+        html.contains("debug-classification-details"),
+        "HTML should contain debug-classification-details element class"
+    );
+    assert!(
+        html.contains("JSON-Ausgabe"),
+        "HTML should contain JSON-Ausgabe sub-block for classification"
+    );
 }

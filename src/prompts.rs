@@ -4,8 +4,11 @@ use crate::few_shots::FewShotEntry;
 use rig::client::CompletionClient;
 use rig::completion::CompletionRequestBuilder;
 use rig::providers::gemini;
+use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::LazyLock;
+use utoipa::ToSchema;
 
 /// System prompt for `/correct-transcript`.
 pub const CORRECT_TRANSCRIPT_SYSTEM_PROMPT: &str =
@@ -25,6 +28,67 @@ pub const TRANSLATE_PROMPT_TEMPLATE: &str = include_str!("../prompts/translate.m
 pub const TRANSLATE_DYNAMIC_FEW_SHOTS_PROMPT_TEMPLATE: &str =
     include_str!("../prompts/translate-dynamic-few-shots.md");
 
+/// Raw system prompt template for dialog classification (`prompts/classify-dialog-system.md`).
+const CLASSIFY_DIALOG_SYSTEM_PROMPT_TEMPLATE: &str =
+    include_str!("../prompts/classify-dialog-system.md");
+
+/// JSON Schema string defining the structured output of dialog classification (`prompts/classify-dialog-schema.json`).
+pub const CLASSIFY_DIALOG_SCHEMA_JSON: &str =
+    include_str!("../prompts/classify-dialog-schema.json");
+
+/// Few-shot examples injected into the dialog classification system prompt (`prompts/classify-dialog-few-shots.md`).
+pub const CLASSIFY_DIALOG_FEW_SHOTS: &str = include_str!("../prompts/classify-dialog-few-shots.md");
+
+/// User prompt template for dialog classification (`prompts/classify-dialog.md`).
+pub const CLASSIFY_DIALOG_PROMPT_TEMPLATE: &str = include_str!("../prompts/classify-dialog.md");
+
+/// Rendered system prompt for dialog classification with schema and few-shot placeholders expanded.
+pub static CLASSIFY_DIALOG_SYSTEM_PROMPT: LazyLock<String> = LazyLock::new(|| {
+    CLASSIFY_DIALOG_SYSTEM_PROMPT_TEMPLATE
+        .replace(
+            "%classify-dialog-schema.json%",
+            CLASSIFY_DIALOG_SCHEMA_JSON.trim(),
+        )
+        .replace(
+            "%classify-dialog-few-shots.md%",
+            CLASSIFY_DIALOG_FEW_SHOTS.trim(),
+        )
+});
+
+/// Parsed JSON Schema value passed to `generationConfig.responseJsonSchema` during dialog classification.
+pub static CLASSIFY_DIALOG_RESPONSE_SCHEMA: LazyLock<serde_json::Value> = LazyLock::new(|| {
+    serde_json::from_str(CLASSIFY_DIALOG_SCHEMA_JSON)
+        .expect("prompts/classify-dialog-schema.json must be valid JSON")
+});
+
+/// Static warning Markdown for `info` / `uncertain` (`prompts/warnings/uncertain.md`).
+pub const WARNING_UNCERTAIN_MD: &str = include_str!("../prompts/warnings/uncertain.md");
+
+/// Static warning Markdown for `warning` / `medical` (`prompts/warnings/medical.md`).
+pub const WARNING_MEDICAL_MD: &str = include_str!("../prompts/warnings/medical.md");
+
+/// Static warning Markdown for `warning` / `financial` (`prompts/warnings/financial.md`).
+pub const WARNING_FINANCIAL_MD: &str = include_str!("../prompts/warnings/financial.md");
+
+/// Static warning Markdown for `warning` / `juridical` (`prompts/warnings/juridical.md`).
+pub const WARNING_JURIDICAL_MD: &str = include_str!("../prompts/warnings/juridical.md");
+
+/// Static warning Markdown for `warning` / `authorities` (`prompts/warnings/authorities.md`).
+pub const WARNING_AUTHORITIES_MD: &str = include_str!("../prompts/warnings/authorities.md");
+
+/// Static warning Markdown for `danger` / `hate-speech` (`prompts/warnings/hate-speech.md`).
+pub const WARNING_HATE_SPEECH_MD: &str = include_str!("../prompts/warnings/hate-speech.md");
+
+/// Static warning Markdown for `danger` / `injection` (`prompts/warnings/injection.md`).
+pub const WARNING_INJECTION_MD: &str = include_str!("../prompts/warnings/injection.md");
+
+/// Static warning Markdown for `danger` / `safety` (`prompts/warnings/safety.md`).
+pub const WARNING_SAFETY_MD: &str = include_str!("../prompts/warnings/safety.md");
+
+/// Static warning Markdown for `danger` / `youth-protection` (`prompts/warnings/youth-protection.md`).
+pub const WARNING_YOUTH_PROTECTION_MD: &str =
+    include_str!("../prompts/warnings/youth-protection.md");
+
 /// All recognized staging directive tokens that can be embedded in a message when `ENVIRONMENT=staging`.
 const STAGING_DIRECTIVE_TOKENS: &[&str] = &[
     "%type=formatting%",
@@ -36,6 +100,134 @@ const STAGING_DIRECTIVE_TOKENS: &[&str] = &[
     "%warning.revealable=false%",
     "%warning.revealable%",
 ];
+
+/// High-level topic of a dialog extracted by the classification step for monitoring and analytics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum DialogTopic {
+    Medical,
+    Shopping,
+    Social,
+    Education,
+    Emergency,
+    Authorities,
+    Financial,
+    Mobility,
+    Juridical,
+    Other,
+}
+
+impl DialogTopic {
+    /// Returns the canonical lowercase string label used in JSON, logs, and OpenTelemetry attributes.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Medical => "medical",
+            Self::Shopping => "shopping",
+            Self::Social => "social",
+            Self::Education => "education",
+            Self::Emergency => "emergency",
+            Self::Authorities => "authorities",
+            Self::Financial => "financial",
+            Self::Mobility => "mobility",
+            Self::Juridical => "juridical",
+            Self::Other => "other",
+        }
+    }
+}
+
+/// Severity level returned by the dialog classification prompt (`pass`, `info`, `warning`, or `danger`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ClassificationLevel {
+    Pass,
+    Info,
+    Warning,
+    Danger,
+}
+
+impl ClassificationLevel {
+    /// Returns the canonical lowercase string label used in JSON, logs, and OpenTelemetry attributes.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Pass => "pass",
+            Self::Info => "info",
+            Self::Warning => "warning",
+            Self::Danger => "danger",
+        }
+    }
+}
+
+/// Specific reason category returned by the dialog classification prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum ClassificationCategory {
+    Ok,
+    Uncertain,
+    Medical,
+    Financial,
+    Juridical,
+    Authorities,
+    Safety,
+    HateSpeech,
+    YouthProtection,
+    Injection,
+}
+
+impl ClassificationCategory {
+    /// Returns the canonical kebab-case string label used in JSON, logs, and OpenTelemetry attributes.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Uncertain => "uncertain",
+            Self::Medical => "medical",
+            Self::Financial => "financial",
+            Self::Juridical => "juridical",
+            Self::Authorities => "authorities",
+            Self::Safety => "safety",
+            Self::HateSpeech => "hate-speech",
+            Self::YouthProtection => "youth-protection",
+            Self::Injection => "injection",
+        }
+    }
+}
+
+/// Structured output produced by the dialog classification prompt (`type`, `category`, and `topic`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DialogClassification {
+    /// Severity tier (`pass`, `info`, `warning`, or `danger`).
+    #[serde(rename = "type")]
+    pub r#type: ClassificationLevel,
+    /// Specific disclaimer or rejection category paired with `type`.
+    pub category: ClassificationCategory,
+    /// Overall topic of the conversation (`"other"` fallback).
+    pub topic: DialogTopic,
+}
+
+impl DialogClassification {
+    /// Checks whether `(type, category)` forms a valid pair according to `prompts/classify-dialog-schema.json`.
+    pub fn is_valid_hierarchy(&self) -> bool {
+        matches!(
+            (self.r#type, self.category),
+            (ClassificationLevel::Pass, ClassificationCategory::Ok)
+                | (ClassificationLevel::Info, ClassificationCategory::Uncertain)
+                | (
+                    ClassificationLevel::Warning,
+                    ClassificationCategory::Medical
+                        | ClassificationCategory::Financial
+                        | ClassificationCategory::Juridical
+                        | ClassificationCategory::Authorities
+                )
+                | (
+                    ClassificationLevel::Danger,
+                    ClassificationCategory::Safety
+                        | ClassificationCategory::HateSpeech
+                        | ClassificationCategory::YouthProtection
+                        | ClassificationCategory::Injection
+                )
+        )
+    }
+}
 
 /// Upstream LLM token counts for input, reasoning, and output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -74,6 +266,17 @@ pub trait PromptRunner: Send + Sync {
         prompt: &'a str,
         thinking_level: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<PromptOutput, PromptError>> + Send + 'a>>;
+
+    /// Executes a prompt requesting structured JSON output conforming to `json_schema` when supported by the provider.
+    fn run_prompt_with_schema<'a>(
+        &'a self,
+        system_prompt: &'a str,
+        prompt: &'a str,
+        thinking_level: &'a str,
+        _json_schema: &'a serde_json::Value,
+    ) -> Pin<Box<dyn Future<Output = Result<PromptOutput, PromptError>> + Send + 'a>> {
+        self.run_prompt(system_prompt, prompt, thinking_level)
+    }
 }
 
 /// Production [`PromptRunner`] that sends requests to Google's Gemini API (`gemini-3.5-flash-lite`) using `rig`.
@@ -88,18 +291,19 @@ impl GeminiPromptRunner {
             api_key: api_key.into(),
         }
     }
-}
 
-impl PromptRunner for GeminiPromptRunner {
-    fn run_prompt<'a>(
+    /// Sends a prompt request to Gemini with optional structured JSON schema enforcement in `generationConfig`.
+    fn execute_prompt<'a>(
         &'a self,
         system_prompt: &'a str,
         prompt: &'a str,
         thinking_level: &'a str,
+        json_schema: Option<&'a serde_json::Value>,
     ) -> Pin<Box<dyn Future<Output = Result<PromptOutput, PromptError>> + Send + 'a>> {
         Box::pin(async move {
             tracing::debug!(
                 thinking_level,
+                structured_json = json_schema.is_some(),
                 system_prompt = %system_prompt,
                 prompt = %prompt,
                 "Sending prompt to LLM API"
@@ -128,6 +332,14 @@ impl PromptRunner for GeminiPromptRunner {
                 "thinkingConfig".to_string(),
                 serde_json::Value::Object(thinking_config),
             );
+
+            if let Some(schema) = json_schema {
+                generation_config.insert(
+                    "responseMimeType".to_string(),
+                    serde_json::json!("application/json"),
+                );
+                generation_config.insert("responseJsonSchema".to_string(), schema.clone());
+            }
 
             let additional_params = serde_json::json!({
                 "generationConfig": generation_config
@@ -192,8 +404,30 @@ impl PromptRunner for GeminiPromptRunner {
     }
 }
 
+impl PromptRunner for GeminiPromptRunner {
+    fn run_prompt<'a>(
+        &'a self,
+        system_prompt: &'a str,
+        prompt: &'a str,
+        thinking_level: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<PromptOutput, PromptError>> + Send + 'a>> {
+        self.execute_prompt(system_prompt, prompt, thinking_level, None)
+    }
+
+    fn run_prompt_with_schema<'a>(
+        &'a self,
+        system_prompt: &'a str,
+        prompt: &'a str,
+        thinking_level: &'a str,
+        json_schema: &'a serde_json::Value,
+    ) -> Pin<Box<dyn Future<Output = Result<PromptOutput, PromptError>> + Send + 'a>> {
+        self.execute_prompt(system_prompt, prompt, thinking_level, Some(json_schema))
+    }
+}
+
 /// Fallback [`PromptRunner`] used in local debug/test builds when `GEMINI_API_KEY` is not set.
-/// Extracts the final ```input block from the prompt and echoes it back deterministically,
+/// Extracts the final ```input block from the prompt and echoes it back deterministically
+/// (or returns a valid `pass`/`ok`/`other` JSON classification for `CLASSIFY_DIALOG_SYSTEM_PROMPT`),
 /// tokenized using the Gemma 4 tokenizer.
 #[derive(Debug, Default, Clone)]
 pub struct EchoPromptRunner;
@@ -210,6 +444,8 @@ impl PromptRunner for EchoPromptRunner {
             let mocked_reasoning = format!("I am thinking about '{input}'");
             let output_text = if system_prompt == TRANSLATE_SYSTEM_PROMPT {
                 format!("FORMATIERUNG\n{input}")
+            } else if system_prompt == CLASSIFY_DIALOG_SYSTEM_PROMPT.as_str() {
+                r#"{"type":"pass","category":"ok","topic":"other"}"#.to_string()
             } else {
                 input.to_string()
             };
@@ -370,6 +606,174 @@ pub fn parse_translate_output(raw: &str) -> (TranslationType, String) {
     }
 
     (TranslationType::Translation, trimmed.to_string())
+}
+
+/// Renders the user prompt for the dialog classification step (`prompts/classify-dialog.md`)
+/// by injecting the formatted `history`, sanitized original `input`, and sanitized `translation`.
+pub fn build_classify_dialog_prompt(
+    history: &[ConversationMessage],
+    input: &str,
+    translation: &str,
+) -> String {
+    let history_value = format_translate_history(history);
+    CLASSIFY_DIALOG_PROMPT_TEMPLATE
+        .replace("%HISTORY%", &history_value)
+        .replace("%INPUT%", &sanitize(input))
+        .replace("%TRANSLATION%", &sanitize(translation))
+}
+
+/// Parses and validates the JSON output of the dialog classification model into a [`DialogClassification`].
+///
+/// Strips optional surrounding Markdown code fences (e.g. ` ```json ... ``` `), deserializes the JSON
+/// payload, and enforces the `(type, category)` hierarchy defined in `prompts/classify-dialog-schema.json`.
+pub fn parse_classify_dialog_output(raw: &str) -> Result<DialogClassification, PromptError> {
+    let mut trimmed = raw.trim();
+    if let Some(rest) = trimmed.strip_prefix("```") {
+        let rest = rest.strip_prefix("json").unwrap_or(rest).trim_start();
+        if let Some(inner) = rest.strip_suffix("```") {
+            trimmed = inner.trim();
+        }
+    }
+
+    let parsed: DialogClassification = serde_json::from_str(trimmed).map_err(|e| {
+        PromptError(format!(
+            "Failed to parse dialog classification JSON output: {e}"
+        ))
+    })?;
+
+    if !parsed.is_valid_hierarchy() {
+        return Err(PromptError(format!(
+            "Invalid classification hierarchy pair: ({}, {})",
+            parsed.r#type.as_str(),
+            parsed.category.as_str()
+        )));
+    }
+
+    Ok(parsed)
+}
+
+/// Parses an embedded static warning Markdown file (`<headline>\n\n<body>`) into its plain-text
+/// headline and Leichte Sprache Markdown body while preserving internal double-space line breaks.
+pub fn parse_warning_markdown(raw: &str) -> (String, String) {
+    let normalized = raw.replace("\r\n", "\n");
+    if let Some((headline, body)) = normalized.split_once("\n\n") {
+        (headline.trim().to_string(), body.trim().to_string())
+    } else {
+        (normalized.trim().to_string(), String::new())
+    }
+}
+
+/// Builds a [`Warning`] struct from an embedded static warning Markdown template, severity level, and `revealable` flag.
+fn build_static_warning(
+    raw_markdown: &str,
+    warning_type: WarningType,
+    revealable: bool,
+) -> Warning {
+    let (headline, body) = parse_warning_markdown(raw_markdown);
+    Warning {
+        headline,
+        body,
+        r#type: warning_type,
+        revealable,
+    }
+}
+
+/// Applies the [`DialogClassification`] policy to the prepared translation:
+/// - `pass` (`ok`): omits `warning` and keeps `translated_content` immediately visible.
+/// - `info` (`uncertain`): attaches an `info` box with `revealable: false` and keeps `translated_content` visible.
+/// - `warning` (`medical`, `financial`, `juridical`, `authorities`): attaches an EU AI Act / RDG `warning` box with `revealable: true`.
+/// - `danger` (`hate-speech`, `injection`): attaches a `danger` box with `revealable: true`.
+/// - `danger` (`safety`, `youth-protection`): blocks the translation by returning an empty `content` (`""`),
+///   `TranslationType::Translation`, and a `danger` box with `revealable: false`.
+pub fn apply_classification(
+    classification: DialogClassification,
+    model_type: TranslationType,
+    translated_content: String,
+) -> (TranslationType, String, Option<Warning>) {
+    match (classification.r#type, classification.category) {
+        (ClassificationLevel::Pass, _) => (model_type, translated_content, None),
+        (ClassificationLevel::Info, _) => (
+            model_type,
+            translated_content,
+            Some(build_static_warning(
+                WARNING_UNCERTAIN_MD,
+                WarningType::Info,
+                false,
+            )),
+        ),
+        (ClassificationLevel::Warning, ClassificationCategory::Medical) => (
+            model_type,
+            translated_content,
+            Some(build_static_warning(
+                WARNING_MEDICAL_MD,
+                WarningType::Warning,
+                true,
+            )),
+        ),
+        (ClassificationLevel::Warning, ClassificationCategory::Financial) => (
+            model_type,
+            translated_content,
+            Some(build_static_warning(
+                WARNING_FINANCIAL_MD,
+                WarningType::Warning,
+                true,
+            )),
+        ),
+        (ClassificationLevel::Warning, ClassificationCategory::Juridical) => (
+            model_type,
+            translated_content,
+            Some(build_static_warning(
+                WARNING_JURIDICAL_MD,
+                WarningType::Warning,
+                true,
+            )),
+        ),
+        (ClassificationLevel::Warning, _) => (
+            model_type,
+            translated_content,
+            Some(build_static_warning(
+                WARNING_AUTHORITIES_MD,
+                WarningType::Warning,
+                true,
+            )),
+        ),
+        (ClassificationLevel::Danger, ClassificationCategory::Safety) => (
+            TranslationType::Translation,
+            String::new(),
+            Some(build_static_warning(
+                WARNING_SAFETY_MD,
+                WarningType::Danger,
+                false,
+            )),
+        ),
+        (ClassificationLevel::Danger, ClassificationCategory::YouthProtection) => (
+            TranslationType::Translation,
+            String::new(),
+            Some(build_static_warning(
+                WARNING_YOUTH_PROTECTION_MD,
+                WarningType::Danger,
+                false,
+            )),
+        ),
+        (ClassificationLevel::Danger, ClassificationCategory::Injection) => (
+            model_type,
+            translated_content,
+            Some(build_static_warning(
+                WARNING_INJECTION_MD,
+                WarningType::Danger,
+                true,
+            )),
+        ),
+        (ClassificationLevel::Danger, _) => (
+            model_type,
+            translated_content,
+            Some(build_static_warning(
+                WARNING_HATE_SPEECH_MD,
+                WarningType::Danger,
+                true,
+            )),
+        ),
+    }
 }
 
 /// Parsed staging directives and the message text with directive tokens stripped.
@@ -642,6 +1046,278 @@ mod tests {
         assert_eq!(c3, "Ohne Präfix Text");
     }
 
+    /// Verifies that `CLASSIFY_DIALOG_SYSTEM_PROMPT` expands schema and few-shot placeholders and that
+    /// `CLASSIFY_DIALOG_RESPONSE_SCHEMA` parses cleanly with all required categories and topics.
+    #[test]
+    fn test_classify_dialog_system_prompt_and_schema() {
+        let sys = CLASSIFY_DIALOG_SYSTEM_PROMPT.as_str();
+        assert!(!sys.contains("%classify-dialog-schema.json%"));
+        assert!(!sys.contains("%classify-dialog-few-shots.md%"));
+        assert!(sys.contains("\"DialogClassification\""));
+        assert!(sys.contains("\"juridical\""));
+        assert!(sys.contains("\"authorities\""));
+        assert!(sys.contains("\"injection\""));
+        assert!(sys.contains("\"mobility\""));
+        assert!(sys.contains("## Eingabe 1"));
+        assert!(sys.contains("\"topic\": \"medical\""));
+
+        let schema = &*CLASSIFY_DIALOG_RESPONSE_SCHEMA;
+        assert_eq!(schema["title"], "DialogClassification");
+        let topics = schema["$defs"]["topic"]["enum"]
+            .as_array()
+            .expect("topic enum array");
+        assert_eq!(topics.len(), 10);
+    }
+
+    /// Verifies that `build_classify_dialog_prompt` injects sanitized history, input, and translation without leftover placeholders.
+    #[test]
+    fn test_build_classify_dialog_prompt() {
+        let history = vec![ConversationMessage {
+            role: Role::User,
+            message: "Hallo ```Welt```".to_string(),
+        }];
+        let rendered = build_classify_dialog_prompt(
+            &history,
+            "Original ```input```",
+            "Einfache ```Übersetzung```",
+        );
+        assert!(rendered.contains("User: Hallo '''Welt'''"));
+        assert!(rendered.contains("```input\nOriginal '''input'''\n```"));
+        assert!(rendered.contains("```translation\nEinfache '''Übersetzung'''\n```"));
+        assert!(!rendered.contains("%HISTORY%"));
+        assert!(!rendered.contains("%INPUT%"));
+        assert!(!rendered.contains("%TRANSLATION%"));
+    }
+
+    /// Verifies that `parse_classify_dialog_output` accepts all valid `(type, category, topic)` combinations
+    /// (including optional Markdown ```json fences) and rejects invalid pairs, unknown fields, or malformed JSON.
+    #[test]
+    fn test_parse_classify_dialog_output() {
+        let valid_cases = [
+            (
+                r#"{"type":"pass","category":"ok","topic":"other"}"#,
+                ClassificationLevel::Pass,
+                ClassificationCategory::Ok,
+                DialogTopic::Other,
+            ),
+            (
+                "```json\n{\"type\": \"info\", \"category\": \"uncertain\", \"topic\": \"shopping\"}\n```",
+                ClassificationLevel::Info,
+                ClassificationCategory::Uncertain,
+                DialogTopic::Shopping,
+            ),
+            (
+                r#"{"type":"warning","category":"medical","topic":"medical"}"#,
+                ClassificationLevel::Warning,
+                ClassificationCategory::Medical,
+                DialogTopic::Medical,
+            ),
+            (
+                r#"{"type":"warning","category":"financial","topic":"financial"}"#,
+                ClassificationLevel::Warning,
+                ClassificationCategory::Financial,
+                DialogTopic::Financial,
+            ),
+            (
+                r#"{"type":"warning","category":"juridical","topic":"juridical"}"#,
+                ClassificationLevel::Warning,
+                ClassificationCategory::Juridical,
+                DialogTopic::Juridical,
+            ),
+            (
+                r#"{"type":"warning","category":"authorities","topic":"authorities"}"#,
+                ClassificationLevel::Warning,
+                ClassificationCategory::Authorities,
+                DialogTopic::Authorities,
+            ),
+            (
+                r#"{"type":"danger","category":"safety","topic":"emergency"}"#,
+                ClassificationLevel::Danger,
+                ClassificationCategory::Safety,
+                DialogTopic::Emergency,
+            ),
+            (
+                r#"{"type":"danger","category":"hate-speech","topic":"social"}"#,
+                ClassificationLevel::Danger,
+                ClassificationCategory::HateSpeech,
+                DialogTopic::Social,
+            ),
+            (
+                r#"{"type":"danger","category":"youth-protection","topic":"education"}"#,
+                ClassificationLevel::Danger,
+                ClassificationCategory::YouthProtection,
+                DialogTopic::Education,
+            ),
+            (
+                r#"{"type":"danger","category":"injection","topic":"mobility"}"#,
+                ClassificationLevel::Danger,
+                ClassificationCategory::Injection,
+                DialogTopic::Mobility,
+            ),
+        ];
+
+        for (raw, expected_type, expected_cat, expected_topic) in valid_cases {
+            let parsed = parse_classify_dialog_output(raw).expect(raw);
+            assert_eq!(parsed.r#type, expected_type);
+            assert_eq!(parsed.category, expected_cat);
+            assert_eq!(parsed.topic, expected_topic);
+        }
+
+        // Invalid hierarchy pairings must fail closed
+        assert!(parse_classify_dialog_output(
+            r#"{"type":"pass","category":"medical","topic":"other"}"#
+        )
+        .is_err());
+        assert!(parse_classify_dialog_output(
+            r#"{"type":"warning","category":"safety","topic":"other"}"#
+        )
+        .is_err());
+        assert!(parse_classify_dialog_output(
+            r#"{"type":"danger","category":"ok","topic":"other"}"#
+        )
+        .is_err());
+        // Unknown topic or extra property must fail closed
+        assert!(parse_classify_dialog_output(
+            r#"{"type":"pass","category":"ok","topic":"sports"}"#
+        )
+        .is_err());
+        assert!(parse_classify_dialog_output(
+            r#"{"type":"pass","category":"ok","topic":"other","extra":true}"#
+        )
+        .is_err());
+    }
+
+    /// Verifies that all 9 embedded `prompts/warnings/*.md` files parse into non-empty Leichte Sprache
+    /// headlines and bodies with preserved Markdown double-space line breaks, and that `apply_classification`
+    /// enforces visibility (`revealable`) and empty-answer blocking (`safety`, `youth-protection`).
+    #[test]
+    fn test_static_warnings_and_apply_classification() {
+        let all_warning_files = [
+            WARNING_UNCERTAIN_MD,
+            WARNING_MEDICAL_MD,
+            WARNING_FINANCIAL_MD,
+            WARNING_JURIDICAL_MD,
+            WARNING_AUTHORITIES_MD,
+            WARNING_HATE_SPEECH_MD,
+            WARNING_INJECTION_MD,
+            WARNING_SAFETY_MD,
+            WARNING_YOUTH_PROTECTION_MD,
+        ];
+        for md in all_warning_files {
+            let (headline, body) = parse_warning_markdown(md);
+            assert!(!headline.is_empty(), "Warning headline must not be empty");
+            assert!(
+                !headline.contains('\n'),
+                "Headline must be a single plain-text line"
+            );
+            assert!(!body.is_empty(), "Warning body must not be empty");
+            assert!(
+                body.contains("  \n"),
+                "Leichte Sprache warning body should preserve trailing double-space line breaks"
+            );
+            assert!(
+                !headline.contains('!') && !body.contains('!'),
+                "Leichte Sprache warning texts should avoid exclamation marks"
+            );
+        }
+
+        // 1. pass / ok -> no warning, content preserved
+        let (t, c, w) = apply_classification(
+            DialogClassification {
+                r#type: ClassificationLevel::Pass,
+                category: ClassificationCategory::Ok,
+                topic: DialogTopic::Medical,
+            },
+            TranslationType::Formatting,
+            "Einfacher Text".to_string(),
+        );
+        assert_eq!(t, TranslationType::Formatting);
+        assert_eq!(c, "Einfacher Text");
+        assert!(w.is_none());
+
+        // 2. info / uncertain -> Info box, revealable = false, content preserved
+        let (t, c, w) = apply_classification(
+            DialogClassification {
+                r#type: ClassificationLevel::Info,
+                category: ClassificationCategory::Uncertain,
+                topic: DialogTopic::Other,
+            },
+            TranslationType::Translation,
+            "Unsicherer Text".to_string(),
+        );
+        assert_eq!(t, TranslationType::Translation);
+        assert_eq!(c, "Unsicherer Text");
+        let w = w.expect("Expected info warning");
+        assert_eq!(w.r#type, WarningType::Info);
+        assert!(!w.revealable);
+        assert_eq!(w.headline, "Unsichere Übersetzung");
+
+        // 3. warning / medical, financial, juridical, authorities -> Warning box, revealable = true, content preserved
+        for cat in [
+            ClassificationCategory::Medical,
+            ClassificationCategory::Financial,
+            ClassificationCategory::Juridical,
+            ClassificationCategory::Authorities,
+        ] {
+            let (t, c, w) = apply_classification(
+                DialogClassification {
+                    r#type: ClassificationLevel::Warning,
+                    category: cat,
+                    topic: DialogTopic::Juridical,
+                },
+                TranslationType::Translation,
+                "Erklärender Text".to_string(),
+            );
+            assert_eq!(t, TranslationType::Translation);
+            assert_eq!(c, "Erklärender Text");
+            let w = w.expect("Expected EU AI Act warning");
+            assert_eq!(w.r#type, WarningType::Warning);
+            assert!(w.revealable);
+        }
+
+        // 4. danger / hate-speech & injection -> Danger box, revealable = true, content preserved
+        for cat in [
+            ClassificationCategory::HateSpeech,
+            ClassificationCategory::Injection,
+        ] {
+            let (t, c, w) = apply_classification(
+                DialogClassification {
+                    r#type: ClassificationLevel::Danger,
+                    category: cat,
+                    topic: DialogTopic::Social,
+                },
+                TranslationType::Translation,
+                "Ausgeblendeter Text".to_string(),
+            );
+            assert_eq!(t, TranslationType::Translation);
+            assert_eq!(c, "Ausgeblendeter Text");
+            let w = w.expect("Expected revealable danger warning");
+            assert_eq!(w.r#type, WarningType::Danger);
+            assert!(w.revealable);
+        }
+
+        // 5. danger / safety & youth-protection -> empty content "", forced TranslationType::Translation, revealable = false
+        for cat in [
+            ClassificationCategory::Safety,
+            ClassificationCategory::YouthProtection,
+        ] {
+            let (t, c, w) = apply_classification(
+                DialogClassification {
+                    r#type: ClassificationLevel::Danger,
+                    category: cat,
+                    topic: DialogTopic::Emergency,
+                },
+                TranslationType::Formatting,
+                "Verbotener Text".to_string(),
+            );
+            assert_eq!(t, TranslationType::Translation);
+            assert_eq!(c, "");
+            let w = w.expect("Expected blocking danger warning");
+            assert_eq!(w.r#type, WarningType::Danger);
+            assert!(!w.revealable);
+        }
+    }
+
     /// Verifies that `extract_staging_directives` parses and strips directives in staging and leaves production messages untouched.
     #[test]
     fn test_extract_staging_directives() {
@@ -666,13 +1342,14 @@ mod tests {
         assert_eq!(staging.cleaned_message, "Bitte beachten");
     }
 
-    /// Verifies that `EchoPromptRunner` accurately counts Gemma 4 tokens and mocks reasoning thoughts.
+    /// Verifies that `EchoPromptRunner` accurately counts Gemma 4 tokens, mocks reasoning thoughts,
+    /// and emits valid classification JSON when called with `CLASSIFY_DIALOG_SYSTEM_PROMPT`.
     #[tokio::test]
     async fn test_echo_prompt_runner_tokens_and_reasoning() {
         let runner = EchoPromptRunner;
         let prompt = "```input\nHallo Welt\n```";
         let output = runner
-            .run_prompt(CORRECT_TRANSCRIPT_SYSTEM_PROMPT, prompt, "low")
+            .run_prompt(CORRECT_TRANSCRIPT_SYSTEM_PROMPT, prompt, "minimal")
             .await
             .unwrap();
 
@@ -684,5 +1361,20 @@ mod tests {
         assert!(output.usage.input_tokens > 0);
         assert!(output.usage.reasoning_tokens > 0);
         assert!(output.usage.output_tokens > 0);
+
+        let classify_prompt = build_classify_dialog_prompt(&[], "Hallo Welt", "Hallo Welt");
+        let classify_out = runner
+            .run_prompt_with_schema(
+                &CLASSIFY_DIALOG_SYSTEM_PROMPT,
+                &classify_prompt,
+                "low",
+                &CLASSIFY_DIALOG_RESPONSE_SCHEMA,
+            )
+            .await
+            .unwrap();
+        let parsed = parse_classify_dialog_output(&classify_out.text).unwrap();
+        assert_eq!(parsed.r#type, ClassificationLevel::Pass);
+        assert_eq!(parsed.category, ClassificationCategory::Ok);
+        assert_eq!(parsed.topic, DialogTopic::Other);
     }
 }

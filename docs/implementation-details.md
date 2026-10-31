@@ -14,8 +14,11 @@ The Docker image is built to run identically across AWS (ECS / App Runner / EKS)
 
 - **No Cloud SDKs in Binary**: All configuration and secrets are injected as environment variables by the orchestrator (e.g., via Terraform). No runtime lookups to AWS Parameter Store, Secrets Manager, or STACKIT APIs are performed by the application.
 - **Observability**:
-  - **Logs**: Written to `stdout` (structured JSON in `--release`, human-readable in debug mode) for native ingestion by cloud log collectors.
-  - **Traces & Metrics**: Exported via OTLP (gRPC) whenever `OTEL_EXPORTER_OTLP_ENDPOINT` is configured.
+  - **Logs**: Written to `stdout` (structured JSON in `--release`, human-readable in debug mode) for native ingestion by cloud log collectors, including extracted dialog `topic`, `classification_type`, and `classification_category` on `/translate`.
+  - **Traces & Metrics**: Exported via OTLP (gRPC) whenever `OTEL_EXPORTER_OTLP_ENDPOINT` is configured (HTTP request counts/durations, `gen_ai.client.token.usage` across `/correct-transcript`, `/translate`, and `/translate/classify`, `diwop.translate.history_length`, and `diwop.translate.classification.count`).
+- **Two-Stage Translation & EU AI Act / Safety Classification**:
+  - `POST /correct-transcript` runs with `"minimal"` reasoning effort for low-latency transcript cleanup.
+  - `POST /translate` runs the preparation prompt (`"medium"` reasoning) followed sequentially by the dialog classification prompt (`"low"` reasoning + JSON Schema `responseJsonSchema`) to extract the dialog topic, attach static *Leichte Sprache* disclaimers (`prompts/warnings/*.md`), or block unsafe content (`safety`, `youth-protection`). See [**Dialog Classification, EU AI Act Disclaimers & Topic Monitoring**](classification-and-disclaimers.md).
 - **Health Check & Lifecycle**:
   - `GET /healthz` returns `200 OK` without authentication for process liveness probes.
   - `GET /readyz` returns `200 OK` without authentication for container readiness probes. On startup, the server initiates an asynchronous warmup check verifying both the embedded semantic few-shot vector index (`intfloat/multilingual-e5-base`) and the configured LLM API. The probe result is cached in-memory so recurring health checks do not incur LLM API costs or rate-limiting overhead.

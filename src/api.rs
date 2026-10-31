@@ -1,7 +1,10 @@
 use crate::few_shots::{FewShotBucketIndex, DEFAULT_FEW_SHOT_K};
 use crate::prompts::{
-    build_correct_transcript_prompt, build_translate_prompt_with_few_shots, count_history_turns,
-    determine_history_bucket, extract_staging_directives, parse_translate_output, PromptRunner,
+    apply_classification, build_classify_dialog_prompt, build_correct_transcript_prompt,
+    build_translate_prompt_with_few_shots, count_history_turns, determine_history_bucket,
+    extract_staging_directives, parse_classify_dialog_output, parse_translate_output,
+    ClassificationCategory, ClassificationLevel, DialogTopic, PromptRunner,
+    CLASSIFY_DIALOG_RESPONSE_SCHEMA, CLASSIFY_DIALOG_SYSTEM_PROMPT,
     CORRECT_TRANSCRIPT_SYSTEM_PROMPT, TRANSLATE_SYSTEM_PROMPT,
 };
 use axum::{
@@ -43,13 +46,46 @@ pub struct ConversationMessage {
     pub message: String,
 }
 
+/// Diagnostic details for the post-translation dialog classification step (`/translate` only).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ClassificationDebugInfo {
+    /// Extracted high-level dialog topic.
+    pub topic: DialogTopic,
+    /// Classification severity level (`pass`, `info`, `warning`, or `danger`).
+    pub classification_type: ClassificationLevel,
+    /// Specific classification category paired with `classification_type`.
+    pub category: ClassificationCategory,
+    /// Expanded system prompt preamble sent to the classification model.
+    pub system_prompt: String,
+    /// Rendered user prompt sent to the classification model.
+    pub prompt: String,
+    /// Number of tokens in the classification system prompt preamble.
+    #[serde(default)]
+    pub system_prompt_tokens: u64,
+    /// Number of tokens in the classification user prompt.
+    #[serde(default)]
+    pub prompt_tokens: u64,
+    /// Total number of input prompt tokens reported by the classification model.
+    pub input_tokens: u64,
+    /// Number of internal reasoning/thought tokens reported by the classification model.
+    pub reasoning_tokens: u64,
+    /// Number of output response tokens reported by the classification model.
+    pub response_tokens: u64,
+    /// Optional internal reasoning/thought text reported by the classification model.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
+    /// Raw JSON output returned by the classification model.
+    pub raw_response: String,
+}
+
 /// Optional diagnostic information returned when a request carries a valid admin password or session token.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DebugInfo {
-    /// System prompt preamble sent to the language model.
+    /// System prompt preamble sent to the primary language model step.
     pub system_prompt: String,
-    /// Rendered user prompt sent to the language model.
+    /// Rendered user prompt sent to the primary language model step.
     pub prompt: String,
     /// Number of tokens in the system prompt preamble.
     #[serde(default)]
@@ -57,18 +93,21 @@ pub struct DebugInfo {
     /// Number of tokens in the user prompt.
     #[serde(default)]
     pub prompt_tokens: u64,
-    /// Total number of input prompt tokens reported by the language model.
+    /// Total number of input prompt tokens reported by the primary language model step.
     pub input_tokens: u64,
-    /// Number of internal reasoning/thought tokens reported by the language model.
+    /// Number of internal reasoning/thought tokens reported by the primary language model step.
     pub reasoning_tokens: u64,
-    /// Number of output response tokens reported by the language model.
+    /// Number of output response tokens reported by the primary language model step.
     pub response_tokens: u64,
-    /// Optional internal reasoning/thought text reported by the language model.
+    /// Optional internal reasoning/thought text reported by the primary language model step.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<String>,
     /// Formatted dynamic few-shot example strings injected into the prompt; omitted when not applicable or empty.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub examples: Option<Vec<String>>,
+    /// Diagnostic details for the post-translation dialog classification step; omitted on `/correct-transcript`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub classification: Option<ClassificationDebugInfo>,
 }
 
 /// Response returned by `/correct-transcript` containing the corrected plain-text message
@@ -141,17 +180,13 @@ pub enum WarningType {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct Warning {
     /// Short headline as plain text.
-    #[schema(
-        min_length = 1,
-        pattern = r"\S",
-        example = "Möglicherweise verletzender Inhalt"
-    )]
+    #[schema(min_length = 1, pattern = r"\S", example = "Hinweis zu Rechts-Themen")]
     pub headline: String,
     /// Explanation as Markdown, without embedded HTML.
     #[schema(
         min_length = 1,
         pattern = r"\S",
-        example = "Diese Antwort enthält **abwertende Aussagen**."
+        example = "Diese Übersetzung erklärt rechtliche Begriffe.  \nDie Erklärung kommt von einer Künstlichen Intelligenz.  \nDie Übersetzung ist **keine** Rechts-Beratung.  \nBitte wenden Sie sich bei rechtlichen Fragen an eine Rechts-Beratung."
     )]
     pub body: String,
     /// Warning level for display and icon; does not control visibility.
@@ -161,7 +196,8 @@ pub struct Warning {
     /// true hides content initially. The warning with headline and body as well as
     /// the button "Antwort anzeigen" remain visible. The button reveals content
     /// locally without another API call. content is already completely
-    /// included in the response. false displays the warning and content immediately.
+    /// included in the response. false displays the warning and content immediately
+    /// (or only the warning when content is empty for blocked `safety` / `youth-protection` statements).
     /// Use %warning.revealable% on staging environment to enforce.
     pub revealable: bool,
 }
@@ -177,11 +213,8 @@ pub struct TranslationResponse {
     #[serde(rename = "type")]
     pub r#type: TranslationType,
     /// Complete response text as Markdown, without embedded HTML.
-    #[schema(
-        min_length = 1,
-        pattern = r"\S",
-        example = "Geben Sie den Antrag **bis Ende nächster Woche** ab."
-    )]
+    /// Empty (`""`) when the statement is blocked due to `danger` (`safety` or `youth-protection`).
+    #[schema(example = "Geben Sie den Antrag **bis Ende nächster Woche** ab.")]
     pub content: String,
     /// Optional content warning; omitted when there is no warning.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -317,7 +350,8 @@ pub fn is_non_blank(text: &str) -> bool {
 /// For user and partner. Corrects recognition errors, spelling, and
 /// punctuation; preserves meaning, language, and tone and does not add
 /// information. If no correction is needed, the text is returned unchanged.
-/// Processes only the individual contribution, without conversation history.
+/// Processes only the individual contribution, without conversation history,
+/// using `"minimal"` reasoning effort for low latency.
 /// The corrected text replaces the UI display and updates the stored
 /// conversation history entry for subsequent /translate requests. In case of
 /// an error, the original remains visible and in history; the correction can
@@ -450,7 +484,7 @@ pub async fn correct_transcript(
     let prompt = build_correct_transcript_prompt(&request.message);
     let prompt_output = state
         .runner
-        .run_prompt(CORRECT_TRANSCRIPT_SYSTEM_PROMPT, &prompt, "low")
+        .run_prompt(CORRECT_TRANSCRIPT_SYSTEM_PROMPT, &prompt, "minimal")
         .await
         .map_err(|e| {
             tracing::error!(
@@ -509,6 +543,7 @@ pub async fn correct_transcript(
                 response_tokens: prompt_output.usage.output_tokens,
                 reasoning: prompt_output.reasoning,
                 examples: None,
+                classification: None,
             }
         });
 
@@ -518,7 +553,7 @@ pub async fn correct_transcript(
     }))
 }
 
-/// Prepare the last statement from "partner" in German simple language.
+/// Prepare and classify the last statement from "partner" in German simple language.
 ///
 /// Receives the conversation history chronologically, using corrected transcripts
 /// for earlier "user" and "partner" contributions whenever already available
@@ -526,11 +561,11 @@ pub async fn correct_transcript(
 /// for the latest "partner" contribution) and including completed preparations as
 /// "partner_simple" contributions. Earlier contributions provide context; the
 /// response refers to the last statement from "partner".
-/// The last message MUST have the role "partner" (server-side validation;
-/// otherwise 422 LAST_MESSAGE_MUST_BE_PARTNER).
-/// Consecutive contributions with the same role are allowed.
-/// Starts in parallel with /correct-transcript and does not wait for its result.
-/// The order of responses is arbitrary; errors do not block the respective other call.
+/// After preparing the translation (`"medium"` reasoning), runs the dialog
+/// classification prompt (`"low"` reasoning + JSON Schema) to extract the dialog
+/// topic for monitoring, attach EU AI Act / safety disclaimers, and block unsafe
+/// statements (`safety`, `youth-protection`) with an empty `content` (`""`).
+/// Fails closed (`503 SERVICE_UNAVAILABLE`) if either LLM step fails.
 #[utoipa::path(
     post,
     path = "/translate",
@@ -564,15 +599,28 @@ pub async fn correct_transcript(
                     })
                 )),
                 ("withWarning" = (
-                    summary = "Example with initially hidden response text",
+                    summary = "Example with EU AI Act disclaimer and initially hidden response text",
                     value = json!({
                         "type": "translation",
                         "content": "Die aufbereitete Antwort steht hier.",
                         "warning": {
-                            "headline": "Möglicherweise verletzender Inhalt",
-                            "body": "Diese Antwort enthält **abwertende Aussagen**.",
+                            "headline": "Hinweis zu Rechts-Themen",
+                            "body": "Diese Übersetzung erklärt rechtliche Begriffe.  \nDie Erklärung kommt von einer Künstlichen Intelligenz.  \nDie Übersetzung ist **keine** Rechts-Beratung.  \nBitte wenden Sie sich bei rechtlichen Fragen an eine Rechts-Beratung.",
                             "type": "warning",
                             "revealable": true
+                        }
+                    })
+                )),
+                ("blockedDanger" = (
+                    summary = "Example blocked for safety or youth-protection with empty content",
+                    value = json!({
+                        "type": "translation",
+                        "content": "",
+                        "warning": {
+                            "headline": "Aussage aus Sicherheits-Gründen blockiert",
+                            "body": "Diese Aussage beschreibt gefährliche oder verbotene Handlungen.  \nDeshalb wird diese Aussage **nicht** übersetzt.",
+                            "type": "danger",
+                            "revealable": false
                         }
                     })
                 ))
@@ -756,8 +804,9 @@ pub async fn translate(
         .map_err(|e| {
             tracing::error!(
                 endpoint = "/translate",
+                stage = "translate",
                 error = %e,
-                "LLM API request failed"
+                "LLM API translation request failed"
             );
             (
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -775,22 +824,88 @@ pub async fn translate(
         prompt_output.usage.output_tokens,
     );
 
+    let (model_type, model_content) = parse_translate_output(&prompt_output.text);
+    let translated_content = if model_content.is_empty() {
+        directives.cleaned_message.clone()
+    } else {
+        model_content
+    };
+
+    let classify_prompt =
+        build_classify_dialog_prompt(history, &directives.cleaned_message, &translated_content);
+    let classify_output = state
+        .runner
+        .run_prompt_with_schema(
+            &CLASSIFY_DIALOG_SYSTEM_PROMPT,
+            &classify_prompt,
+            "low",
+            &CLASSIFY_DIALOG_RESPONSE_SCHEMA,
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                endpoint = "/translate",
+                stage = "classify",
+                error = %e,
+                "LLM API dialog classification request failed"
+            );
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ErrorResponse::new(
+                    "SERVICE_UNAVAILABLE",
+                    "Service is temporarily unavailable.",
+                )),
+            )
+        })?;
+
+    crate::metrics::record_token_usage(
+        "/translate/classify",
+        classify_output.usage.input_tokens,
+        classify_output.usage.reasoning_tokens,
+        classify_output.usage.output_tokens,
+    );
+
+    let classification = parse_classify_dialog_output(&classify_output.text).map_err(|e| {
+        tracing::error!(
+            endpoint = "/translate",
+            stage = "classify",
+            error = %e,
+            raw_output = %classify_output.text,
+            "Failed to parse or validate dialog classification output"
+        );
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse::new(
+                "SERVICE_UNAVAILABLE",
+                "Service is temporarily unavailable.",
+            )),
+        )
+    })?;
+
+    crate::metrics::record_translate_classification(
+        classification.topic.as_str(),
+        classification.r#type.as_str(),
+        classification.category.as_str(),
+    );
+
     tracing::info!(
         endpoint = "/translate",
         status = 200,
         history_length = history_len,
+        topic = classification.topic.as_str(),
+        classification_type = classification.r#type.as_str(),
+        classification_category = classification.category.as_str(),
         input_tokens = prompt_output.usage.input_tokens,
         reasoning_tokens = prompt_output.usage.reasoning_tokens,
         output_tokens = prompt_output.usage.output_tokens,
-        "LLM request completed successfully"
+        classify_input_tokens = classify_output.usage.input_tokens,
+        classify_reasoning_tokens = classify_output.usage.reasoning_tokens,
+        classify_output_tokens = classify_output.usage.output_tokens,
+        "Translate and dialog classification completed successfully"
     );
 
-    let (model_type, model_content) = parse_translate_output(&prompt_output.text);
-    let content = if model_content.is_empty() {
-        directives.cleaned_message
-    } else {
-        model_content
-    };
+    let (classified_type, final_content, classified_warning) =
+        apply_classification(classification, model_type, translated_content);
 
     let debug_info =
         crate::web::is_admin_authenticated(&headers, &state.admin_password).then(|| {
@@ -801,6 +916,17 @@ pub async fn translate(
             } else {
                 crate::prompts::count_gemma_tokens(&prompt)
             };
+
+            let classify_system_prompt = CLASSIFY_DIALOG_SYSTEM_PROMPT.clone();
+            let classify_system_prompt_tokens =
+                crate::prompts::count_gemma_tokens(&classify_system_prompt);
+            let classify_prompt_tokens =
+                if classify_output.usage.input_tokens > classify_system_prompt_tokens {
+                    classify_output.usage.input_tokens - classify_system_prompt_tokens
+                } else {
+                    crate::prompts::count_gemma_tokens(&classify_prompt)
+                };
+
             DebugInfo {
                 system_prompt: TRANSLATE_SYSTEM_PROMPT.to_string(),
                 prompt,
@@ -811,13 +937,27 @@ pub async fn translate(
                 response_tokens: prompt_output.usage.output_tokens,
                 reasoning: prompt_output.reasoning,
                 examples: (!example_strings.is_empty()).then_some(example_strings),
+                classification: Some(ClassificationDebugInfo {
+                    topic: classification.topic,
+                    classification_type: classification.r#type,
+                    category: classification.category,
+                    system_prompt: classify_system_prompt,
+                    prompt: classify_prompt,
+                    system_prompt_tokens: classify_system_prompt_tokens,
+                    prompt_tokens: classify_prompt_tokens,
+                    input_tokens: classify_output.usage.input_tokens,
+                    reasoning_tokens: classify_output.usage.reasoning_tokens,
+                    response_tokens: classify_output.usage.output_tokens,
+                    reasoning: classify_output.reasoning,
+                    raw_response: classify_output.text,
+                }),
             }
         });
 
     Ok(Json(TranslationResponse {
-        r#type: directives.r#type.unwrap_or(model_type),
-        content,
-        warning: directives.warning,
+        r#type: directives.r#type.unwrap_or(classified_type),
+        content: final_content,
+        warning: directives.warning.or(classified_warning),
         debug_info,
     }))
 }
