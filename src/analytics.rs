@@ -11,6 +11,20 @@ pub const DEFAULT_ENDPOINTS: [&str; 2] = ["/correct-transcript", "/translate"];
 /// Default monitored LLM prompts in pipeline order.
 pub const DEFAULT_PROMPTS: [&str; 3] = ["correct-transcript", "translate", "classify"];
 
+/// Default classification reason categories paired with their parent alert level (`ok`, `info`, `warning`, `danger`).
+pub const DEFAULT_CLASSIFICATION_CATEGORIES: [(&str, &str); 10] = [
+    ("ok", "ok"),
+    ("info", "uncertain"),
+    ("warning", "medical"),
+    ("warning", "financial"),
+    ("warning", "juridical"),
+    ("warning", "authorities"),
+    ("danger", "safety"),
+    ("danger", "hate-speech"),
+    ("danger", "youth-protection"),
+    ("danger", "injection"),
+];
+
 /// Preset time range selection for the analytics dashboard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum TimeRange {
@@ -127,9 +141,10 @@ pub struct TopicMetric {
     pub count: u64,
 }
 
-/// Translation request count for an alert level category (`ok`, `info`, `warning`, `danger`).
+/// Translation request count for an alert level (`ok`, `info`, `warning`, `danger`) and specific reason category.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CategoryMetric {
+    pub level: String,
     pub category: String,
     pub count: u64,
 }
@@ -243,11 +258,11 @@ impl AnalyticsReport {
             })
             .collect();
 
-        let default_categories = ["ok", "info", "warning", "danger"];
-        let translation_by_category = default_categories
+        let translation_by_category = DEFAULT_CLASSIFICATION_CATEGORIES
             .iter()
-            .map(|c| CategoryMetric {
-                category: c.to_string(),
+            .map(|(level, cat)| CategoryMetric {
+                level: (*level).to_string(),
+                category: (*cat).to_string(),
                 count: 0,
             })
             .collect();
@@ -985,9 +1000,8 @@ impl MetricsQueryService for CloudWatchMetricsProvider {
             );
         }
 
-        // 5. Alert categories
-        let categories = ["ok", "info", "warning", "danger"];
-        for (idx, cat) in categories.iter().enumerate() {
+        // 5. Alert categories (all 10 reason sub-categories across ok/info/warning/danger)
+        for (idx, (_level, cat)) in DEFAULT_CLASSIFICATION_CATEGORIES.iter().enumerate() {
             queries.push(
                 MetricDataQuery::builder()
                     .id(format!("cat_{idx}"))
@@ -1333,7 +1347,7 @@ mod tests {
         assert_eq!(report.token_usage_by_prompt[1].prompt, "translate");
         assert_eq!(report.token_usage_by_prompt[2].prompt, "classify");
         assert_eq!(report.translation_by_topic.len(), 10);
-        assert_eq!(report.translation_by_category.len(), 4);
+        assert_eq!(report.translation_by_category.len(), 10);
         assert_eq!(report.translation_by_type.len(), 2);
         assert_eq!(report.history_length_distribution.len(), 5);
     }
@@ -1360,10 +1374,11 @@ mod tests {
         store.record_history_length(8);
         store.record_history_length(15);
 
-        // Record classifications
-        store.record_classification("medical", "translation", "danger");
-        store.record_classification("authorities", "formatting", "info");
-        store.record_classification("medical", "translation", "ok");
+        // Record classifications (topic, translation_type, reason category)
+        store.record_classification("medical", "translation", "safety");
+        store.record_classification("authorities", "formatting", "uncertain");
+        store.record_classification("medical", "translation", "medical");
+        store.record_classification("social", "translation", "ok");
 
         let report = store.generate_report(TimeRange::OneHour);
 
@@ -1449,26 +1464,37 @@ mod tests {
             .unwrap();
         assert_eq!(auth_topic.count, 1);
 
-        // Categories
-        let danger_cat = report
+        // Categories (10 sub-categories grouped by parent level)
+        let danger_safety_cat = report
             .translation_by_category
             .iter()
-            .find(|c| c.category == "danger")
+            .find(|c| c.category == "safety")
             .unwrap();
-        assert_eq!(danger_cat.count, 1);
+        assert_eq!(danger_safety_cat.level, "danger");
+        assert_eq!(danger_safety_cat.count, 1);
 
-        let info_cat = report
+        let info_uncertain_cat = report
             .translation_by_category
             .iter()
-            .find(|c| c.category == "info")
+            .find(|c| c.category == "uncertain")
             .unwrap();
-        assert_eq!(info_cat.count, 1);
+        assert_eq!(info_uncertain_cat.level, "info");
+        assert_eq!(info_uncertain_cat.count, 1);
+
+        let warning_med_cat = report
+            .translation_by_category
+            .iter()
+            .find(|c| c.category == "medical")
+            .unwrap();
+        assert_eq!(warning_med_cat.level, "warning");
+        assert_eq!(warning_med_cat.count, 1);
 
         let ok_cat = report
             .translation_by_category
             .iter()
             .find(|c| c.category == "ok")
             .unwrap();
+        assert_eq!(ok_cat.level, "ok");
         assert_eq!(ok_cat.count, 1);
 
         // Types
@@ -1477,7 +1503,7 @@ mod tests {
             .iter()
             .find(|t| t.classification_type == "translation")
             .unwrap();
-        assert_eq!(trans_type.count, 2);
+        assert_eq!(trans_type.count, 3);
 
         let format_type = report
             .translation_by_type

@@ -355,15 +355,24 @@
       }
     });
 
-    // 5. Alert Categories (Doughnut)
+    // 5. Alert Categories (Doughnut with sub-type slices and parent-only legend)
+    const LEVEL_COLORS = {
+      ok: '#22c55e',
+      info: '#3b82f6',
+      warning: '#f59e0b',
+      danger: '#ef4444'
+    };
+    const PARENT_LEVELS = ['ok', 'info', 'warning', 'danger'];
     const ctxCategories = document.getElementById('chart-categories').getContext('2d');
     charts.categories = new Chart(ctxCategories, {
       type: 'doughnut',
       data: {
-        labels: ['ok', 'info', 'warning', 'danger'],
+        labels: [],
         datasets: [{
-          data: [0, 0, 0, 0],
-          backgroundColor: ['#22c55e', '#3b82f6', '#f59e0b', '#ef4444'],
+          data: [],
+          levels: [],
+          categories: [],
+          backgroundColor: [],
           borderWidth: 2,
           borderColor: isDarkMode() ? '#0f172a' : '#ffffff'
         }]
@@ -372,7 +381,58 @@
         responsive: true,
         maintainAspectRatio: false,
         plugins: {
-          legend: { position: 'bottom' }
+          legend: {
+            position: 'bottom',
+            labels: {
+              generateLabels: function(chart) {
+                const ds = chart.data.datasets[0] || {};
+                const levels = ds.levels || [];
+                const textColor = getThemeColors().textColor;
+                return PARENT_LEVELS.map(level => {
+                  const indices = levels
+                    .map((lvl, idx) => (lvl === level ? idx : -1))
+                    .filter(idx => idx !== -1);
+                  const hidden = indices.length > 0 && indices.every(idx => !chart.getDataVisibility(idx));
+                  return {
+                    text: level,
+                    fillStyle: LEVEL_COLORS[level],
+                    strokeStyle: LEVEL_COLORS[level],
+                    fontColor: textColor,
+                    lineWidth: 0,
+                    hidden: hidden,
+                    level: level
+                  };
+                });
+              }
+            },
+            onClick: function(_e, legendItem, legend) {
+              const chart = legend.chart;
+              const ds = chart.data.datasets[0] || {};
+              const levels = ds.levels || [];
+              const targetLevel = legendItem.level || legendItem.text;
+              levels.forEach((lvl, idx) => {
+                if (lvl === targetLevel) {
+                  chart.toggleDataVisibility(idx);
+                }
+              });
+              chart.update();
+            }
+          },
+          tooltip: {
+            callbacks: {
+              title: function(items) {
+                if (!items.length) return '';
+                const item = items[0];
+                const ds = item.dataset || {};
+                const level = (ds.levels && ds.levels[item.dataIndex]) || '';
+                const category = (ds.categories && ds.categories[item.dataIndex]) || item.label || '';
+                return level === 'ok' || level === category ? level : `${level} (${category})`;
+              },
+              label: function(item) {
+                return ` ${formatNumber(item.parsed)}`;
+              }
+            }
+          }
         }
       }
     });
@@ -488,12 +548,23 @@
     charts.topics.data.datasets[0].data = displayTopics.map(t => t.count);
     charts.topics.update();
 
-    // 6. Chart: Categories
-    const catMap = { ok: 0, info: 0, warning: 0, danger: 0 };
-    (data.translation_by_category || []).forEach(c => {
-      if (catMap[c.category] !== undefined) catMap[c.category] = c.count;
-    });
-    charts.categories.data.datasets[0].data = [catMap.ok, catMap.info, catMap.warning, catMap.danger];
+    // 6. Chart: Categories (broken down by reason sub-type, colored by parent level)
+    const levelColorMap = {
+      ok: '#22c55e',
+      info: '#3b82f6',
+      warning: '#f59e0b',
+      danger: '#ef4444'
+    };
+    const catItems = data.translation_by_category || [];
+    charts.categories.data.labels = catItems.map(c =>
+      c.level === 'ok' || c.level === c.category ? c.level : `${c.level} (${c.category})`
+    );
+    charts.categories.data.datasets[0].data = catItems.map(c => c.count);
+    charts.categories.data.datasets[0].levels = catItems.map(c => c.level);
+    charts.categories.data.datasets[0].categories = catItems.map(c => c.category);
+    charts.categories.data.datasets[0].backgroundColor = catItems.map(
+      c => levelColorMap[c.level] || '#94a3b8'
+    );
     charts.categories.update();
 
     // 7. Chart: Types

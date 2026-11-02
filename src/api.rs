@@ -348,6 +348,16 @@ pub enum TranslationType {
     Translation,
 }
 
+impl TranslationType {
+    /// Returns the canonical lowercase string label (`"formatting"` or `"translation"`).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Formatting => "formatting",
+            Self::Translation => "translation",
+        }
+    }
+}
+
 /// Warning severity level for UI display and icon; does not control visibility.
 /// Use %warning.type=danger%, %warning.type=warning%, or %warning.type=info% on staging environment to enforce.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -1207,9 +1217,13 @@ pub async fn translate(
         )
     })?;
 
+    let (classified_type, final_content, classified_warning) =
+        apply_classification(&classification, model_type, translated_content);
+    let final_type = directives.r#type.unwrap_or(classified_type);
+
     crate::metrics::record_translate_classification(
         classification.topic.as_str(),
-        classification.r#type.as_str(),
+        final_type.as_str(),
         classification.category.as_str(),
     );
 
@@ -1220,6 +1234,7 @@ pub async fn translate(
         status = 200,
         history_length = history_len,
         topic = classification.topic.as_str(),
+        translation_type = final_type.as_str(),
         classification_type = classification.r#type.as_str(),
         classification_category = classification.category.as_str(),
         partner_role = ?partner_role,
@@ -1231,9 +1246,6 @@ pub async fn translate(
         classify_output_tokens = classify_output.usage.output_tokens,
         "Translate and dialog classification completed successfully"
     );
-
-    let (classified_type, final_content, classified_warning) =
-        apply_classification(&classification, model_type, translated_content);
 
     let debug_info =
         crate::web::is_admin_authenticated(&headers, &state.admin_password).then(|| {
@@ -1284,7 +1296,7 @@ pub async fn translate(
         });
 
     Ok(Json(TranslationResponse {
-        r#type: directives.r#type.unwrap_or(classified_type),
+        r#type: final_type,
         content: final_content,
         warning: directives.warning.or(classified_warning),
         partner_role,

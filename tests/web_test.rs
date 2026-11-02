@@ -877,7 +877,7 @@ async fn test_analytics_api_authorized() {
     diwop_begleitapp::metrics::record_token_usage("translate", 80, 20, 30);
     diwop_begleitapp::metrics::record_token_usage("classify", 40, 5, 10);
     diwop_begleitapp::metrics::record_translate_history_length(3);
-    diwop_begleitapp::metrics::record_translate_classification("medical", "translation", "warning");
+    diwop_begleitapp::metrics::record_translate_classification("medical", "translation", "medical");
 
     let res = client
         .get(format!("{}/api/admin/analytics?range=24h", base_url))
@@ -913,7 +913,14 @@ async fn test_analytics_api_authorized() {
     assert!(topics.iter().any(|t| t["topic"] == "medical"));
 
     let categories = json["translation_by_category"].as_array().unwrap();
-    assert!(categories.iter().any(|c| c["category"] == "warning"));
+    assert!(categories.iter().any(|c| c["level"] == "warning"
+        && c["category"] == "medical"
+        && c["count"].as_u64().unwrap() >= 1));
+
+    let types = json["translation_by_type"].as_array().unwrap();
+    assert!(types
+        .iter()
+        .any(|t| t["classification_type"] == "translation" && t["count"].as_u64().unwrap() >= 1));
 
     let history = json["history_length_distribution"].as_array().unwrap();
     assert!(history.iter().any(|h| h["bucket"] == "3-5"));
