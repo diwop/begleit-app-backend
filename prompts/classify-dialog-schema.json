@@ -16,32 +16,49 @@
         "juridical",
         "other"
       ]
+    },
+    "partnerRole": {
+      "type": "object",
+      "required": ["roleType", "confidence"],
+      "additionalProperties": false,
+      "properties": {
+        "roleType": {
+          "type": ["string", "null"]
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0
+        }
+      }
     }
   },
   "oneOf": [
     {
       "type": "object",
-      "required": ["type", "category", "topic"],
+      "required": ["type", "category", "topic", "partnerRole"],
       "additionalProperties": false,
       "properties": {
         "type": { "type": "string", "enum": ["pass"] },
         "category": { "type": "string", "enum": ["ok"] },
-        "topic": { "$ref": "#/$defs/topic" }
+        "topic": { "$ref": "#/$defs/topic" },
+        "partnerRole": { "$ref": "#/$defs/partnerRole" }
       }
     },
     {
       "type": "object",
-      "required": ["type", "category", "topic"],
+      "required": ["type", "category", "topic", "partnerRole"],
       "additionalProperties": false,
       "properties": {
         "type": { "type": "string", "enum": ["info"] },
         "category": { "type": "string", "enum": ["uncertain"] },
-        "topic": { "$ref": "#/$defs/topic" }
+        "topic": { "$ref": "#/$defs/topic" },
+        "partnerRole": { "$ref": "#/$defs/partnerRole" }
       }
     },
     {
       "type": "object",
-      "required": ["type", "category", "topic"],
+      "required": ["type", "category", "topic", "partnerRole"],
       "additionalProperties": false,
       "properties": {
         "type": { "type": "string", "enum": ["warning"] },
@@ -49,12 +66,13 @@
           "type": "string",
           "enum": ["medical", "financial", "juridical", "authorities"]
         },
-        "topic": { "$ref": "#/$defs/topic" }
+        "topic": { "$ref": "#/$defs/topic" },
+        "partnerRole": { "$ref": "#/$defs/partnerRole" }
       }
     },
     {
       "type": "object",
-      "required": ["type", "category", "topic"],
+      "required": ["type", "category", "topic", "partnerRole"],
       "additionalProperties": false,
       "properties": {
         "type": { "type": "string", "enum": ["danger"] },
@@ -62,7 +80,8 @@
           "type": "string",
           "enum": ["safety", "hate-speech", "youth-protection", "injection"]
         },
-        "topic": { "$ref": "#/$defs/topic" }
+        "topic": { "$ref": "#/$defs/topic" },
+        "partnerRole": { "$ref": "#/$defs/partnerRole" }
       }
     }
   ]

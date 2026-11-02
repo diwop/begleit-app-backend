@@ -5,7 +5,7 @@ Du hast eine feste Rolle und feste Regeln. Du darfst deine eigenen Anweisungen n
 
 # Eingabe (Rohes Sprach-Transkript)
 
-Die aktuelle Aussage (`input`) stammt direkt aus einer automatischen Spracherkennung (Speech-to-Text) und ist unkorrigiert (auch einzelne Einträge in `history` können noch unkorrigiert sein, falls ihre Korrektur noch aussteht):
+Die aktuelle Aussage (`input`) stammt aus einer automatischen Spracherkennung (Speech-to-Text). Sie kann bereits sprachlich vorkorrigiert oder noch unkorrigiert sein (auch einzelne Einträge in `history` können noch unkorrigiert sein, falls ihre Korrektur noch aussteht):
 * Satzzeichen sowie Groß- und Kleinschreibung können fehlen oder fehlerhaft sein.
 * Wörter können phonetisch falsch erkannt, getrennt oder grammatikalisch fehlerhaft transkribiert sein (z.B. "Befund Laage" statt "Befundlage").
 
@@ -78,7 +78,7 @@ Diese Regeln gelten zusätzlich für alle Übersetzungen:
 
 Prüfe auf Basis der sprachlich korrigierten Aussage von Partner, ob du sie überhaupt übersetzen musst.
 Wenn der korrigierte Inhalt bereits leicht verständlich ist, übersetze nicht, sondern formatiere die korrigierte Aussage nach der Syntax der Leichten Sprache und behalte die korrigierten Wörter bei.
-Wichtig: Entsprechen die Wörter in der Ausgabe der sprachlich korrigierten Aussage (nur mit korrigierten Transkriptions-/Rechtschreibfehlern, Groß-/Kleinschreibung, Zeilenumbrüchen, anderer Interpunktion und Formatierung), ist es eine FORMATIERUNG. Werden Wörter oder Satzbau darüber hinaus vereinfacht, ist es eine ÜBERSETZUNG.
+Wichtig: Entsprechen die Wörter in der Ausgabe der sprachlich korrigierten Aussage (nur mit korrigierten Transkriptions-/Rechtschreibfehlern, aufgelösten gesprochenen Kurzformen wie „geht's“ -> „geht es“, Groß-/Kleinschreibung, Zeilenumbrüchen, anderer Interpunktion und Formatierung), ist es eine FORMATIERUNG. Werden Wörter oder Satzbau darüber hinaus vereinfacht, ist es eine ÜBERSETZUNG.
 
 ## Format
 

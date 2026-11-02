@@ -28,6 +28,8 @@ The call is made after a spoken contribution is completed, both for `user` and f
 
 ### Request
 
+Supports both the single-turn payload (`role` + `message`) and the history-aware contextual payload (`history` ending with the turn to correct):
+
 ```json
 {
   "role": "partner",
@@ -35,14 +37,48 @@ The call is made after a spoken contribution is completed, both for `user` and f
 }
 ```
 
+or with conversation `history` and optional acoustic diarization metadata:
+
+```json
+{
+  "history": [
+    {
+      "role": "partner",
+      "message": "Guten Tag, wie kann ich Ihnen helfen?",
+      "clusterId": "cluster_1",
+      "userLikelihood": 0.08
+    },
+    {
+      "role": "partner_simple",
+      "message": "Guten Tag.  \nWie kann ich Ihnen helfen?"
+    },
+    {
+      "role": "partner",
+      "message": "ich habe heute einen termin um vierzehn uhr",
+      "clusterId": "cluster_0",
+      "userLikelihood": 0.29,
+      "pauseMs": 640
+    }
+  ]
+}
+```
+
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
-| `role` | `"user" \| "partner"` | Yes | Speaker of the contribution |
-| `message` | `string` | Yes | Spoken text to be corrected; non-empty |
-
-Initially, no conversation history is transmitted. The correction processes the individual contribution independently.
+| `role` | `"user" \| "partner"` | Required if `history` is not set | Speaker of the contribution (ignored when `history` is provided) |
+| `message` | `string` | Required if `history` is not set | Spoken text to be corrected; non-empty (ignored when `history` is provided) |
+| `partnerNumber` | `integer` (`>= 1`) | No | Optional 1-based conversation partner index when `role` is `"partner"` (ignored when `history` is provided) |
+| `history` | `CorrectTranscriptHistoryItem[]` | No | Chronological conversation history ending with the spoken contribution to correct (`user` or `partner`); takes precedence over `role`/`message` when set |
+| `history[].role` | `"user" \| "partner" \| "partner_simple"` | Yes | Speaker role (`user` or `partner` required on the final item; `partner_simple` allowed in prior context items) |
+| `history[].message` | `string` | Yes | Spoken text to correct on the final item, or corrected/prepared text on earlier items; non-empty |
+| `history[].partnerNumber` | `integer` (`>= 1`) | No | Optional 1-based conversation partner index when `role` is `"partner"` or `"partner_simple"` |
+| `history[].clusterId` | `string` | No | Optional acoustic cluster ID from speaker diarization (e.g. `"cluster_0"`) |
+| `history[].userLikelihood` | `number` (`0.0–1.0`) | No | Optional acoustic probability that the speaker is `user` (when omitted, mapped deterministically from `role`: `1.0` for `user`, `0.0` for `partner`) |
+| `history[].pauseMs` | `integer` (`>= 0`) | No | Optional silence gap in milliseconds before this turn started |
 
 ### Successful Response: `200 OK`
+
+Legacy single-turn request (`history` omitted):
 
 ```json
 {
@@ -50,9 +86,21 @@ Initially, no conversation history is transmitted. The correction processes the 
 }
 ```
 
+Contextual request (`history` provided):
+
+```json
+{
+  "message": "Ich habe heute einen Termin um 14 Uhr.",
+  "resolvedRole": "user",
+  "mergeWithPrevious": false
+}
+```
+
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `message` | `string` | Complete corrected text as plain text, no Markdown |
+| `message` | `string` | Complete corrected text as plain text, no Markdown (or the combined text of the preceding spoken turn and current turn when `mergeWithPrevious` is `true`) |
+| `resolvedRole` | `"user" \| "partner"` (optional) | Present when `history` is supplied; verified speaker role (`userLikelihood >= 0.80` locks `user`, `<= 0.10` locks `partner`, `0.10 < userLikelihood < 0.80` resolves via context and turn-taking) |
+| `mergeWithPrevious` | `boolean` (optional) | Present when `history` is supplied; `true` when the turn is a direct continuation of the immediately preceding spoken turn by the same speaker |
 
 ### Processing Rules
 
@@ -106,6 +154,7 @@ The request uses an object with `messages` instead of a bare array so that addit
 | `messages` | `ConversationMessage[]` | Yes | Conversation history in chronological order ending with the partner contribution to prepare |
 | `messages[].role` | `"user" \| "partner" \| "partner_simple"` | Yes | Speaker role (`user`, `partner`) or previously prepared simple-language partner contribution (`partner_simple`) |
 | `messages[].message` | `string` | Yes | Corrected transcript if available (otherwise the plain recognized spoken text) for `user` and `partner`, or the prepared Markdown `content` for `partner_simple`; non-empty |
+| `messages[].partnerNumber` | `integer` (`>= 1`) | No | Optional 1-based conversation partner index when `role` is `"partner"` or `"partner_simple"` |
 
 ### Validation and Processing Rules
 
@@ -152,6 +201,9 @@ The following example illustrates the response format independently of the reque
 | `warning.body` | `string` | If warning present | Non-empty explanation as Markdown |
 | `warning.type` | `"danger" \| "warning" \| "info"` | If warning present | Warning level for display and icon. Use `%warning.type=danger%`, `%warning.type=warning%`, or `%warning.type=info%` on staging environment to enforce. |
 | `warning.revealable` | `boolean` | If warning present | Determines whether the response text is initially hidden. Use `%warning.revealable%` on staging environment to enforce. |
+| `partnerRole` | `PartnerRole` | No | Optional contextually inferred role of the speaking partner; omitted when unknown (`roleType` is `null` or confidence `<= 0.0`) |
+| `partnerRole.roleType` | `string` | If `partnerRole` present | Short German professional/social role label (`"Arzt"`, `"Ärztin"`, `"ÄrztIn"`, `"SachbearbeiterIn"`, etc.) |
+| `partnerRole.confidence` | `number` (`0.0–1.0`) | If `partnerRole` present | Model confidence in `roleType` (`>= 0.80` recommended for promoting as speaker card title) |
 
 ### Meaning of the Response Type
 

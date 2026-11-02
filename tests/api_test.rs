@@ -1,6 +1,7 @@
 use diwop_begleitapp::{
     create_app, create_app_with_runner_and_readiness, ClassificationCategory, ClassificationLevel,
-    ConversationMessage, CorrectTranscriptResponse, DialogTopic, EchoPromptRunner, ErrorResponse,
+    ConversationMessage, CorrectTranscriptHistoryItem, CorrectTranscriptRequest,
+    CorrectTranscriptResponse, DialogTopic, EchoPromptRunner, ErrorResponse, PartnerRole,
     PromptError, PromptOutput, PromptRunner, Role, TokenUsage, TranslateRequest,
     TranslationResponse, TranslationType, Warning, WarningType,
 };
@@ -78,14 +79,35 @@ impl MockPromptRunner {
 
         selected
             .clone()
-            .map(|text| PromptOutput {
-                text,
-                reasoning: Some("Mock reasoning".to_string()),
-                usage: TokenUsage {
-                    input_tokens: 10,
-                    reasoning_tokens: 5,
-                    output_tokens: 15,
-                },
+            .map(|text| {
+                let normalized_text = if system_prompt
+                    == diwop_begleitapp::prompts::CORRECT_TRANSCRIPT_SYSTEM_PROMPT
+                    && !text.trim_start().starts_with('{')
+                    && !text.trim_start().starts_with("```")
+                {
+                    let role = if prompt.contains("- Vorläufige Rolle: user") {
+                        "user"
+                    } else {
+                        "partner"
+                    };
+                    serde_json::json!({
+                        "message": text,
+                        "resolvedRole": role,
+                        "mergeWithPrevious": false
+                    })
+                    .to_string()
+                } else {
+                    text
+                };
+                PromptOutput {
+                    text: normalized_text,
+                    reasoning: Some("Mock reasoning".to_string()),
+                    usage: TokenUsage {
+                        input_tokens: 10,
+                        reasoning_tokens: 5,
+                        output_tokens: 15,
+                    },
+                }
             })
             .map_err(PromptError)
     }
@@ -173,14 +195,20 @@ async fn test_correct_transcript_echoes_message() {
             .json(&ConversationMessage {
                 role,
                 message: input.to_string(),
+                partner_number: None,
             })
             .send()
             .await
             .unwrap();
 
         assert_eq!(res.status(), reqwest::StatusCode::OK);
-        let body: CorrectTranscriptResponse = res.json().await.unwrap();
+        let raw: serde_json::Value = res.json().await.unwrap();
+        assert!(raw.get("resolvedRole").is_none());
+        assert!(raw.get("mergeWithPrevious").is_none());
+        let body: CorrectTranscriptResponse = serde_json::from_value(raw).unwrap();
         assert_eq!(body.message, input);
+        assert_eq!(body.resolved_role, None);
+        assert_eq!(body.merge_with_previous, None);
     }
 }
 
@@ -244,10 +272,12 @@ async fn test_translate_echoes_last_partner_message() {
                 ConversationMessage {
                     role: Role::User,
                     message: "wann muss ich den antrag abgeben".to_string(),
+                    partner_number: None,
                 },
                 ConversationMessage {
                     role: Role::Partner,
                     message: "sie müssen den antrag bis ende nächste woche abgeben".to_string(),
+                    partner_number: None,
                 },
             ],
         })
@@ -257,8 +287,9 @@ async fn test_translate_echoes_last_partner_message() {
 
     assert_eq!(res.status(), reqwest::StatusCode::OK);
     let raw: serde_json::Value = res.json().await.unwrap();
-    // Ensure `warning` and `debugInfo` are omitted (not `null`) when None
+    // Ensure `warning`, `partnerRole`, and `debugInfo` are omitted (not `null`) when None
     assert!(raw.get("warning").is_none());
+    assert!(raw.get("partnerRole").is_none());
     assert!(raw.get("debugInfo").is_none());
 
     let body: TranslationResponse = serde_json::from_value(raw).unwrap();
@@ -268,6 +299,7 @@ async fn test_translate_echoes_last_partner_message() {
             r#type: TranslationType::Formatting,
             content: "sie müssen den antrag bis ende nächste woche abgeben".to_string(),
             warning: None,
+            partner_role: None,
             debug_info: None,
         }
     );
@@ -297,6 +329,7 @@ async fn test_translate_validation_errors() {
             messages: vec![ConversationMessage {
                 role: Role::Partner,
                 message: "  ".to_string(),
+                partner_number: None,
             }],
         })
         .send()
@@ -314,10 +347,12 @@ async fn test_translate_validation_errors() {
                 ConversationMessage {
                     role: Role::Partner,
                     message: "Hallo".to_string(),
+                    partner_number: None,
                 },
                 ConversationMessage {
                     role: Role::User,
                     message: "wann muss ich den antrag abgeben".to_string(),
+                    partner_number: None,
                 },
             ],
         })
@@ -345,6 +380,7 @@ async fn test_translate_directives_for_type_and_warning() {
             messages: vec![ConversationMessage {
                 role: Role::Partner,
                 message: msg.to_string(),
+                partner_number: None,
             }],
         })
         .send()
@@ -359,6 +395,7 @@ async fn test_translate_directives_for_type_and_warning() {
             r#type: TranslationType::Formatting,
             content: msg.to_string(),
             warning: None,
+            partner_role: None,
             debug_info: None,
         }
     );
@@ -371,6 +408,7 @@ async fn test_translate_directives_for_type_and_warning() {
             messages: vec![ConversationMessage {
                 role: Role::Partner,
                 message: msg.to_string(),
+                partner_number: None,
             }],
         })
         .send()
@@ -390,6 +428,7 @@ async fn test_translate_directives_for_type_and_warning() {
                 r#type: WarningType::Warning,
                 revealable: true,
             }),
+            partner_role: None,
             debug_info: None,
         }
     );
@@ -413,6 +452,7 @@ async fn test_prompt_runner_integration_and_error_handling() {
         .json(&ConversationMessage {
             role: Role::Partner,
             message: "sie müssen den antrag bis ende nächste woche abgeben".to_string(),
+            partner_number: None,
         })
         .send()
         .await
@@ -427,7 +467,7 @@ async fn test_prompt_runner_integration_and_error_handling() {
     let calls = mock_correct.recorded_calls();
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].thinking_level, "minimal");
-    assert!(!calls[0].has_json_schema);
+    assert!(calls[0].has_json_schema);
     assert!(calls[0]
         .prompt
         .contains("sie müssen den antrag bis ende nächste woche abgeben"));
@@ -446,10 +486,12 @@ async fn test_prompt_runner_integration_and_error_handling() {
                 ConversationMessage {
                     role: Role::User,
                     message: "wann muss ich den antrag abgeben".to_string(),
+                    partner_number: None,
                 },
                 ConversationMessage {
                     role: Role::Partner,
                     message: "sie müssen den antrag bis ende nächste woche abgeben".to_string(),
+                    partner_number: None,
                 },
             ],
         })
@@ -464,6 +506,7 @@ async fn test_prompt_runner_integration_and_error_handling() {
             r#type: TranslationType::Translation,
             content: "Geben Sie den Antrag **bis Ende nächster Woche** ab.".to_string(),
             warning: None,
+            partner_role: None,
             debug_info: None,
         }
     );
@@ -505,6 +548,7 @@ async fn test_prompt_runner_integration_and_error_handling() {
         .json(&ConversationMessage {
             role: Role::User,
             message: "Hallo".to_string(),
+            partner_number: None,
         })
         .send()
         .await
@@ -519,6 +563,7 @@ async fn test_prompt_runner_integration_and_error_handling() {
             messages: vec![ConversationMessage {
                 role: Role::Partner,
                 message: "Hallo".to_string(),
+                partner_number: None,
             }],
         })
         .send()
@@ -539,6 +584,7 @@ async fn test_translate_classification_categories_and_fail_closed() {
         messages: vec![ConversationMessage {
             role: Role::Partner,
             message: "Beispielaussage des Gesprächspartners.".to_string(),
+            partner_number: None,
         }],
     };
 
@@ -710,6 +756,174 @@ async fn test_healthz_and_openapi_endpoints() {
     let openapi_json = openapi_res.text().await.unwrap();
     assert!(openapi_json.contains("ClassificationDebugInfo"));
     assert!(openapi_json.contains("DialogTopic"));
+    assert!(openapi_json.contains("CorrectTranscriptRequest"));
+    assert!(openapi_json.contains("CorrectTranscriptHistoryItem"));
+}
+
+/// Verifies PRD-4 contextual `history` support on `POST /correct-transcript`:
+/// - `history` takes precedence over legacy `role`/`message`,
+/// - returns `resolvedRole` and `mergeWithPrevious`,
+/// - enforces acoustic lock guardrails (`>= 0.80` -> `user`, `<= 0.10` -> `partner`),
+/// - allows borderline (`0.10 < userLikelihood < 0.80`) role resolution and `mergeWithPrevious`,
+/// - and rejects invalid `history` payloads with `422 VALIDATION_ERROR`.
+#[tokio::test]
+async fn test_correct_transcript_contextual_history_and_guardrails() {
+    let client = reqwest::Client::new();
+
+    // 1. Borderline turn (userLikelihood = 0.29) resolved to User + contextual ASR disambiguation
+    let mock_flip = MockPromptRunner::new(Ok(
+        r#"{"message":"Ich nehme jeden Morgen L-Thyroxin.","resolvedRole":"user","mergeWithPrevious":false}"#
+            .to_string(),
+    ));
+    let url_flip = start_server_with_runner(mock_flip.clone()).await;
+
+    let req_flip = CorrectTranscriptRequest {
+        role: Some(Role::Partner),
+        message: Some("legacy field ignored when history is set".to_string()),
+        partner_number: None,
+        history: Some(vec![
+            CorrectTranscriptHistoryItem {
+                role: Role::Partner,
+                message: "Guten Tag, nehmen Sie aktuell Ibuprofen oder L-Thyroxin?".to_string(),
+                partner_number: None,
+                cluster_id: Some("cluster_1".to_string()),
+                user_likelihood: Some(0.06),
+                pause_ms: None,
+            },
+            CorrectTranscriptHistoryItem {
+                role: Role::PartnerSimple,
+                message: "Guten Tag.  \nNehmen Sie **Ibuprofen** oder **L-Thyroxin**?".to_string(),
+                partner_number: None,
+                cluster_id: None,
+                user_likelihood: None,
+                pause_ms: None,
+            },
+            CorrectTranscriptHistoryItem {
+                role: Role::Partner,
+                message: "ich nehme jeden morgen l tür rock sin".to_string(),
+                partner_number: None,
+                cluster_id: Some("cluster_0".to_string()),
+                user_likelihood: Some(0.29),
+                pause_ms: Some(520),
+            },
+        ]),
+    };
+
+    let res = client
+        .post(format!("{}/correct-transcript", url_flip))
+        .json(&req_flip)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), reqwest::StatusCode::OK);
+    let body: CorrectTranscriptResponse = res.json().await.unwrap();
+    assert_eq!(body.message, "Ich nehme jeden Morgen L-Thyroxin.");
+    assert_eq!(body.resolved_role, Some(Role::User));
+    assert_eq!(body.merge_with_previous, Some(false));
+
+    let calls = mock_flip.recorded_calls();
+    assert_eq!(calls.len(), 1);
+    assert!(calls[0].has_json_schema);
+    assert!(calls[0].prompt.contains(
+        "Partner [clusterId=cluster_1, userLikelihood=0.06]: Guten Tag, nehmen Sie aktuell Ibuprofen oder L-Thyroxin?"
+    ));
+    assert!(calls[0]
+        .prompt
+        .contains("```input\nich nehme jeden morgen l tür rock sin\n```"));
+    assert!(!calls[0]
+        .prompt
+        .contains("legacy field ignored when history is set"));
+
+    // 2. Acoustic Lock Guardrail: userLikelihood = 0.04 locks Partner even if LLM outputs "user"
+    let res_locked = client
+        .post(format!("{}/correct-transcript", url_flip))
+        .json(&CorrectTranscriptRequest {
+            role: None,
+            message: None,
+            partner_number: None,
+            history: Some(vec![CorrectTranscriptHistoryItem {
+                role: Role::Partner,
+                message: "bitte nehmen sie platz".to_string(),
+                partner_number: None,
+                cluster_id: Some("cluster_1".to_string()),
+                user_likelihood: Some(0.04),
+                pause_ms: None,
+            }]),
+        })
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res_locked.status(), reqwest::StatusCode::OK);
+    let body_locked: CorrectTranscriptResponse = res_locked.json().await.unwrap();
+    assert_eq!(body_locked.resolved_role, Some(Role::Partner));
+    assert_eq!(body_locked.merge_with_previous, Some(false));
+
+    // 3. Split-turn merge (mergeWithPrevious = true)
+    let mock_merge = MockPromptRunner::new(Ok(
+        r#"{"message":"Warum kann er nur Sailor, aber nicht Sailors sagen?","resolvedRole":"user","mergeWithPrevious":true}"#
+            .to_string(),
+    ));
+    let url_merge = start_server_with_runner(mock_merge).await;
+    let res_merge = client
+        .post(format!("{}/correct-transcript", url_merge))
+        .json(&CorrectTranscriptRequest {
+            role: None,
+            message: None,
+            partner_number: None,
+            history: Some(vec![
+                CorrectTranscriptHistoryItem {
+                    role: Role::User,
+                    message: "Warum kann er nur Sailor, aber nicht.".to_string(),
+                    partner_number: None,
+                    cluster_id: Some("cluster_0".to_string()),
+                    user_likelihood: Some(0.84),
+                    pause_ms: None,
+                },
+                CorrectTranscriptHistoryItem {
+                    role: Role::Partner,
+                    message: "sailors sagen".to_string(),
+                    partner_number: None,
+                    cluster_id: Some("cluster_1".to_string()),
+                    user_likelihood: Some(0.34),
+                    pause_ms: Some(410),
+                },
+            ]),
+        })
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res_merge.status(), reqwest::StatusCode::OK);
+    let body_merge: CorrectTranscriptResponse = res_merge.json().await.unwrap();
+    assert_eq!(
+        body_merge.message,
+        "Warum kann er nur Sailor, aber nicht Sailors sagen?"
+    );
+    assert_eq!(body_merge.resolved_role, Some(Role::User));
+    assert_eq!(body_merge.merge_with_previous, Some(true));
+
+    // 4. Validation errors on contextual history (empty history, partner_simple target, invalid userLikelihood)
+    for bad_payload in [
+        serde_json::json!({ "history": [] }),
+        serde_json::json!({
+            "history": [{ "role": "partner_simple", "message": "Einfacher Text" }]
+        }),
+        serde_json::json!({
+            "history": [{ "role": "user", "message": "Hallo", "userLikelihood": 1.5 }]
+        }),
+        serde_json::json!({}),
+    ] {
+        let res_bad = client
+            .post(format!("{}/correct-transcript", url_flip))
+            .json(&bad_payload)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            res_bad.status(),
+            reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+            "Expected 422 for payload: {bad_payload}"
+        );
+    }
 }
 
 /// Verifies that `GET /readyz` returns `200 OK` when the readiness flag is `true`.
@@ -866,6 +1080,7 @@ async fn test_debug_info_populated_only_with_valid_admin_token() {
         .json(&ConversationMessage {
             role: Role::Partner,
             message: "bitte bringen sie ihren ausweis mit".to_string(),
+            partner_number: None,
         })
         .send()
         .await
@@ -881,6 +1096,7 @@ async fn test_debug_info_populated_only_with_valid_admin_token() {
         .json(&ConversationMessage {
             role: Role::Partner,
             message: "bitte bringen sie ihren ausweis mit".to_string(),
+            partner_number: None,
         })
         .send()
         .await
@@ -917,6 +1133,7 @@ async fn test_debug_info_populated_only_with_valid_admin_token() {
             messages: vec![ConversationMessage {
                 role: Role::Partner,
                 message: "Bitte bringen Sie Ihren Ausweis mit.".to_string(),
+                partner_number: None,
             }],
         })
         .send()
@@ -956,6 +1173,7 @@ async fn test_debug_info_populated_only_with_valid_admin_token() {
     assert_eq!(cls.topic, DialogTopic::Authorities);
     assert_eq!(cls.classification_type, ClassificationLevel::Warning);
     assert_eq!(cls.category, ClassificationCategory::Authorities);
+    assert_eq!(cls.partner_role, None);
     assert!(cls.system_prompt_tokens > 0);
     assert!(cls.prompt_tokens > 0);
     assert_eq!(cls.input_tokens, 10);
@@ -963,4 +1181,142 @@ async fn test_debug_info_populated_only_with_valid_admin_token() {
     assert_eq!(cls.response_tokens, 15);
     assert_eq!(cls.reasoning.as_deref(), Some("Mock reasoning"));
     assert!(cls.raw_response.contains("\"authorities\""));
+}
+
+/// Verifies PRD-5 optional `partnerNumber` propagation in `/correct-transcript` and `/translate` prompts,
+/// validation of invalid `partnerNumber` values (`0` or on `user` turns), and `partnerRole` extraction
+/// in `/translate` responses and `debugInfo.classification`.
+#[tokio::test]
+async fn test_partner_numbers_and_partner_role_classification() {
+    std::env::remove_var("ENVIRONMENT");
+    let client = reqwest::Client::new();
+    let mock_runner = MockPromptRunner::with_classification(
+        Ok("ÜBERSETZUNG\nNehmen Sie die **Tabletten** morgens.".to_string()),
+        Ok(r#"{"type":"warning","category":"medical","topic":"medical","partnerRole":{"roleType":"Arzt","confidence":0.95}}"#.to_string()),
+    );
+    let base_url = start_server_with_runner(mock_runner.clone()).await;
+
+    // 1. /translate with partnerNumber on Partner 1 & Partner 2 + partnerRole in response and debugInfo
+    let res_tr = client
+        .post(format!("{}/translate", base_url))
+        .header("Authorization", "Bearer admin")
+        .json(&serde_json::json!({
+            "messages": [
+                {
+                    "role": "partner",
+                    "partnerNumber": 1,
+                    "message": "Bitte warten Sie kurz, der Herr Doktor kommt gleich."
+                },
+                {
+                    "role": "partner_simple",
+                    "message": "Bitte warten Sie kurz."
+                },
+                {
+                    "role": "user",
+                    "message": "Guten Tag Herr Doktor."
+                },
+                {
+                    "role": "partner",
+                    "partnerNumber": 2,
+                    "message": "Guten Tag, nehmen Sie die Tabletten morgens."
+                }
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res_tr.status(), reqwest::StatusCode::OK);
+    let body_tr: TranslationResponse = res_tr.json().await.unwrap();
+    assert_eq!(
+        body_tr.partner_role,
+        Some(PartnerRole {
+            role_type: "Arzt".to_string(),
+            confidence: 0.95,
+        })
+    );
+    let cls_dbg = body_tr
+        .debug_info
+        .expect("Expected debugInfo")
+        .classification
+        .expect("Expected classification debugInfo");
+    assert_eq!(
+        cls_dbg.partner_role,
+        Some(PartnerRole {
+            role_type: "Arzt".to_string(),
+            confidence: 0.95,
+        })
+    );
+
+    let calls = mock_runner.recorded_calls();
+    assert_eq!(calls.len(), 2);
+    // Translate prompt should include Partner 1 in history and Partner 2 in input block
+    assert!(calls[0]
+        .prompt
+        .contains("Partner 1: Bitte warten Sie kurz, der Herr Doktor kommt gleich."));
+    assert!(calls[0]
+        .prompt
+        .contains("Partner 1 (Leichte Sprache): Bitte warten Sie kurz."));
+    assert!(calls[0]
+        .prompt
+        .contains("Partner 2:\n```input\nGuten Tag, nehmen Sie die Tabletten morgens.\n```"));
+    // Classify prompt should include Partner 2 labels
+    assert!(calls[1]
+        .prompt
+        .contains("Partner 2:\n```input\nGuten Tag, nehmen Sie die Tabletten morgens.\n```"));
+    assert!(calls[1].prompt.contains(
+        "Partner 2 (leichte Sprache):\n```translation\nNehmen Sie die **Tabletten** morgens.\n```"
+    ));
+
+    // 2. Validation errors for partnerNumber == 0 or partnerNumber on role == "user"
+    for (endpoint, bad_payload) in [
+        (
+            "translate",
+            serde_json::json!({
+                "messages": [{ "role": "partner", "partnerNumber": 0, "message": "Hallo" }]
+            }),
+        ),
+        (
+            "translate",
+            serde_json::json!({
+                "messages": [
+                    { "role": "user", "partnerNumber": 1, "message": "Hallo" },
+                    { "role": "partner", "message": "Antwort" }
+                ]
+            }),
+        ),
+        (
+            "correct-transcript",
+            serde_json::json!({
+                "role": "partner",
+                "partnerNumber": 0,
+                "message": "Hallo"
+            }),
+        ),
+        (
+            "correct-transcript",
+            serde_json::json!({
+                "role": "user",
+                "partnerNumber": 1,
+                "message": "Hallo"
+            }),
+        ),
+        (
+            "correct-transcript",
+            serde_json::json!({
+                "history": [{ "role": "user", "partnerNumber": 2, "message": "Hallo" }]
+            }),
+        ),
+    ] {
+        let res_bad = client
+            .post(format!("{}/{}", base_url, endpoint))
+            .json(&bad_payload)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            res_bad.status(),
+            reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+            "Expected 422 for {endpoint} payload: {bad_payload}"
+        );
+    }
 }

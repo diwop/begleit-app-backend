@@ -46,7 +46,7 @@ Sie müssen mehr Medikamente nehmen.
 ## Ausgabe 1
 
 ```json
-{"type": "pass", "category": "ok", "topic": "medical"}
+{"type": "pass", "category": "ok", "topic": "medical", "partnerRole": {"roleType": "Ärztin", "confidence": 0.96}}
 ```
 
 ## Eingabe 2
@@ -89,5 +89,5 @@ Du hast bestimmt eine psychische Krankheit.
 ## Ausgabe 2
 
 ```json
-{"type": "danger", "category": "hate-speech", "topic": "social"}
+{"type": "danger", "category": "hate-speech", "topic": "social", "partnerRole": {"roleType": "Bekannter", "confidence": 0.60}}
 ```

@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "crates/vad-diarization-wasm"]
+resolver = "2"
+
 [package]
 name = "diwop-begleitapp"
 version = "0.1.0"

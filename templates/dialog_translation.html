@@ -21,6 +21,26 @@
       <span class="stats-badge stats-badge-cost" id="stats-cost-badge">0,00 €</span>
     </div>
     <div class="dialog-header-right">
+      <button
+        type="button"
+        id="toggle-debug-btn"
+        class="btn btn-secondary btn-sm toggle-debug-btn"
+        aria-pressed="true"
+        title="Debug-Informationen in Karten ausblenden"
+      >
+        <svg class="icon-svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect width="8" height="14" x="8" y="6" rx="4"></rect>
+          <path d="m19 7-3 2"></path>
+          <path d="m5 7 3 2"></path>
+          <path d="m19 19-3-2"></path>
+          <path d="m5 19 3-2"></path>
+          <path d="M20 13h-4"></path>
+          <path d="M4 13h4"></path>
+          <path d="m10 4 1 2"></path>
+          <path d="m14 4-1 2"></path>
+        </svg>
+        <span class="toggle-debug-label">Debug</span>
+      </button>
       <button type="button" id="reset-dialog-btn" class="btn btn-secondary btn-sm">
         <svg class="icon-svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <polyline points="1 4 1 10 7 10"></polyline>
@@ -94,9 +114,14 @@
   </footer>
 </div>
 
-<script>
+<script type="module">
+  import {
+    TtsPlaybackController,
+  } from '/static/transcript_alignment.js';
+
   (function() {
     const EMBEDDED_API_KEY = "{{ api_key }}";
+    const ttsController = new TtsPlaybackController();
 
     // State management
     let activeRole = null; // 'user' | 'partner' | null
@@ -107,8 +132,39 @@
     let currentFinalTranscript = '';
     let currentInterimTranscript = '';
     let dialogHistory = []; // [ { role: 'user' | 'partner' | 'partner_simple', message: string, forEntry?: object } ]
+    let activePartnerRole = null; // { roleType: string, confidence: number } | null
     let cumulativeInputTokens = 0;
     let cumulativeOutputTokens = 0;
+
+    function getPartnerCardTitle(isLeichte = false) {
+      const base = activePartnerRole && activePartnerRole.roleType
+        ? activePartnerRole.roleType
+        : 'GesprächspartnerIn';
+      return isLeichte ? `${base} (Leichte Sprache)` : base;
+    }
+
+    function refreshPartnerCardTitles() {
+      feedEl.querySelectorAll('.dialog-card.card-partner .card-role-title').forEach(el => {
+        el.textContent = getPartnerCardTitle(false);
+      });
+      feedEl.querySelectorAll('.dialog-card.card-partner-leichte .card-role-title').forEach(el => {
+        el.textContent = getPartnerCardTitle(true);
+      });
+    }
+
+    function ingestPartnerRoleFromApi(partnerRole) {
+      if (!partnerRole || typeof partnerRole.roleType !== 'string') return;
+      const roleType = partnerRole.roleType.trim();
+      const confidence = Number(partnerRole.confidence);
+      if (!roleType || !Number.isFinite(confidence) || confidence < 0.80) return;
+      if (!activePartnerRole || confidence >= activePartnerRole.confidence - 0.05) {
+        activePartnerRole = {
+          roleType,
+          confidence: Math.max(confidence, activePartnerRole ? activePartnerRole.confidence : confidence)
+        };
+        refreshPartnerCardTitles();
+      }
+    }
 
     // DOM references
     const feedEl = document.getElementById('dialog-feed');
@@ -118,6 +174,54 @@
     const userBtn = document.getElementById('record-user-btn');
     const partnerBtn = document.getElementById('record-partner-btn');
     const resetBtn = document.getElementById('reset-dialog-btn');
+    const toggleDebugBtn = document.getElementById('toggle-debug-btn');
+    const DEBUG_STORAGE_KEY = 'diwop_show_card_debug';
+
+    function applyCardDebugPreference(showDebug) {
+      if (showDebug) {
+        document.body.classList.remove('hide-card-debug');
+        if (toggleDebugBtn) {
+          toggleDebugBtn.setAttribute('aria-pressed', 'true');
+          toggleDebugBtn.classList.add('is-active');
+          toggleDebugBtn.title = 'Debug-Informationen in Karten ausblenden';
+        }
+      } else {
+        document.body.classList.add('hide-card-debug');
+        if (toggleDebugBtn) {
+          toggleDebugBtn.setAttribute('aria-pressed', 'false');
+          toggleDebugBtn.classList.remove('is-active');
+          toggleDebugBtn.title = 'Debug-Informationen in Karten einblenden';
+        }
+      }
+    }
+
+    function initCardDebugToggle() {
+      let isDebugEnabled = true;
+      try {
+        const saved = localStorage.getItem(DEBUG_STORAGE_KEY);
+        if (saved !== null) {
+          isDebugEnabled = saved === 'true';
+        }
+      } catch (e) {
+        console.warn('Could not read debug toggle preference from localStorage', e);
+      }
+      applyCardDebugPreference(isDebugEnabled);
+
+      if (toggleDebugBtn) {
+        toggleDebugBtn.addEventListener('click', () => {
+          const currentlyHidden = document.body.classList.contains('hide-card-debug');
+          const nextState = currentlyHidden; // if hidden, next state is true (shown)
+          try {
+            localStorage.setItem(DEBUG_STORAGE_KEY, String(nextState));
+          } catch (e) {
+            console.warn('Could not save debug toggle preference to localStorage', e);
+          }
+          applyCardDebugPreference(nextState);
+        });
+      }
+    }
+
+    initCardDebugToggle();
 
     // Check SpeechRecognition support
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -252,7 +356,7 @@
 
       const title = document.createElement('div');
       title.className = 'card-role-title';
-      title.textContent = role === 'user' ? 'NutzerIn' : 'GesprächspartnerIn';
+      title.textContent = role === 'user' ? 'NutzerIn' : getPartnerCardTitle(false);
       headerRow.appendChild(title);
 
       const body = document.createElement('div');
@@ -495,6 +599,9 @@
           const topicBadgeHtml = cls.topic
             ? `<span class="debug-pill-badge">Thema: ${escapeHtml(cls.topic)}</span>`
             : '';
+          const roleBadgeHtml = (cls.partnerRole && cls.partnerRole.roleType)
+            ? `<span class="debug-pill-badge">Rolle: ${escapeHtml(cls.partnerRole.roleType)} (${Math.round((cls.partnerRole.confidence || 0) * 100)}%)</span>`
+            : '';
           const typeCatBadgeHtml = (cls.classificationType && cls.category)
             ? `<span class="debug-pill-badge">${escapeHtml(cls.classificationType)} / ${escapeHtml(cls.category)}</span>`
             : '';
@@ -502,6 +609,7 @@
             <span>Klassifizierung</span>
             <div class="debug-subsummary-right">
               ${topicBadgeHtml}
+              ${roleBadgeHtml}
               ${typeCatBadgeHtml}
               <svg class="chevron-svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M19 9l-7 7-7-7"/>
@@ -634,6 +742,10 @@
       recognition.interimResults = true;
 
       recognition.onresult = (event) => {
+        // Suppress live STT ingestion if device loudspeaker is actively playing TTS audio (echo guard)
+        if (ttsController.isRecordingGated()) {
+          return;
+        }
         let interim = '';
         for (let i = event.resultIndex; i < event.results.length; ++i) {
           const item = event.results[i];
@@ -783,7 +895,7 @@
 
       const title = document.createElement('div');
       title.className = 'card-role-title text-primary';
-      title.textContent = 'GesprächspartnerIn (Leichte Sprache)';
+      title.textContent = getPartnerCardTitle(true);
       headerRow.appendChild(title);
 
       const body = document.createElement('div');
@@ -837,6 +949,9 @@
           const partnerIdx = dialogHistory.indexOf(partnerEntry);
           if (partnerIdx === -1) {
             return;
+          }
+          if (data && data.partnerRole) {
+            ingestPartnerRoleFromApi(data.partnerRole);
           }
           if (data && data.content) {
             const nextEntry = dialogHistory[partnerIdx + 1];
@@ -900,6 +1015,71 @@
             }
 
             body.appendChild(contentContainer);
+
+            // Attach accessible "Vorlesen" / Stop button in .card-header-actions
+            let actionsContainer = headerRow.querySelector('.card-header-actions');
+            if (!actionsContainer) {
+              actionsContainer = document.createElement('div');
+              actionsContainer.className = 'card-header-actions';
+              const badgesContainer = headerRow.querySelector('.card-header-badges');
+              if (badgesContainer) {
+                headerRow.insertBefore(actionsContainer, badgesContainer);
+              } else {
+                headerRow.appendChild(actionsContainer);
+              }
+            }
+
+            const cardId = `dialog-leichte-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+            const playBtn = document.createElement('button');
+            playBtn.type = 'button';
+            playBtn.className = 'card-tts-play-btn';
+            playBtn.setAttribute('aria-label', 'Übersetzung in Leichter Sprache vorlesen');
+            playBtn.setAttribute('aria-pressed', 'false');
+
+            const updatePlayButtonState = () => {
+              const isPlayingThisCard = ttsController.activeCardId === cardId;
+              if (isPlayingThisCard) {
+                playBtn.classList.add('is-speaking');
+                playBtn.setAttribute('aria-pressed', 'true');
+                playBtn.setAttribute('aria-label', 'Vorlesen stoppen');
+                playBtn.innerHTML = `
+                  <svg class="card-tts-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <rect x="5" y="5" width="14" height="14" rx="2" ry="2"></rect>
+                  </svg>
+                  <span>Stopp</span>
+                  <span class="card-tts-wave" aria-hidden="true"><span></span><span></span><span></span></span>
+                `;
+                leichteCard.classList.add('is-tts-playing');
+              } else {
+                playBtn.classList.remove('is-speaking');
+                playBtn.setAttribute('aria-pressed', 'false');
+                playBtn.setAttribute('aria-label', 'Übersetzung in Leichter Sprache vorlesen');
+                playBtn.innerHTML = `
+                  <svg class="card-tts-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+                    <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+                  </svg>
+                  <span>Vorlesen</span>
+                `;
+                leichteCard.classList.remove('is-tts-playing');
+              }
+            };
+
+            playBtn.addEventListener('click', () => {
+              ttsController.speak({
+                cardId,
+                text: data.content,
+                partnerRole: activePartnerRole ? activePartnerRole.roleType : null,
+                partnerNumber: 1,
+                onStateChange: () => {
+                  updatePlayButtonState();
+                },
+              });
+              updatePlayButtonState();
+            });
+
+            updatePlayButtonState();
+            actionsContainer.appendChild(playBtn);
           }
 
           if (data && data.debugInfo) {
@@ -945,6 +1125,7 @@
     partnerBtn.addEventListener('click', () => handleRecordButtonClick('partner'));
 
     resetBtn.addEventListener('click', () => {
+      ttsController.stop();
       if (isRecording) {
         shouldStayRecording = false;
         isRecording = false;
@@ -957,6 +1138,7 @@
       }
 
       dialogHistory = [];
+      activePartnerRole = null;
       cumulativeInputTokens = 0;
       cumulativeOutputTokens = 0;
       updateHeaderStats();

@@ -47,6 +47,10 @@ async fn test_unauthenticated_index_serves_login_page() {
         !html.contains("Dialogübersetzung ausprobieren"),
         "HTML should not expose dialog translation link when unauthenticated"
     );
+    assert!(
+        !html.contains("Automatische Sprechererkennung ausprobieren"),
+        "HTML should not expose vad-diarization link when unauthenticated"
+    );
 }
 
 /// Verifies that POST `/login` with an incorrect password returns 401 Unauthorized and an error message.
@@ -150,6 +154,14 @@ async fn test_authenticated_index_serves_dashboard() {
         html.contains("href=\"/dialog-translation\""),
         "HTML should link to /dialog-translation on dashboard"
     );
+    assert!(
+        html.contains("Automatische Sprechererkennung ausprobieren"),
+        "HTML should contain vad-diarization link on dashboard"
+    );
+    assert!(
+        html.contains("href=\"/vad-diarization\""),
+        "HTML should link to /vad-diarization on dashboard"
+    );
 }
 
 /// Verifies that POST `/logout` clears the session cookie and redirects to `/`.
@@ -187,7 +199,7 @@ async fn test_logout_clears_cookie() {
     );
 }
 
-/// Verifies that GET `/static/style.css` serves the embedded CSS with proper content-type and caching headers.
+/// Verifies that GET `/static/style.css` serves the embedded CSS with proper content-type, ETag, and caching headers.
 #[tokio::test]
 async fn test_static_style_css() {
     let base_url = start_server().await;
@@ -206,6 +218,16 @@ async fn test_static_style_css() {
             .and_then(|h| h.to_str().ok()),
         Some("text/css; charset=utf-8")
     );
+    assert_eq!(
+        res.headers()
+            .get(header::CACHE_CONTROL)
+            .and_then(|h| h.to_str().ok()),
+        Some("no-cache")
+    );
+    assert!(
+        res.headers().contains_key(header::ETAG),
+        "Response should include ETag header"
+    );
 
     let css = res.text().await.unwrap();
     assert!(
@@ -216,6 +238,132 @@ async fn test_static_style_css() {
         css.contains(".login-card"),
         "CSS should style .login-card component"
     );
+}
+
+/// Verifies that static assets (both compile-time embedded and on-disk WASM binaries) support
+/// ETag validation via `If-None-Match`, returning `304 Not Modified` on cache hits and `200 OK` on mismatches.
+#[tokio::test]
+async fn test_static_asset_etag_validation_and_not_modified() {
+    let base_url = start_server().await;
+    let client = reqwest::Client::new();
+
+    for path in [
+        "/static/style.css",
+        "/static/transcript_alignment.js",
+        "/static/wasm/vad_diarization_wasm_bg.wasm",
+    ] {
+        let url = format!("{base_url}{path}");
+
+        // 1. Initial request without If-None-Match -> 200 OK with ETag & no-cache
+        let initial_res = client.get(&url).send().await.unwrap();
+        assert_eq!(
+            initial_res.status(),
+            reqwest::StatusCode::OK,
+            "Initial request should succeed with 200 OK for {path}"
+        );
+        assert_eq!(
+            initial_res
+                .headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|h| h.to_str().ok()),
+            Some("no-cache"),
+            "Static asset should enforce no-cache revalidation for {path}"
+        );
+        assert_eq!(
+            initial_res
+                .headers()
+                .get("cross-origin-embedder-policy")
+                .and_then(|h| h.to_str().ok()),
+            Some("require-corp"),
+            "Static asset must include Cross-Origin-Embedder-Policy: require-corp for Chrome Worker contexts ({path})"
+        );
+        assert_eq!(
+            initial_res
+                .headers()
+                .get("cross-origin-resource-policy")
+                .and_then(|h| h.to_str().ok()),
+            Some("same-origin"),
+            "Static asset must include Cross-Origin-Resource-Policy: same-origin ({path})"
+        );
+
+        let etag = initial_res
+            .headers()
+            .get(header::ETAG)
+            .and_then(|h| h.to_str().ok())
+            .expect("Response should contain an ETag header")
+            .to_string();
+        assert!(
+            etag.starts_with('"') && etag.ends_with('"'),
+            "ETag should be quoted per RFC 7232: {etag}"
+        );
+
+        // 2. Subsequent request with matching If-None-Match -> 304 Not Modified with empty body
+        let reval_res = client
+            .get(&url)
+            .header(header::IF_NONE_MATCH, &etag)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            reval_res.status(),
+            reqwest::StatusCode::NOT_MODIFIED,
+            "Revalidation with matching ETag should return 304 Not Modified for {path}"
+        );
+        assert_eq!(
+            reval_res
+                .headers()
+                .get(header::ETAG)
+                .and_then(|h| h.to_str().ok()),
+            Some(etag.as_str()),
+            "304 response should preserve the ETag header for {path}"
+        );
+        assert_eq!(
+            reval_res
+                .headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|h| h.to_str().ok()),
+            Some("no-cache"),
+            "304 response should include Cache-Control for {path}"
+        );
+        assert_eq!(
+            reval_res
+                .headers()
+                .get("cross-origin-embedder-policy")
+                .and_then(|h| h.to_str().ok()),
+            Some("require-corp"),
+            "304 response must preserve Cross-Origin-Embedder-Policy: require-corp for {path}"
+        );
+        let body_bytes = reval_res.bytes().await.unwrap();
+        assert!(
+            body_bytes.is_empty(),
+            "304 Not Modified response body must be empty"
+        );
+
+        // 3. Subsequent request with mismatched If-None-Match -> 200 OK with full body
+        let mismatch_res = client
+            .get(&url)
+            .header(header::IF_NONE_MATCH, "\"outdated-etag-hash\"")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            mismatch_res.status(),
+            reqwest::StatusCode::OK,
+            "Revalidation with outdated ETag should return 200 OK for {path}"
+        );
+        assert_eq!(
+            mismatch_res
+                .headers()
+                .get(header::ETAG)
+                .and_then(|h| h.to_str().ok()),
+            Some(etag.as_str())
+        );
+        let mismatch_bytes = mismatch_res.bytes().await.unwrap();
+        assert!(
+            !mismatch_bytes.is_empty(),
+            "200 response body must contain asset payload"
+        );
+    }
 }
 
 /// Verifies that an unauthenticated GET to `/dialog-translation` presents the login form with next parameter.
@@ -310,6 +458,10 @@ async fn test_authenticated_dialog_translation_serves_interface() {
         "HTML should contain reset button"
     );
     assert!(
+        html.contains("toggle-debug-btn"),
+        "HTML should contain toggle-debug-btn"
+    );
+    assert!(
         html.contains("dialog-header-stats"),
         "HTML should contain header stats container"
     );
@@ -377,4 +529,220 @@ async fn test_authenticated_dialog_translation_serves_interface() {
         html.contains("JSON-Ausgabe"),
         "HTML should contain JSON-Ausgabe sub-block for classification"
     );
+}
+
+/// Verifies that an unauthenticated GET to `/vad-diarization` presents the login form with next parameter.
+#[tokio::test]
+async fn test_unauthenticated_vad_diarization_serves_login() {
+    let base_url = start_server().await;
+    let client = reqwest::Client::new();
+
+    let res = client
+        .get(format!("{}/vad-diarization", base_url))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), reqwest::StatusCode::OK);
+    let html = res.text().await.unwrap();
+    assert!(
+        html.contains("Admin-Anmeldung"),
+        "HTML should contain login heading"
+    );
+    assert!(
+        html.contains("name=\"next\" value=\"/vad-diarization\""),
+        "HTML should contain hidden next field targeting /vad-diarization"
+    );
+}
+
+/// Verifies that authenticated GET `/vad-diarization` serves the diarization UI with COOP/COEP headers,
+/// and embedded/allowlisted static scripts enforce CORP headers and reject unknown paths.
+#[tokio::test]
+async fn test_authenticated_vad_diarization_and_static_assets() {
+    let base_url = start_server().await;
+    let client = reqwest::Client::new();
+
+    let valid_token = web::generate_session_token("admin");
+
+    let res = client
+        .get(format!("{}/vad-diarization", base_url))
+        .header(header::COOKIE, format!("admin_session={valid_token}"))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), reqwest::StatusCode::OK);
+    assert_eq!(
+        res.headers()
+            .get("cross-origin-opener-policy")
+            .and_then(|h| h.to_str().ok()),
+        Some("same-origin")
+    );
+    assert_eq!(
+        res.headers()
+            .get("cross-origin-embedder-policy")
+            .and_then(|h| h.to_str().ok()),
+        Some("require-corp")
+    );
+
+    let html = res.text().await.unwrap();
+    assert!(
+        html.contains("Automatische Sprechererkennung"),
+        "HTML should contain page headline"
+    );
+    assert!(
+        html.contains("record-diarization-btn"),
+        "HTML should contain single record button"
+    );
+    assert!(
+        html.contains("DiarizationEngine"),
+        "HTML should instantiate WASM DiarizationEngine"
+    );
+    assert!(
+        html.contains("calibration-view"),
+        "HTML should contain calibration view container"
+    );
+    assert!(
+        html.contains("Stimme von NutzerIn kalibrieren"),
+        "HTML should contain calibration heading"
+    );
+    assert!(
+        html.contains("recalibrate-voice-btn"),
+        "HTML should contain recalibrate voice button"
+    );
+    assert!(
+        html.contains("Stimme von NutzerIn neu kalibrieren"),
+        "HTML should contain recalibrate voice button text"
+    );
+    assert!(
+        html.contains("start_onboarding"),
+        "HTML should invoke start_onboarding for calibration"
+    );
+    assert!(
+        html.contains("finish_onboarding"),
+        "HTML should invoke finish_onboarding for calibration"
+    );
+    assert!(
+        html.contains("load_profiles"),
+        "HTML should invoke load_profiles on startup"
+    );
+    assert!(
+        html.contains("GesprächspartnerIn"),
+        "HTML should format secondary speakers as GesprächspartnerIn"
+    );
+    assert!(
+        html.contains("/static/transcript_alignment.js"),
+        "HTML should load the streaming SpeechRecognition transcript alignment module"
+    );
+    assert!(
+        html.contains("dialog-header-stats"),
+        "HTML should render cumulative token and cost badges in the header"
+    );
+    assert!(
+        html.contains("toggle-debug-btn"),
+        "HTML should contain toggle-debug-btn"
+    );
+    assert!(
+        html.contains("/correct-transcript"),
+        "HTML should integrate POST /correct-transcript for diarized turns"
+    );
+    assert!(
+        html.contains("/translate"),
+        "HTML should integrate POST /translate for partner turns"
+    );
+    assert!(
+        html.contains("buildTranslateHistoryMessages"),
+        "HTML should build /translate conversation history with corrected transcripts and partner_simple entries"
+    );
+    assert!(
+        html.contains("card-speaker-leichte"),
+        "HTML should render Leichte Sprache translation cards with speaker accent styling"
+    );
+    assert!(
+        html.contains("card-likelihood-badge"),
+        "HTML should render user likelihood indicator badge at the top of the card"
+    );
+    assert!(
+        html.contains("Nutzer-Wahrscheinlichkeit"),
+        "HTML should format user likelihood badge text in German"
+    );
+    assert!(
+        html.contains("pyannote_segmentation_3_0.onnx"),
+        "HTML should load pyannote/segmentation-3.0 ONNX model (PRD-3)"
+    );
+    assert!(
+        html.contains("wespeaker_voxblink2_samresnet100_LM.int8.onnx"),
+        "HTML should load WeSpeaker SimAM-ResNet100 INT8 ONNX model (PRD-3)"
+    );
+    assert!(
+        html.contains("Können Sie mir das bitte kurz in einfachen Worten erklären?"),
+        "HTML should include conversational calibration quote with greeting and question (PRD-3)"
+    );
+
+    // Embedded JS assets should return 200 OK with CORP header
+    for path in [
+        "/static/ort_bridge.js",
+        "/static/vad_worklet.js",
+        "/static/transcript_alignment.js",
+    ] {
+        let asset_res = client
+            .get(format!("{}{}", base_url, path))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(asset_res.status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            asset_res
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|h| h.to_str().ok()),
+            Some("text/javascript; charset=utf-8")
+        );
+        assert_eq!(
+            asset_res
+                .headers()
+                .get("cross-origin-resource-policy")
+                .and_then(|h| h.to_str().ok()),
+            Some("same-origin")
+        );
+        if path == "/static/transcript_alignment.js" {
+            let js_body = asset_res.text().await.unwrap();
+            assert!(
+                js_body.contains("CORRECT_TRANSCRIPT_SILENCE_SEC"),
+                "transcript_alignment.js should export 1.0s correction silence constant"
+            );
+            assert!(
+                js_body.contains("TRANSLATE_LOCK_SILENCE_SEC"),
+                "transcript_alignment.js should export 2.0s translation lock silence constant"
+            );
+            assert!(
+                js_body.contains("buildTranslateHistoryMessages"),
+                "transcript_alignment.js should export /translate history builder"
+            );
+            assert!(
+                js_body.contains("partner_simple"),
+                "transcript_alignment.js should include partner_simple entries in /translate history"
+            );
+            assert!(
+                js_body.contains("getUserLikelihoodForSpan"),
+                "transcript_alignment.js should compute duration-weighted user likelihood for turns"
+            );
+            assert!(
+                js_body.contains("userLikelihood"),
+                "transcript_alignment.js should track userLikelihood on segments and turns"
+            );
+            assert!(
+                js_body.contains("clusterRelabels"),
+                "transcript_alignment.js should process retroactive clusterRelabels (PRD-3)"
+            );
+        }
+    }
+
+    // Disallowed filenames must return 404 Not Found
+    let bad_res = client
+        .get(format!("{}/static/models/unknown_model.onnx", base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad_res.status(), reqwest::StatusCode::NOT_FOUND);
 }

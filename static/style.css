@@ -349,11 +349,20 @@ body {
   font-weight: 700;
 }
 
+.dialog-header-center {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
 @media (max-width: 768px) {
   .dialog-header {
     flex-wrap: wrap;
   }
-  .dialog-header-stats {
+  .dialog-header-stats,
+  .dialog-header-center {
     order: 3;
     width: 100%;
     justify-content: center;
@@ -578,7 +587,135 @@ body {
   margin-top: 0.5rem;
 }
 
+/* Card Header Row and Actions */
+.card-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.card-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  margin-left: auto;
+}
+
+/* Card TTS Play / Stop Button */
+.card-tts-play-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.25rem 0.625rem;
+  min-height: 32px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  border-radius: 9999px;
+  border: 1px solid light-dark(#cbd5e1, #475569);
+  background-color: light-dark(#ffffff, #1e293b);
+  color: var(--text);
+  cursor: pointer;
+  transition: all 0.15s ease-in-out;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+.card-tts-play-btn:hover {
+  background-color: light-dark(#f1f5f9, #334155);
+  border-color: light-dark(#94a3b8, #64748b);
+}
+
+.card-tts-play-btn:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.card-tts-play-btn.is-speaking {
+  background-color: light-dark(#fee2e2, #7f1d1d);
+  border-color: light-dark(#f87171, #ef4444);
+  color: light-dark(#b91c1c, #fecaca);
+}
+
+.card-tts-play-btn.is-speaking:hover {
+  background-color: light-dark(#fecaca, #991b1b);
+}
+
+.card-tts-icon {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+}
+
+.card-tts-wave {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 12px;
+  margin-left: 2px;
+}
+
+.card-tts-wave span {
+  display: block;
+  width: 2px;
+  height: 100%;
+  background-color: currentColor;
+  border-radius: 1px;
+  animation: ttsWave 1s ease-in-out infinite alternate;
+}
+
+.card-tts-wave span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.card-tts-wave span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes ttsWave {
+  0% { transform: scaleY(0.25); }
+  100% { transform: scaleY(1); }
+}
+
+/* Card highlight while active speech playback is ongoing */
+.dialog-card.is-tts-playing {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 1px var(--primary);
+}
+
 /* Debug Info and Token Metrics Styles */
+body.hide-card-debug .card-header-badges,
+body.hide-card-debug .debug-reasoning-details,
+body.hide-card-debug .debug-response-tokens-row,
+body.hide-card-debug .debug-prompt-details,
+body.hide-card-debug .debug-classification-details {
+  display: none !important;
+}
+
+.toggle-debug-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  transition: all 0.15s ease;
+}
+
+.toggle-debug-btn.is-active,
+.toggle-debug-btn[aria-pressed="true"] {
+  background-color: light-dark(#e2e8f0, #334155);
+  color: var(--text);
+  border-color: light-dark(#94a3b8, #64748b);
+  font-weight: 600;
+}
+
+.toggle-debug-btn[aria-pressed="false"] {
+  opacity: 0.7;
+}
+
+.toggle-debug-btn[aria-pressed="false"]:hover {
+  opacity: 1;
+}
+
 .debug-pill-badge {
   display: inline-flex;
   align-items: center;
@@ -595,6 +732,23 @@ body {
 
 .card-tokens-badge {
   font-weight: 600;
+}
+
+.card-likelihood-badge {
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.card-likelihood-user {
+  background-color: light-dark(#eff6ff, rgba(30, 58, 138, 0.25));
+  border-color: light-dark(#bfdbfe, #3b82f6);
+  color: light-dark(#1d4ed8, #93c5fd);
+}
+
+.card-likelihood-partner {
+  background-color: light-dark(#f8fafc, rgba(30, 41, 59, 0.5));
+  border-color: light-dark(#e2e8f0, #475569);
+  color: var(--text-muted);
 }
 
 .debug-reasoning-details {
@@ -821,4 +975,235 @@ details[open] > summary .chevron-svg {
   font-size: 0.8125rem;
   font-weight: 600;
   color: var(--text);
+}
+
+/* Dashboard Action Links */
+.dashboard-actions {
+  margin-top: 1.5rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  justify-content: flex-start;
+}
+
+.dashboard-action-link {
+  width: auto;
+  text-decoration: none;
+}
+
+/* VAD + Speaker Diarization Page */
+.engine-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.25rem 0.625rem;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  border: 1px solid var(--card-border);
+  background-color: var(--card-bg);
+  color: var(--text-muted);
+}
+
+.engine-status-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 9999px;
+  background-color: #f59e0b;
+}
+
+.engine-status-pill.is-ready .engine-status-dot {
+  background-color: #10b981;
+}
+
+.engine-status-pill.is-error .engine-status-dot {
+  background-color: #ef4444;
+}
+
+.engine-status-pill.is-speaking {
+  border-color: #10b981;
+  color: light-dark(#047857, #34d399);
+}
+
+.record-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.record-btn.is-recording.is-voice-active {
+  box-shadow: 0 0 0 6px rgba(16, 185, 129, 0.35);
+}
+
+/* Distinct Speaker Card Accents */
+.card-speaker {
+  background-color: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-left-width: 4px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+.card-speaker-pending {
+  border-left-color: light-dark(#94a3b8, #64748b);
+  opacity: 0.9;
+}
+
+.card-speaker-1 {
+  border-left-color: light-dark(#0f4d65, #38bdf8);
+}
+
+.card-speaker-1 .card-role-title {
+  color: light-dark(#0f4d65, #38bdf8);
+}
+
+.card-speaker-2 {
+  border-left-color: light-dark(#0d9488, #2dd4bf);
+}
+
+.card-speaker-2 .card-role-title {
+  color: light-dark(#0f766e, #2dd4bf);
+}
+
+.card-speaker-3 {
+  border-left-color: light-dark(#7c3aed, #a78bfa);
+}
+
+.card-speaker-3 .card-role-title {
+  color: light-dark(#6d28d9, #a78bfa);
+}
+
+.card-speaker-4 {
+  border-left-color: light-dark(#d97706, #fbbf24);
+}
+
+.card-speaker-4 .card-role-title {
+  color: light-dark(#b45309, #fbbf24);
+}
+
+.card-speaker-leichte {
+  background-color: light-dark(#f1f5f9, #1e293b);
+  border-top-color: light-dark(#cbd5e1, #334155);
+  border-right-color: light-dark(#cbd5e1, #334155);
+  border-bottom-color: light-dark(#cbd5e1, #334155);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+
+.interim-text {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+/* Voice Calibration View */
+.dialog-banner-container {
+  width: 100%;
+  max-width: 44rem;
+  margin: 0 auto;
+  padding: 0 1rem;
+}
+
+.dialog-banner-container .warning-box {
+  margin-top: 0.75rem;
+}
+
+.calibration-container {
+  width: 100%;
+  max-width: 44rem;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.calibration-card {
+  text-align: center;
+  padding: 2.5rem 1.75rem;
+  color: var(--text-muted);
+  border: 2px dashed var(--card-border);
+  border-radius: 0.75rem;
+  background-color: var(--card-bg);
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.calibration-title {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--text);
+  margin: 0;
+}
+
+.calibration-desc {
+  font-size: 0.9375rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+  margin: 0;
+}
+
+.calibration-quote {
+  background-color: light-dark(#f8fafc, #0f172a);
+  border: 1px solid light-dark(#e2e8f0, #1e293b);
+  border-left: 4px solid var(--primary);
+  border-radius: 0.5rem;
+  padding: 1.25rem;
+  font-size: 1.0625rem;
+  line-height: 1.6;
+  font-style: italic;
+  color: var(--text);
+}
+
+.calibration-progress-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.calibration-progress-track {
+  width: 100%;
+  height: 0.625rem;
+  background-color: light-dark(#e2e8f0, #334155);
+  border-radius: 9999px;
+  overflow: hidden;
+}
+
+.calibration-progress-fill {
+  height: 100%;
+  width: 0%;
+  background-color: #10b981;
+  border-radius: 9999px;
+  transition: width 0.15s ease-out;
+}
+
+.calibration-progress-labels {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+.calibration-hint {
+  font-size: 0.875rem;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.recalibrate-link {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+  text-decoration: underline;
+  cursor: pointer;
+  margin-top: 0.5rem;
+  padding: 0.25rem 0.5rem;
+  transition: color 0.15s ease;
+}
+
+.recalibrate-link:hover {
+  color: var(--primary);
+}
+
+.calibration-cancel-btn {
+  margin-top: 0.5rem;
 }

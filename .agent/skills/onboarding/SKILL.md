@@ -22,6 +22,10 @@ echo "cargo" && \ # mac: brew install rustup; linux: curl https://sh.rustup.rs -
 cargo --version && \
 echo "cargo nextest" && \ # cargo install cargo-nextest --locked
 cargo nextest --version && \
+echo "rust wasm32 target" && \ # rustup target add wasm32-unknown-unknown
+rustup target list --installed | grep -q "^wasm32-unknown-unknown$" && \
+echo "uv" && \ # mac: brew install uv; linux: curl -LsSf https://astral.sh/uv/install.sh | sh; win: winget install astral-sh.uv
+uv --version && \
 echo "tofu" && \ # mac: brew install opentofu; linux: snap install --classic opentofu; win: winget install OpenTofu.Tofu
 tofu --version && \
 echo "dvc" && \ # mac: brew install dvc; linux: pipx install "dvc[s3]"; win: winget install Iterative.DVC

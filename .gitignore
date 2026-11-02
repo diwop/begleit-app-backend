@@ -10,6 +10,8 @@ target/
 .env
 .worktrees/
 models/
+static/wasm/
+static/ort/
 .cache/
 .dvc/config.local
 .dvc/tmp

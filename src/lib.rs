@@ -6,14 +6,16 @@ pub mod prompts;
 pub mod web;
 
 pub use api::{
-    ClassificationDebugInfo, ConversationMessage, CorrectTranscriptResponse, DebugInfo,
-    ErrorDetail, ErrorResponse, Role, TranslateRequest, TranslationResponse, TranslationType,
-    Warning, WarningType,
+    ClassificationDebugInfo, ConversationMessage, CorrectTranscriptHistoryItem,
+    CorrectTranscriptRequest, CorrectTranscriptResponse, DebugInfo, ErrorDetail, ErrorResponse,
+    PartnerRole, Role, TranslateRequest, TranslationResponse, TranslationType, Warning,
+    WarningType,
 };
 pub use few_shots::{FewShotBucketIndex, FewShotEntry};
 pub use prompts::{
-    ClassificationCategory, ClassificationLevel, DialogClassification, DialogTopic,
-    EchoPromptRunner, GeminiPromptRunner, PromptError, PromptOutput, PromptRunner, TokenUsage,
+    ClassificationCategory, ClassificationLevel, CorrectTranscriptModelOutput,
+    DialogClassification, DialogTopic, EchoPromptRunner, GeminiPromptRunner, ModelPartnerRole,
+    PromptError, PromptOutput, PromptRunner, ResolvedSpeakerRole, TokenUsage,
 };
 
 use axum::{http::StatusCode, routing::get, Router};
@@ -34,7 +36,10 @@ use utoipa::OpenApi;
     paths(api::correct_transcript, api::translate),
     components(schemas(
         Role,
+        PartnerRole,
         ConversationMessage,
+        CorrectTranscriptHistoryItem,
+        CorrectTranscriptRequest,
         DialogTopic,
         ClassificationLevel,
         ClassificationCategory,
@@ -138,7 +143,7 @@ pub fn create_app_with_runner(runner: Arc<dyn PromptRunner>) -> Router {
 /// - Exposes an unauthenticated `/readyz` endpoint returning `200 OK` if `readiness` is true, or `503 Service Unavailable` if false.
 /// - Exposes Swagger UI documentation on `/open-api` and `/api-docs/openapi.json`.
 /// - Protects operational endpoints with Bearer authentication if `API_KEY` is configured.
-/// - Exposes the administration web interface on `/`, `/login`, `/logout`, and `/static/style.css` protected via `ADMIN_PASSWORD`.
+/// - Exposes the administration web interface on `/`, `/dialog-translation`, `/vad-diarization`, `/login`, `/logout`, and `/static/*` protected via `ADMIN_PASSWORD`.
 pub fn create_app_with_runner_and_readiness(
     runner: Arc<dyn PromptRunner>,
     readiness: Arc<AtomicBool>,

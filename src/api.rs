@@ -1,11 +1,12 @@
 use crate::few_shots::{FewShotBucketIndex, DEFAULT_FEW_SHOT_K};
 use crate::prompts::{
-    apply_classification, build_classify_dialog_prompt, build_correct_transcript_prompt,
-    build_translate_prompt_with_few_shots, count_history_turns, determine_history_bucket,
-    extract_staging_directives, parse_classify_dialog_output, parse_translate_output,
-    ClassificationCategory, ClassificationLevel, DialogTopic, PromptRunner,
+    apply_classification, build_classify_dialog_prompt_for_partner,
+    build_correct_transcript_contextual_prompt, build_translate_prompt_with_few_shots_for_partner,
+    count_history_turns, determine_history_bucket, enforce_correct_transcript_guardrails,
+    extract_staging_directives, parse_classify_dialog_output, parse_correct_transcript_output,
+    parse_translate_output, ClassificationCategory, ClassificationLevel, DialogTopic, PromptRunner,
     CLASSIFY_DIALOG_RESPONSE_SCHEMA, CLASSIFY_DIALOG_SYSTEM_PROMPT,
-    CORRECT_TRANSCRIPT_SYSTEM_PROMPT, TRANSLATE_SYSTEM_PROMPT,
+    CORRECT_TRANSCRIPT_RESPONSE_SCHEMA, CORRECT_TRANSCRIPT_SYSTEM_PROMPT, TRANSLATE_SYSTEM_PROMPT,
 };
 use axum::{
     extract::{rejection::JsonRejection, FromRequest, Request, State},
@@ -28,8 +29,9 @@ pub enum Role {
     PartnerSimple,
 }
 
-/// Spoken contribution in a conversation with speaker role and plain-text message.
+/// Spoken contribution in a conversation with speaker role, plain-text message, and optional 1-based partner number.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 #[schema(example = json!({
     "role": "partner",
     "message": "sie müssen den antrag bis ende nächste woche abgeben"
@@ -44,10 +46,30 @@ pub struct ConversationMessage {
         example = "sie müssen den antrag bis ende nächste woche abgeben"
     )]
     pub message: String,
+    /// Optional 1-based partner identifier when `role` is `"partner"` (or `"partner_simple"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(minimum = 1)]
+    pub partner_number: Option<u32>,
+}
+
+/// Inferred real-world role of a conversation partner with model confidence.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[schema(example = json!({
+    "roleType": "Arzt",
+    "confidence": 0.95
+}))]
+pub struct PartnerRole {
+    /// Concise German role title suitable as a UI card header (e.g. `"Arzt"`, `"Ärztin"`, `"ÄrztIn"`, `"SachbearbeiterIn"`).
+    #[schema(min_length = 1, pattern = r"\S", example = "Arzt")]
+    pub role_type: String,
+    /// Model confidence in `[0.0, 1.0]`.
+    #[schema(minimum = 0.0, maximum = 1.0, example = 0.95)]
+    pub confidence: f64,
 }
 
 /// Diagnostic details for the post-translation dialog classification step (`/translate` only).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ClassificationDebugInfo {
     /// Extracted high-level dialog topic.
@@ -56,6 +78,9 @@ pub struct ClassificationDebugInfo {
     pub classification_type: ClassificationLevel,
     /// Specific classification category paired with `classification_type`.
     pub category: ClassificationCategory,
+    /// Optional inferred partner role and confidence from the classification step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partner_role: Option<PartnerRole>,
     /// Expanded system prompt preamble sent to the classification model.
     pub system_prompt: String,
     /// Rendered user prompt sent to the classification model.
@@ -80,7 +105,7 @@ pub struct ClassificationDebugInfo {
 }
 
 /// Optional diagnostic information returned when a request carries a valid admin password or session token.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DebugInfo {
     /// System prompt preamble sent to the primary language model step.
@@ -110,22 +135,180 @@ pub struct DebugInfo {
     pub classification: Option<ClassificationDebugInfo>,
 }
 
-/// Response returned by `/correct-transcript` containing the corrected plain-text message
+/// Single chronological entry in [`CorrectTranscriptRequest::history`].
+///
+/// The final entry in `history` is the spoken turn to correct (`user` or `partner`);
+/// preceding entries (`user`, `partner`, or `partner_simple`) provide read-only conversation context.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CorrectTranscriptHistoryItem {
+    /// Provisional or previously resolved speaker role (`user`, `partner`, or `partner_simple` in prior context; final entry must be `user` or `partner`).
+    pub role: Role,
+    /// Raw spoken transcript for the final turn to correct, or corrected/prepared text for earlier turns.
+    #[schema(
+        min_length = 1,
+        pattern = r"\S",
+        example = "sie müssen den antrag bis ende nächste woche abgeben"
+    )]
+    pub message: String,
+    /// Optional 1-based partner identifier when `role` is `"partner"` (or `"partner_simple"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(minimum = 1)]
+    pub partner_number: Option<u32>,
+    /// Optional acoustic speaker cluster identifier from WASM diarization (e.g. `"cluster_0"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cluster_id: Option<String>,
+    /// Optional acoustic probability in `[0.0, 1.0]` that the speaker is `user`.
+    /// When omitted, defaults deterministically from `role` (`1.0` for `user`, `0.0` for `partner`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_likelihood: Option<f32>,
+    /// Optional silence gap in milliseconds between the end of the previous turn and the start of this turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause_ms: Option<u64>,
+}
+
+/// Backwards-compatible request payload for `POST /correct-transcript`.
+///
+/// If `history` is set (`Some`), `history` is used and its final element is the turn to correct
+/// while preceding elements provide read-only conversation context.
+/// If `history` is not set (`None`), the legacy `role` and `message` fields are used.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[schema(example = json!({
+    "role": "partner",
+    "message": "sie müssen den antrag bis ende nächste woche abgeben"
+}))]
+pub struct CorrectTranscriptRequest {
+    /// Legacy speaker role (`user` or `partner`); used when `history` is not set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<Role>,
+    /// Optional 1-based partner identifier when `role` is `"partner"` in legacy mode; ignored when `history` is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(minimum = 1)]
+    pub partner_number: Option<u32>,
+    /// Legacy raw spoken transcript to correct; used when `history` is not set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// Optional chronological conversation turns ending with the turn to correct.
+    /// Takes precedence over `role` and `message` when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history: Option<Vec<CorrectTranscriptHistoryItem>>,
+}
+
+impl CorrectTranscriptRequest {
+    /// Validates and normalizes the request into `(prior_history, target_turn, has_contextual_history)`.
+    ///
+    /// - When `history` is `Some(items)`, validates that `items` is non-empty, every item's `message`
+    ///   is non-blank, the final item's `role` is `Role::User` or `Role::Partner`, any present
+    ///   `partner_number` is `>= 1` and not paired with `Role::User`, and any present
+    ///   `user_likelihood` is finite in `[0.0, 1.0]`.
+    /// - When `history` is `None`, validates that `role` (`Role::User` or `Role::Partner`), a
+    ///   non-blank `message`, and a valid optional `partner_number` are provided.
+    pub fn resolve_turns(
+        &self,
+    ) -> Result<
+        (
+            Vec<CorrectTranscriptHistoryItem>,
+            CorrectTranscriptHistoryItem,
+            bool,
+        ),
+        &'static str,
+    > {
+        if let Some(ref items) = self.history {
+            let Some((last, prior)) = items.split_last() else {
+                return Err("The history list must not be empty.");
+            };
+            if items.iter().any(|item| !is_non_blank(&item.message)) {
+                return Err("A required field is missing or invalid, or the text is empty.");
+            }
+            if !matches!(last.role, Role::User | Role::Partner) {
+                return Err("The target turn to correct must have role 'user' or 'partner'.");
+            }
+            for item in items {
+                if let Some(pn) = item.partner_number {
+                    if pn == 0 {
+                        return Err("partnerNumber must be at least 1.");
+                    }
+                    if item.role == Role::User {
+                        return Err("partnerNumber is only allowed when role is 'partner'.");
+                    }
+                }
+                if let Some(p) = item.user_likelihood {
+                    if !p.is_finite() || !(0.0..=1.0).contains(&p) {
+                        return Err("userLikelihood must be a finite number between 0.0 and 1.0.");
+                    }
+                }
+            }
+            return Ok((prior.to_vec(), last.clone(), true));
+        }
+
+        let Some(role) = self.role else {
+            return Err("A required field is missing or invalid, or the text is empty.");
+        };
+        if !matches!(role, Role::User | Role::Partner) {
+            return Err("The target turn to correct must have role 'user' or 'partner'.");
+        }
+        if let Some(pn) = self.partner_number {
+            if pn == 0 {
+                return Err("partnerNumber must be at least 1.");
+            }
+            if role == Role::User {
+                return Err("partnerNumber is only allowed when role is 'partner'.");
+            }
+        }
+        let Some(ref message) = self.message else {
+            return Err("A required field is missing or invalid, or the text is empty.");
+        };
+        if !is_non_blank(message) {
+            return Err("A required field is missing or invalid, or the text is empty.");
+        }
+
+        Ok((
+            Vec::new(),
+            CorrectTranscriptHistoryItem {
+                role,
+                message: message.clone(),
+                partner_number: self.partner_number,
+                cluster_id: None,
+                user_likelihood: None,
+                pause_ms: None,
+            },
+            false,
+        ))
+    }
+}
+
+/// Response returned by `/correct-transcript` containing the corrected plain-text message,
+/// optional speaker/turn-merge resolution metadata when `history` was provided,
 /// and optional diagnostic metadata when authenticated as admin.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[schema(example = json!({
     "message": "Sie müssen den Antrag bis Ende nächster Woche abgeben."
 }))]
 pub struct CorrectTranscriptResponse {
-    /// Complete corrected text as plain text, no Markdown.
+    /// Complete corrected text as plain text, no Markdown (or combined text of the preceding and current turn when `mergeWithPrevious` is `true`).
     #[schema(
         min_length = 1,
         pattern = r"\S",
         example = "Sie müssen den Antrag bis Ende nächster Woche abgeben."
     )]
     pub message: String,
+    /// Verified speaker role (`user` or `partner`); populated when `history` is provided, omitted in legacy mode.
+    #[serde(
+        default,
+        rename = "resolvedRole",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub resolved_role: Option<Role>,
+    /// Whether this turn is a direct continuation that should be merged into the immediately preceding spoken turn; populated when `history` is provided, omitted in legacy mode.
+    #[serde(
+        default,
+        rename = "mergeWithPrevious",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub merge_with_previous: Option<bool>,
     /// Optional diagnostic information; omitted unless the request carries a valid admin token.
-    #[serde(rename = "debugInfo", skip_serializing_if = "Option::is_none")]
+    #[serde(default, rename = "debugInfo", skip_serializing_if = "Option::is_none")]
     pub debug_info: Option<DebugInfo>,
 }
 
@@ -203,8 +386,8 @@ pub struct Warning {
 }
 
 /// Response returned by `/translate` with the prepared Markdown content, optional warning,
-/// and optional diagnostic metadata when authenticated as admin.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+/// optional inferred partner role, and optional diagnostic metadata when authenticated as admin.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct TranslationResponse {
     /// formatting structures/formats while largely preserving the wording.
     /// translation simplifies the language or phrases it more understandably;
@@ -219,6 +402,13 @@ pub struct TranslationResponse {
     /// Optional content warning; omitted when there is no warning.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warning: Option<Warning>,
+    /// Optional inferred real-world role of the speaking conversation partner; omitted when unknown.
+    #[serde(
+        default,
+        rename = "partnerRole",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub partner_role: Option<PartnerRole>,
     /// Optional diagnostic information; omitted unless the request carries a valid admin token.
     #[serde(rename = "debugInfo", skip_serializing_if = "Option::is_none")]
     pub debug_info: Option<DebugInfo>,
@@ -347,21 +537,18 @@ pub fn is_non_blank(text: &str) -> bool {
 
 /// Correct spoken contribution for the UI and subsequent conversation history.
 ///
-/// For user and partner. Corrects recognition errors, spelling, and
-/// punctuation; preserves meaning, language, and tone and does not add
-/// information. If no correction is needed, the text is returned unchanged.
-/// Processes only the individual contribution, without conversation history,
-/// using `"minimal"` reasoning effort for low latency.
-/// The corrected text replaces the UI display and updates the stored
-/// conversation history entry for subsequent /translate requests. In case of
-/// an error, the original remains visible and in history; the correction can
-/// be retried independently of /translate.
+/// Supports both the legacy single-message payload (`{ role, message }`) and the contextual
+/// `history` payload (`{ history: [...] }` where the last item is the turn to correct and
+/// preceding items provide read-only conversation context alongside optional acoustic diarization
+/// metadata `clusterId`, `userLikelihood`, and `pauseMs`).
+/// Uses `"minimal"` reasoning effort and structured JSON output for low-latency ASR disambiguation,
+/// borderline speaker verification (`resolvedRole`), and split-turn unification (`mergeWithPrevious`).
 #[utoipa::path(
     post,
     path = "/correct-transcript",
     operation_id = "correctTranscript",
     request_body(
-        content = ConversationMessage,
+        content = CorrectTranscriptRequest,
         example = json!({
             "role": "partner",
             "message": "sie müssen den antrag bis ende nächste woche abgeben"
@@ -370,7 +557,7 @@ pub fn is_non_blank(text: &str) -> bool {
     responses(
         (
             status = 200,
-            description = "Corrected contribution as plain text, no Markdown.",
+            description = "Corrected contribution as plain text, with optional speaker and turn-merge resolution when history is provided.",
             body = CorrectTranscriptResponse,
             example = json!({
                 "message": "Sie müssen den Antrag bis Ende nächster Woche abgeben."
@@ -458,33 +645,39 @@ pub fn is_non_blank(text: &str) -> bool {
 pub async fn correct_transcript(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    AppJson(request): AppJson<ConversationMessage>,
+    AppJson(request): AppJson<CorrectTranscriptRequest>,
 ) -> Result<Json<CorrectTranscriptResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let (prior_history, target_turn, is_contextual_history) =
+        request.resolve_turns().map_err(|reason| {
+            tracing::warn!(
+                endpoint = "/correct-transcript",
+                error = "VALIDATION_ERROR",
+                reason = reason,
+                "Validation rejected correct-transcript request"
+            );
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(ErrorResponse::new("VALIDATION_ERROR", reason)),
+            )
+        })?;
+
     tracing::debug!(
         endpoint = "/correct-transcript",
-        role = ?request.role,
+        role = ?target_turn.role,
+        history_len = prior_history.len(),
+        is_contextual_history,
         "Handling correct-transcript request"
     );
 
-    if !is_non_blank(&request.message) {
-        tracing::warn!(
-            endpoint = "/correct-transcript",
-            error = "VALIDATION_ERROR",
-            "Validation rejected request: text is empty"
-        );
-        return Err((
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(ErrorResponse::new(
-                "VALIDATION_ERROR",
-                "A required field is missing or invalid, or the text is empty.",
-            )),
-        ));
-    }
-
-    let prompt = build_correct_transcript_prompt(&request.message);
+    let prompt = build_correct_transcript_contextual_prompt(&prior_history, &target_turn);
     let prompt_output = state
         .runner
-        .run_prompt(CORRECT_TRANSCRIPT_SYSTEM_PROMPT, &prompt, "minimal")
+        .run_prompt_with_schema(
+            CORRECT_TRANSCRIPT_SYSTEM_PROMPT,
+            &prompt,
+            "minimal",
+            &CORRECT_TRANSCRIPT_RESPONSE_SCHEMA,
+        )
         .await
         .map_err(|e| {
             tracing::error!(
@@ -508,21 +701,35 @@ pub async fn correct_transcript(
         prompt_output.usage.output_tokens,
     );
 
+    let parsed_output = parse_correct_transcript_output(&prompt_output.text).map_err(|e| {
+        tracing::error!(
+            endpoint = "/correct-transcript",
+            error = %e,
+            raw_output = %prompt_output.text,
+            "Failed to parse structured correct-transcript output"
+        );
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse::new(
+                "SERVICE_UNAVAILABLE",
+                "Service is temporarily unavailable.",
+            )),
+        )
+    })?;
+
+    let (message, resolved_role, merge_with_previous) =
+        enforce_correct_transcript_guardrails(parsed_output, &prior_history, &target_turn);
+
     tracing::info!(
         endpoint = "/correct-transcript",
         status = 200,
+        resolved_role = ?resolved_role,
+        merge_with_previous,
         input_tokens = prompt_output.usage.input_tokens,
         reasoning_tokens = prompt_output.usage.reasoning_tokens,
         output_tokens = prompt_output.usage.output_tokens,
         "LLM request completed successfully"
     );
-
-    let trimmed = prompt_output.text.trim();
-    let message = if trimmed.is_empty() {
-        request.message
-    } else {
-        trimmed.to_string()
-    };
 
     let debug_info =
         crate::web::is_admin_authenticated(&headers, &state.admin_password).then(|| {
@@ -549,6 +756,8 @@ pub async fn correct_transcript(
 
     Ok(Json(CorrectTranscriptResponse {
         message,
+        resolved_role: is_contextual_history.then_some(resolved_role),
+        merge_with_previous: is_contextual_history.then_some(merge_with_previous),
         debug_info,
     }))
 }
@@ -767,6 +976,39 @@ pub async fn translate(
         ));
     }
 
+    for msg in &request.messages {
+        if let Some(pn) = msg.partner_number {
+            if pn == 0 {
+                tracing::warn!(
+                    endpoint = "/translate",
+                    error = "VALIDATION_ERROR",
+                    "Validation rejected request: partnerNumber is 0"
+                );
+                return Err((
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    Json(ErrorResponse::new(
+                        "VALIDATION_ERROR",
+                        "partnerNumber must be at least 1.",
+                    )),
+                ));
+            }
+            if msg.role == Role::User {
+                tracing::warn!(
+                    endpoint = "/translate",
+                    error = "VALIDATION_ERROR",
+                    "Validation rejected request: partnerNumber provided on user role"
+                );
+                return Err((
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    Json(ErrorResponse::new(
+                        "VALIDATION_ERROR",
+                        "partnerNumber is only allowed when role is 'partner'.",
+                    )),
+                ));
+            }
+        }
+    }
+
     let history_len = count_history_turns(history);
     let bucket = determine_history_bucket(history);
     crate::metrics::record_translate_history_length(history_len);
@@ -775,6 +1017,7 @@ pub async fn translate(
         endpoint = "/translate",
         history_length = history_len,
         bucket = bucket,
+        partner_number = ?last_message.partner_number,
         "Handling translate request"
     );
 
@@ -794,8 +1037,12 @@ pub async fn translate(
             );
             Vec::new()
         });
-    let prompt =
-        build_translate_prompt_with_few_shots(history, &directives.cleaned_message, &examples);
+    let prompt = build_translate_prompt_with_few_shots_for_partner(
+        history,
+        &directives.cleaned_message,
+        last_message.partner_number,
+        &examples,
+    );
 
     let prompt_output = state
         .runner
@@ -831,8 +1078,12 @@ pub async fn translate(
         model_content
     };
 
-    let classify_prompt =
-        build_classify_dialog_prompt(history, &directives.cleaned_message, &translated_content);
+    let classify_prompt = build_classify_dialog_prompt_for_partner(
+        history,
+        &directives.cleaned_message,
+        &translated_content,
+        last_message.partner_number,
+    );
     let classify_output = state
         .runner
         .run_prompt_with_schema(
@@ -888,6 +1139,8 @@ pub async fn translate(
         classification.category.as_str(),
     );
 
+    let partner_role = classification.normalized_partner_role();
+
     tracing::info!(
         endpoint = "/translate",
         status = 200,
@@ -895,6 +1148,7 @@ pub async fn translate(
         topic = classification.topic.as_str(),
         classification_type = classification.r#type.as_str(),
         classification_category = classification.category.as_str(),
+        partner_role = ?partner_role,
         input_tokens = prompt_output.usage.input_tokens,
         reasoning_tokens = prompt_output.usage.reasoning_tokens,
         output_tokens = prompt_output.usage.output_tokens,
@@ -905,7 +1159,7 @@ pub async fn translate(
     );
 
     let (classified_type, final_content, classified_warning) =
-        apply_classification(classification, model_type, translated_content);
+        apply_classification(&classification, model_type, translated_content);
 
     let debug_info =
         crate::web::is_admin_authenticated(&headers, &state.admin_password).then(|| {
@@ -941,6 +1195,7 @@ pub async fn translate(
                     topic: classification.topic,
                     classification_type: classification.r#type,
                     category: classification.category,
+                    partner_role: partner_role.clone(),
                     system_prompt: classify_system_prompt,
                     prompt: classify_prompt,
                     system_prompt_tokens: classify_system_prompt_tokens,
@@ -958,6 +1213,7 @@ pub async fn translate(
         r#type: directives.r#type.unwrap_or(classified_type),
         content: final_content,
         warning: directives.warning.or(classified_warning),
+        partner_role,
         debug_info,
     }))
 }
@@ -974,6 +1230,7 @@ pub fn build_translation_response(message: &str, is_staging: bool) -> Translatio
         r#type: directives.r#type.unwrap_or(TranslationType::Formatting),
         content: directives.cleaned_message,
         warning: directives.warning,
+        partner_role: None,
         debug_info: None,
     }
 }
@@ -1049,5 +1306,137 @@ mod tests {
         );
         assert_eq!(prod_res.r#type, TranslationType::Formatting);
         assert!(prod_res.warning.is_none());
+    }
+
+    /// Verifies `CorrectTranscriptRequest::resolve_turns` for legacy payloads, contextual `history`
+    /// precedence, `partnerNumber` propagation, and validation failures (`history: []`, blank messages,
+    /// `partner_simple` target, invalid `partnerNumber`, and out-of-range `userLikelihood`).
+    #[test]
+    fn test_correct_transcript_request_resolve_turns() {
+        // 1. Legacy payload (history = None)
+        let legacy = CorrectTranscriptRequest {
+            role: Some(Role::Partner),
+            partner_number: Some(2),
+            message: Some("hallo welt".to_string()),
+            history: None,
+        };
+        let (prior, target, is_ctx) = legacy.resolve_turns().unwrap();
+        assert!(prior.is_empty());
+        assert_eq!(target.role, Role::Partner);
+        assert_eq!(target.partner_number, Some(2));
+        assert_eq!(target.message, "hallo welt");
+        assert_eq!(target.user_likelihood, None);
+        assert!(!is_ctx);
+
+        // 2. Contextual history takes precedence over legacy role/message
+        let contextual = CorrectTranscriptRequest {
+            role: Some(Role::Partner),
+            partner_number: Some(9),
+            message: Some("ignored".to_string()),
+            history: Some(vec![
+                CorrectTranscriptHistoryItem {
+                    role: Role::Partner,
+                    message: "Guten Tag.".to_string(),
+                    partner_number: Some(1),
+                    cluster_id: Some("cluster_1".to_string()),
+                    user_likelihood: Some(0.05),
+                    pause_ms: None,
+                },
+                CorrectTranscriptHistoryItem {
+                    role: Role::PartnerSimple,
+                    message: "Guten Tag.".to_string(),
+                    partner_number: None,
+                    cluster_id: None,
+                    user_likelihood: None,
+                    pause_ms: None,
+                },
+                CorrectTranscriptHistoryItem {
+                    role: Role::User,
+                    message: "ich habe einen termin".to_string(),
+                    partner_number: None,
+                    cluster_id: Some("cluster_0".to_string()),
+                    user_likelihood: Some(0.29),
+                    pause_ms: Some(540),
+                },
+            ]),
+        };
+        let (prior_ctx, target_ctx, is_ctx_flag) = contextual.resolve_turns().unwrap();
+        assert_eq!(prior_ctx.len(), 2);
+        assert_eq!(prior_ctx[0].partner_number, Some(1));
+        assert_eq!(target_ctx.role, Role::User);
+        assert_eq!(target_ctx.partner_number, None);
+        assert_eq!(target_ctx.message, "ich habe einen termin");
+        assert_eq!(target_ctx.user_likelihood, Some(0.29));
+        assert_eq!(target_ctx.pause_ms, Some(540));
+        assert!(is_ctx_flag);
+
+        // 3. Rejections: empty history, blank message, partner_simple as target, invalid partnerNumber, invalid userLikelihood
+        assert!(CorrectTranscriptRequest {
+            role: None,
+            partner_number: None,
+            message: None,
+            history: Some(vec![]),
+        }
+        .resolve_turns()
+        .is_err());
+
+        assert!(CorrectTranscriptRequest {
+            role: Some(Role::PartnerSimple),
+            partner_number: None,
+            message: Some("hallo".to_string()),
+            history: None,
+        }
+        .resolve_turns()
+        .is_err());
+
+        assert!(CorrectTranscriptRequest {
+            role: Some(Role::Partner),
+            partner_number: Some(0),
+            message: Some("hallo".to_string()),
+            history: None,
+        }
+        .resolve_turns()
+        .is_err());
+
+        assert!(CorrectTranscriptRequest {
+            role: Some(Role::User),
+            partner_number: Some(1),
+            message: Some("hallo".to_string()),
+            history: None,
+        }
+        .resolve_turns()
+        .is_err());
+
+        assert!(CorrectTranscriptRequest {
+            role: None,
+            partner_number: None,
+            message: None,
+            history: Some(vec![CorrectTranscriptHistoryItem {
+                role: Role::PartnerSimple,
+                message: "hallo".to_string(),
+                partner_number: None,
+                cluster_id: None,
+                user_likelihood: None,
+                pause_ms: None,
+            }]),
+        }
+        .resolve_turns()
+        .is_err());
+
+        assert!(CorrectTranscriptRequest {
+            role: None,
+            partner_number: None,
+            message: None,
+            history: Some(vec![CorrectTranscriptHistoryItem {
+                role: Role::Partner,
+                message: "hallo".to_string(),
+                partner_number: None,
+                cluster_id: None,
+                user_likelihood: Some(1.2),
+                pause_ms: None,
+            }]),
+        }
+        .resolve_turns()
+        .is_err());
     }
 }
