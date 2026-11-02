@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CorrectTranscriptSimpleOutput",
+  "type": "object",
+  "required": ["message"],
+  "additionalProperties": false,
+  "properties": {
+    "message": {
+      "type": "string",
+      "description": "Korrigiertes Transkript der Aussage als reiner Text ohne Markdown."
+    }
+  }
+}

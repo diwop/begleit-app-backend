@@ -20,6 +20,9 @@
       <div id="engine-status-pill" class="engine-status-pill" aria-live="polite">
         <span class="engine-status-dot" aria-hidden="true"></span>
         <span id="engine-status-text">Modelle werden geladen…</span>
+        <div id="model-progress-bar-container" class="model-progress-bar-container" style="display: none;">
+          <div id="model-progress-bar-fill" class="model-progress-bar-fill"></div>
+        </div>
       </div>
       <div id="dialog-header-stats" class="dialog-header-stats" style="display: none;" aria-label="Token-Statistiken">
         <span class="stats-badge" id="stats-input-badge">0 Eingabetoken</span>
@@ -406,33 +409,114 @@
     return audioSec > 0.05 ? audioSec : Math.max(0, wallSec);
   }
 
+  const progressBarContainer = document.getElementById('model-progress-bar-container');
+  const progressBarFill = document.getElementById('model-progress-bar-fill');
+
+  /**
+   * Fetches an asset via ReadableStream to track download progress.
+   *
+   * @param {string} url
+   * @param {number} estimatedBytes Expected size in bytes if Content-Length is absent
+   * @param {(loadedBytes: number, totalBytes: number) => void} onProgress
+   * @returns {Promise<ArrayBuffer>}
+   */
+  async function fetchWithProgress(url, estimatedBytes, onProgress) {
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      throw new Error(`Download von ${url} fehlgeschlagen (HTTP ${resp.status})`);
+    }
+
+    const contentLength = resp.headers.get('content-length');
+    const totalBytes = contentLength ? parseInt(contentLength, 10) : estimatedBytes;
+
+    if (!resp.body) {
+      const buf = await resp.arrayBuffer();
+      if (onProgress) onProgress(buf.byteLength, buf.byteLength);
+      return buf;
+    }
+
+    const reader = resp.body.getReader();
+    const chunks = [];
+    let receivedBytes = 0;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      receivedBytes += value.length;
+      if (onProgress) {
+        onProgress(receivedBytes, Math.max(totalBytes, receivedBytes));
+      }
+    }
+
+    const fullBuffer = new Uint8Array(receivedBytes);
+    let offset = 0;
+    for (const chunk of chunks) {
+      fullBuffer.set(chunk, offset);
+      offset += chunk.length;
+    }
+
+    return fullBuffer.buffer;
+  }
+
   /**
    * Initializes the Rust WASM module and loads Silero VAD v5, `pyannote/segmentation-3.0`,
-   * and `WeSpeaker SimAM-ResNet100 (VoxBlink2 + VoxCeleb2 LM)` INT8 ONNX models, then checks
-   * IndexedDB for a calibrated "NutzerIn" profile matching the active model ID and dimension.
+   * and `WeSpeaker SimAM-ResNet100 (VoxBlink2 + VoxCeleb2 LM)` INT8 ONNX models with a live progress bar,
+   * then checks IndexedDB for a calibrated "NutzerIn" profile matching the active model ID and dimension.
    */
   async function initializeEngine() {
     try {
       setStatus('Modelle werden geladen…', null);
+      if (progressBarContainer) progressBarContainer.style.display = 'block';
+      if (progressBarFill) progressBarFill.style.width = '0%';
+
       await initWasm({ module_or_path: '/static/wasm/vad_diarization_wasm_bg.wasm' });
 
-      const [vadResp, segResp, embedResp] = await Promise.all([
-        fetch('/static/models/silero_vad_v5.onnx'),
-        fetch(`/static/models/${SEGMENTATION_MODEL_FILENAME}`),
-        fetch(`/static/models/${EMBEDDING_MODEL_FILENAME}`),
-      ]);
+      // Approximate download weights: VAD ~2.2 MB, Pyannote ~5.7 MB, WeSpeaker ~50.3 MB (Total ~58.2 MB)
+      const modelSizes = {
+        vad: 2.3 * 1024 * 1024,
+        seg: 6.0 * 1024 * 1024,
+        embed: 50.5 * 1024 * 1024,
+      };
+      const modelProgress = {
+        vad: { loaded: 0, total: modelSizes.vad },
+        seg: { loaded: 0, total: modelSizes.seg },
+        embed: { loaded: 0, total: modelSizes.embed },
+      };
 
-      if (!vadResp.ok || !segResp.ok || !embedResp.ok) {
-        throw new Error(
-          `Modell-Download fehlgeschlagen (VAD: ${vadResp.status}, Seg: ${segResp.status}, Embedding: ${embedResp.status})`
-        );
-      }
+      const updateCombinedProgress = () => {
+        const total = modelProgress.vad.total + modelProgress.seg.total + modelProgress.embed.total;
+        const loaded = modelProgress.vad.loaded + modelProgress.seg.loaded + modelProgress.embed.loaded;
+        const pct = Math.min(100, Math.max(0, Math.round((loaded / total) * 100)));
+        if (progressBarFill) {
+          progressBarFill.style.width = `${pct}%`;
+        }
+        if (statusText) {
+          statusText.textContent = `Lade Modelle (${pct}%)…`;
+        }
+      };
 
       const [vadBuf, segBuf, embedBuf] = await Promise.all([
-        vadResp.arrayBuffer(),
-        segResp.arrayBuffer(),
-        embedResp.arrayBuffer(),
+        fetchWithProgress('/static/models/silero_vad_v5.onnx', modelSizes.vad, (loaded, total) => {
+          modelProgress.vad.loaded = loaded;
+          modelProgress.vad.total = total;
+          updateCombinedProgress();
+        }),
+        fetchWithProgress(`/static/models/${SEGMENTATION_MODEL_FILENAME}`, modelSizes.seg, (loaded, total) => {
+          modelProgress.seg.loaded = loaded;
+          modelProgress.seg.total = total;
+          updateCombinedProgress();
+        }),
+        fetchWithProgress(`/static/models/${EMBEDDING_MODEL_FILENAME}`, modelSizes.embed, (loaded, total) => {
+          modelProgress.embed.loaded = loaded;
+          modelProgress.embed.total = total;
+          updateCombinedProgress();
+        }),
       ]);
+
+      if (statusText) {
+        statusText.textContent = 'Initialisiere…';
+      }
 
       engine = await DiarizationEngine.new(
         new Uint8Array(vadBuf),
@@ -441,6 +525,8 @@
       );
       engine.set_recognition_threshold(VOICE_RECOGNITION_THRESHOLD);
       backendLabel = engine.backend_name();
+
+      if (progressBarContainer) progressBarContainer.style.display = 'none';
 
       // Check for saved voice profile in IndexedDB (PRD-2 / PRD-3) and verify modelId + dimension compatibility
       const savedProfile = await getStoredVoiceProfile('NutzerIn');

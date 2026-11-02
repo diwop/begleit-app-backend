@@ -80,22 +80,33 @@ impl MockPromptRunner {
         selected
             .clone()
             .map(|text| {
-                let normalized_text = if system_prompt
+                let normalized_text = if (system_prompt
                     == diwop_begleitapp::prompts::CORRECT_TRANSCRIPT_SYSTEM_PROMPT
+                    || system_prompt
+                        == diwop_begleitapp::prompts::CORRECT_TRANSCRIPT_SIMPLE_SYSTEM_PROMPT)
                     && !text.trim_start().starts_with('{')
                     && !text.trim_start().starts_with("```")
                 {
-                    let role = if prompt.contains("- Vorläufige Rolle: user") {
-                        "user"
+                    if system_prompt
+                        == diwop_begleitapp::prompts::CORRECT_TRANSCRIPT_SIMPLE_SYSTEM_PROMPT
+                    {
+                        serde_json::json!({
+                            "message": text
+                        })
+                        .to_string()
                     } else {
-                        "partner"
-                    };
-                    serde_json::json!({
-                        "message": text,
-                        "resolvedRole": role,
-                        "mergeWithPrevious": false
-                    })
-                    .to_string()
+                        let role = if prompt.contains("- Vorläufige Rolle: user") {
+                            "user"
+                        } else {
+                            "partner"
+                        };
+                        serde_json::json!({
+                            "message": text,
+                            "resolvedRole": role,
+                            "mergeWithPrevious": false
+                        })
+                        .to_string()
+                    }
                 } else {
                     text
                 };
@@ -468,6 +479,10 @@ async fn test_prompt_runner_integration_and_error_handling() {
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].thinking_level, "minimal");
     assert!(calls[0].has_json_schema);
+    assert_eq!(
+        calls[0].system_prompt,
+        diwop_begleitapp::prompts::CORRECT_TRANSCRIPT_SIMPLE_SYSTEM_PROMPT
+    );
     assert!(calls[0]
         .prompt
         .contains("sie müssen den antrag bis ende nächste woche abgeben"));
@@ -824,6 +839,10 @@ async fn test_correct_transcript_contextual_history_and_guardrails() {
     let calls = mock_flip.recorded_calls();
     assert_eq!(calls.len(), 1);
     assert!(calls[0].has_json_schema);
+    assert_eq!(
+        calls[0].system_prompt,
+        diwop_begleitapp::prompts::CORRECT_TRANSCRIPT_SYSTEM_PROMPT
+    );
     assert!(calls[0].prompt.contains(
         "Partner [clusterId=cluster_1, userLikelihood=0.06]: Guten Tag, nehmen Sie aktuell Ibuprofen oder L-Thyroxin?"
     ));
@@ -1111,7 +1130,7 @@ async fn test_debug_info_populated_only_with_valid_admin_token() {
         .expect("Expected debugInfo on admin /correct-transcript");
     assert_eq!(
         dbg_ct.system_prompt,
-        diwop_begleitapp::prompts::CORRECT_TRANSCRIPT_SYSTEM_PROMPT
+        diwop_begleitapp::prompts::CORRECT_TRANSCRIPT_SIMPLE_SYSTEM_PROMPT
     );
     assert!(dbg_ct
         .prompt
@@ -1124,6 +1143,34 @@ async fn test_debug_info_populated_only_with_valid_admin_token() {
     assert_eq!(dbg_ct.reasoning.as_deref(), Some("Mock reasoning"));
     assert!(dbg_ct.examples.is_none());
     assert!(dbg_ct.classification.is_none());
+
+    // 2b. /correct-transcript with history -> uses contextual diarization prompt
+    let res_admin_ct_ctx = client
+        .post(format!("{}/correct-transcript", base_url))
+        .header("Authorization", "Bearer admin")
+        .json(&serde_json::json!({
+            "history": [
+                {
+                    "role": "partner",
+                    "message": "bitte bringen sie ihren ausweis mit"
+                }
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res_admin_ct_ctx.status(), reqwest::StatusCode::OK);
+    let body_ct_ctx: CorrectTranscriptResponse = res_admin_ct_ctx.json().await.unwrap();
+    let dbg_ct_ctx = body_ct_ctx
+        .debug_info
+        .expect("Expected debugInfo on admin contextual /correct-transcript");
+    assert_eq!(
+        dbg_ct_ctx.system_prompt,
+        diwop_begleitapp::prompts::CORRECT_TRANSCRIPT_SYSTEM_PROMPT
+    );
+    assert!(dbg_ct_ctx
+        .prompt
+        .contains("bitte bringen sie ihren ausweis mit"));
 
     // 3. /translate with admin_session cookie -> debugInfo populated with few-shot examples and classification details
     let res_admin_tr = client

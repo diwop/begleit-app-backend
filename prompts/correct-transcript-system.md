@@ -68,11 +68,11 @@ Gib dein Ergebnis ausschließlich als valides JSON-Objekt mit den Feldern `messa
 ## Beispiel 3 (Zusammenführen einer mitten im Satz getrennten Aussage)
 
 ### Eingabe
-* Gesprächsverlauf: `User [clusterId=cluster_0, userLikelihood=0.84]: Warum kann er nur Sailor, aber nicht.`
-* Vorläufige Rolle: `partner`, Cluster-ID: `cluster_1`, `userLikelihood`: `0.34`, `pauseMs`: `410 ms`
-* `input`: `sailors sagen`
+* Gesprächsverlauf: `Partner [clusterId=cluster_1, userLikelihood=0.05]: Bitte bringen Sie zur Untersuchung Ihren Impfpass mit und`
+* Vorläufige Rolle: `partner`, Cluster-ID: `cluster_1`, `userLikelihood`: `0.08`, `pauseMs`: `410 ms`
+* `input`: `die versicherten karte bitte auch`
 
 ### Ausgabe
 ```json
-{"message":"Warum kann er nur Sailor, aber nicht Sailors sagen?","resolvedRole":"user","mergeWithPrevious":true}
+{"message":"Bitte bringen Sie zur Untersuchung Ihren Impfpass mit und die Versichertenkarte bitte auch.","resolvedRole":"partner","mergeWithPrevious":true}
 ```
