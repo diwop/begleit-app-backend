@@ -13,23 +13,42 @@ use std::pin::Pin;
 use std::sync::LazyLock;
 use utoipa::ToSchema;
 
-/// System prompt for `/correct-transcript`.
+/// System prompt for `/correct-transcript` in contextual diarization mode (`prompts/correct-transcript-system.md`).
 pub const CORRECT_TRANSCRIPT_SYSTEM_PROMPT: &str =
     include_str!("../prompts/correct-transcript-system.md");
 
-/// User prompt template for `/correct-transcript`.
+/// User prompt template for `/correct-transcript` in contextual diarization mode (`prompts/correct-transcript.md`).
 pub const CORRECT_TRANSCRIPT_PROMPT_TEMPLATE: &str =
     include_str!("../prompts/correct-transcript.md");
 
-/// JSON Schema string defining the structured output of `/correct-transcript` (`prompts/correct-transcript-schema.json`).
+/// JSON Schema string defining the structured output of contextual `/correct-transcript` (`prompts/correct-transcript-schema.json`).
 pub const CORRECT_TRANSCRIPT_SCHEMA_JSON: &str =
     include_str!("../prompts/correct-transcript-schema.json");
 
-/// Parsed JSON Schema value passed to `generationConfig.responseJsonSchema` during `/correct-transcript`.
+/// Parsed JSON Schema value passed to `generationConfig.responseJsonSchema` during contextual `/correct-transcript`.
 pub static CORRECT_TRANSCRIPT_RESPONSE_SCHEMA: LazyLock<serde_json::Value> = LazyLock::new(|| {
     serde_json::from_str(CORRECT_TRANSCRIPT_SCHEMA_JSON)
         .expect("prompts/correct-transcript-schema.json must be valid JSON")
 });
+
+/// System prompt for `/correct-transcript` in simple dialog mode without speaker-disambiguation overhead (`prompts/correct-transcript-simple-system.md`).
+pub const CORRECT_TRANSCRIPT_SIMPLE_SYSTEM_PROMPT: &str =
+    include_str!("../prompts/correct-transcript-simple-system.md");
+
+/// User prompt template for `/correct-transcript` in simple dialog mode (`prompts/correct-transcript-simple.md`).
+pub const CORRECT_TRANSCRIPT_SIMPLE_PROMPT_TEMPLATE: &str =
+    include_str!("../prompts/correct-transcript-simple.md");
+
+/// JSON Schema string defining the structured output of simple `/correct-transcript` (`prompts/correct-transcript-simple-schema.json`).
+pub const CORRECT_TRANSCRIPT_SIMPLE_SCHEMA_JSON: &str =
+    include_str!("../prompts/correct-transcript-simple-schema.json");
+
+/// Parsed JSON Schema value passed to `generationConfig.responseJsonSchema` during simple `/correct-transcript`.
+pub static CORRECT_TRANSCRIPT_SIMPLE_RESPONSE_SCHEMA: LazyLock<serde_json::Value> =
+    LazyLock::new(|| {
+        serde_json::from_str(CORRECT_TRANSCRIPT_SIMPLE_SCHEMA_JSON)
+            .expect("prompts/correct-transcript-simple-schema.json must be valid JSON")
+    });
 
 /// System prompt for `/translate` (`prompts/translate-system.md`).
 pub const TRANSLATE_SYSTEM_PROMPT: &str = include_str!("../prompts/translate-system.md");
@@ -544,6 +563,11 @@ impl PromptRunner for EchoPromptRunner {
                     merge_with_previous: false,
                 })
                 .expect("Failed to serialize EchoPromptRunner CorrectTranscriptModelOutput")
+            } else if system_prompt == CORRECT_TRANSCRIPT_SIMPLE_SYSTEM_PROMPT {
+                serde_json::json!({
+                    "message": input
+                })
+                .to_string()
             } else {
                 input.to_string()
             };
@@ -716,7 +740,18 @@ pub fn build_correct_transcript_contextual_prompt(
         .replace("%INPUT%", &sanitize(&target.message))
 }
 
-/// Renders the user prompt for `/correct-transcript` for a single legacy `input` message (`Role::Partner` default).
+/// Renders the user prompt for `/correct-transcript` in simple dialog mode without contextual history.
+pub fn build_correct_transcript_simple_prompt(role: Role, input: &str) -> String {
+    let role_str = match role {
+        Role::User => "user",
+        Role::Partner | Role::PartnerSimple => "partner",
+    };
+    CORRECT_TRANSCRIPT_SIMPLE_PROMPT_TEMPLATE
+        .replace("%ROLE%", role_str)
+        .replace("%INPUT%", &sanitize(input))
+}
+
+/// Renders the user prompt for `/correct-transcript` for a single contextual turn with empty history (`Role::Partner` default).
 pub fn build_correct_transcript_prompt(input: &str) -> String {
     let target = CorrectTranscriptHistoryItem {
         role: Role::Partner,
@@ -727,6 +762,33 @@ pub fn build_correct_transcript_prompt(input: &str) -> String {
         pause_ms: None,
     };
     build_correct_transcript_contextual_prompt(&[], &target)
+}
+
+/// Structured JSON output produced by the simple `/correct-transcript` model (`message`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CorrectTranscriptSimpleModelOutput {
+    /// Corrected transcript of the utterance.
+    pub message: String,
+}
+
+/// Parses and validates the structured JSON output of simple `/correct-transcript` into a string.
+pub fn parse_correct_transcript_simple_output(raw: &str) -> Result<String, PromptError> {
+    let mut trimmed = raw.trim();
+    if let Some(rest) = trimmed.strip_prefix("```") {
+        let rest = rest.strip_prefix("json").unwrap_or(rest).trim_start();
+        if let Some(inner) = rest.strip_suffix("```") {
+            trimmed = inner.trim();
+        }
+    }
+
+    let parsed: CorrectTranscriptSimpleModelOutput =
+        serde_json::from_str(trimmed).map_err(|e| {
+            PromptError(format!(
+                "Failed to parse simple correct-transcript JSON response: {e}. Output was: '{raw}'"
+            ))
+        })?;
+    Ok(parsed.message)
 }
 
 /// Parses and validates the structured JSON output of `/correct-transcript` into a [`CorrectTranscriptModelOutput`].
@@ -1437,7 +1499,7 @@ mod tests {
         // 5. Valid split-turn merge (prev 0.85 User + target 0.34 uncertain -> merged Role::User)
         let prior_user = vec![CorrectTranscriptHistoryItem {
             role: Role::User,
-            message: "Warum kann er nur Sailor, aber nicht.".to_string(),
+            message: "Ich habe seit drei Tagen starke Kopfschmerzen und".to_string(),
             partner_number: None,
             cluster_id: Some("cluster_0".to_string()),
             user_likelihood: Some(0.85),
@@ -1445,7 +1507,7 @@ mod tests {
         }];
         let split_tail = CorrectTranscriptHistoryItem {
             role: Role::Partner,
-            message: "sailors".to_string(),
+            message: "mir ist schwindelig".to_string(),
             partner_number: None,
             cluster_id: Some("cluster_1".to_string()),
             user_likelihood: Some(0.34),
@@ -1453,14 +1515,18 @@ mod tests {
         };
         let (msg4, role4, merge4) = enforce_correct_transcript_guardrails(
             CorrectTranscriptModelOutput {
-                message: "Warum kann er nur Sailor, aber nicht Sailors?".to_string(),
+                message: "Ich habe seit drei Tagen starke Kopfschmerzen und mir ist schwindelig."
+                    .to_string(),
                 resolved_role: ResolvedSpeakerRole::Partner, // locked prev 0.85 forces User!
                 merge_with_previous: true,
             },
             &prior_user,
             &split_tail,
         );
-        assert_eq!(msg4, "Warum kann er nur Sailor, aber nicht Sailors?");
+        assert_eq!(
+            msg4,
+            "Ich habe seit drei Tagen starke Kopfschmerzen und mir ist schwindelig."
+        );
         assert_eq!(role4, Role::User);
         assert!(merge4);
 
@@ -1475,7 +1541,8 @@ mod tests {
         };
         let (msg5, role5, merge5) = enforce_correct_transcript_guardrails(
             CorrectTranscriptModelOutput {
-                message: "Warum kann er nur Sailor, aber nicht Das weiß ich nicht.".to_string(),
+                message: "Ich habe seit drei Tagen starke Kopfschmerzen und Das weiß ich nicht."
+                    .to_string(),
                 resolved_role: ResolvedSpeakerRole::User,
                 merge_with_previous: true,
             },
@@ -1485,6 +1552,44 @@ mod tests {
         assert_eq!(msg5, "Das weiß ich nicht.");
         assert_eq!(role5, Role::Partner);
         assert!(!merge5);
+    }
+
+    /// Verifies `build_correct_transcript_simple_prompt`, schema validation, and `parse_correct_transcript_simple_output`.
+    #[test]
+    fn test_build_and_parse_correct_transcript_simple() {
+        let schema = &*CORRECT_TRANSCRIPT_SIMPLE_RESPONSE_SCHEMA;
+        assert_eq!(schema["title"], "CorrectTranscriptSimpleOutput");
+
+        let prompt_user = build_correct_transcript_simple_prompt(
+            Role::User,
+            "ich habe kopfschmerzen ```sehr stark```",
+        );
+        assert!(prompt_user.contains("- Rolle: user"));
+        assert!(prompt_user.contains("```input\nich habe kopfschmerzen '''sehr stark'''\n```"));
+        assert!(!prompt_user.contains("%ROLE%"));
+        assert!(!prompt_user.contains("%INPUT%"));
+
+        let prompt_partner =
+            build_correct_transcript_simple_prompt(Role::Partner, "bitte nehmen sie platz");
+        assert!(prompt_partner.contains("- Rolle: partner"));
+        assert!(prompt_partner.contains("```input\nbitte nehmen sie platz\n```"));
+
+        let parsed =
+            parse_correct_transcript_simple_output(r#"{"message":"Bitte nehmen Sie Platz."}"#)
+                .unwrap();
+        assert_eq!(parsed, "Bitte nehmen Sie Platz.");
+
+        let parsed_fenced = parse_correct_transcript_simple_output(
+            "```json\n{\"message\":\"Ich habe Kopfschmerzen.\"}\n```",
+        )
+        .unwrap();
+        assert_eq!(parsed_fenced, "Ich habe Kopfschmerzen.");
+
+        assert!(parse_correct_transcript_simple_output("kein json").is_err());
+        assert!(parse_correct_transcript_simple_output(
+            r#"{"message":"Test","extraField":"forbidden"}"#
+        )
+        .is_err());
     }
 
     /// Verifies `format_translate_history`, `count_history_turns`, `determine_history_bucket`, `partner_simple` capping,

@@ -1,12 +1,15 @@
 use crate::few_shots::{FewShotBucketIndex, DEFAULT_FEW_SHOT_K};
 use crate::prompts::{
     apply_classification, build_classify_dialog_prompt_for_partner,
-    build_correct_transcript_contextual_prompt, build_translate_prompt_with_few_shots_for_partner,
-    count_history_turns, determine_history_bucket, enforce_correct_transcript_guardrails,
-    extract_staging_directives, parse_classify_dialog_output, parse_correct_transcript_output,
-    parse_translate_output, ClassificationCategory, ClassificationLevel, DialogTopic, PromptRunner,
-    CLASSIFY_DIALOG_RESPONSE_SCHEMA, CLASSIFY_DIALOG_SYSTEM_PROMPT,
-    CORRECT_TRANSCRIPT_RESPONSE_SCHEMA, CORRECT_TRANSCRIPT_SYSTEM_PROMPT, TRANSLATE_SYSTEM_PROMPT,
+    build_correct_transcript_contextual_prompt, build_correct_transcript_simple_prompt,
+    build_translate_prompt_with_few_shots_for_partner, count_history_turns,
+    determine_history_bucket, enforce_correct_transcript_guardrails, extract_staging_directives,
+    parse_classify_dialog_output, parse_correct_transcript_output,
+    parse_correct_transcript_simple_output, parse_translate_output, ClassificationCategory,
+    ClassificationLevel, DialogTopic, PromptRunner, CLASSIFY_DIALOG_RESPONSE_SCHEMA,
+    CLASSIFY_DIALOG_SYSTEM_PROMPT, CORRECT_TRANSCRIPT_RESPONSE_SCHEMA,
+    CORRECT_TRANSCRIPT_SIMPLE_RESPONSE_SCHEMA, CORRECT_TRANSCRIPT_SIMPLE_SYSTEM_PROMPT,
+    CORRECT_TRANSCRIPT_SYSTEM_PROMPT, TRANSLATE_SYSTEM_PROMPT,
 };
 use axum::{
     extract::{rejection::JsonRejection, FromRequest, Request, State},
@@ -669,62 +672,134 @@ pub async fn correct_transcript(
         "Handling correct-transcript request"
     );
 
-    let prompt = build_correct_transcript_contextual_prompt(&prior_history, &target_turn);
-    let prompt_output = state
-        .runner
-        .run_prompt_with_schema(
-            CORRECT_TRANSCRIPT_SYSTEM_PROMPT,
-            &prompt,
-            "minimal",
-            &CORRECT_TRANSCRIPT_RESPONSE_SCHEMA,
-        )
-        .await
-        .map_err(|e| {
-            tracing::error!(
-                endpoint = "/correct-transcript",
-                error = %e,
-                "LLM API request failed"
+    let (message, resolved_role, merge_with_previous, prompt, system_prompt_str, prompt_output) =
+        if is_contextual_history {
+            let prompt = build_correct_transcript_contextual_prompt(&prior_history, &target_turn);
+            let prompt_output = state
+                .runner
+                .run_prompt_with_schema(
+                    CORRECT_TRANSCRIPT_SYSTEM_PROMPT,
+                    &prompt,
+                    "minimal",
+                    &CORRECT_TRANSCRIPT_RESPONSE_SCHEMA,
+                )
+                .await
+                .map_err(|e| {
+                    tracing::error!(
+                        endpoint = "/correct-transcript",
+                        error = %e,
+                        "LLM API request failed"
+                    );
+                    (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        Json(ErrorResponse::new(
+                            "SERVICE_UNAVAILABLE",
+                            "Service is temporarily unavailable.",
+                        )),
+                    )
+                })?;
+
+            crate::metrics::record_token_usage(
+                "/correct-transcript",
+                prompt_output.usage.input_tokens,
+                prompt_output.usage.reasoning_tokens,
+                prompt_output.usage.output_tokens,
             );
+
+            let parsed_output =
+                parse_correct_transcript_output(&prompt_output.text).map_err(|e| {
+                    tracing::error!(
+                        endpoint = "/correct-transcript",
+                        error = %e,
+                        raw_output = %prompt_output.text,
+                        "Failed to parse structured correct-transcript output"
+                    );
+                    (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        Json(ErrorResponse::new(
+                            "SERVICE_UNAVAILABLE",
+                            "Service is temporarily unavailable.",
+                        )),
+                    )
+                })?;
+
+            let (msg, r_role, m_prev) =
+                enforce_correct_transcript_guardrails(parsed_output, &prior_history, &target_turn);
+
             (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(ErrorResponse::new(
-                    "SERVICE_UNAVAILABLE",
-                    "Service is temporarily unavailable.",
-                )),
+                msg,
+                Some(r_role),
+                Some(m_prev),
+                prompt,
+                CORRECT_TRANSCRIPT_SYSTEM_PROMPT,
+                prompt_output,
             )
-        })?;
+        } else {
+            let prompt =
+                build_correct_transcript_simple_prompt(target_turn.role, &target_turn.message);
+            let prompt_output = state
+                .runner
+                .run_prompt_with_schema(
+                    CORRECT_TRANSCRIPT_SIMPLE_SYSTEM_PROMPT,
+                    &prompt,
+                    "minimal",
+                    &CORRECT_TRANSCRIPT_SIMPLE_RESPONSE_SCHEMA,
+                )
+                .await
+                .map_err(|e| {
+                    tracing::error!(
+                        endpoint = "/correct-transcript",
+                        error = %e,
+                        "LLM API request failed"
+                    );
+                    (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        Json(ErrorResponse::new(
+                            "SERVICE_UNAVAILABLE",
+                            "Service is temporarily unavailable.",
+                        )),
+                    )
+                })?;
 
-    crate::metrics::record_token_usage(
-        "/correct-transcript",
-        prompt_output.usage.input_tokens,
-        prompt_output.usage.reasoning_tokens,
-        prompt_output.usage.output_tokens,
-    );
+            crate::metrics::record_token_usage(
+                "/correct-transcript",
+                prompt_output.usage.input_tokens,
+                prompt_output.usage.reasoning_tokens,
+                prompt_output.usage.output_tokens,
+            );
 
-    let parsed_output = parse_correct_transcript_output(&prompt_output.text).map_err(|e| {
-        tracing::error!(
-            endpoint = "/correct-transcript",
-            error = %e,
-            raw_output = %prompt_output.text,
-            "Failed to parse structured correct-transcript output"
-        );
-        (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(ErrorResponse::new(
-                "SERVICE_UNAVAILABLE",
-                "Service is temporarily unavailable.",
-            )),
-        )
-    })?;
+            let parsed_msg =
+                parse_correct_transcript_simple_output(&prompt_output.text).map_err(|e| {
+                    tracing::error!(
+                        endpoint = "/correct-transcript",
+                        error = %e,
+                        raw_output = %prompt_output.text,
+                        "Failed to parse simple correct-transcript output"
+                    );
+                    (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        Json(ErrorResponse::new(
+                            "SERVICE_UNAVAILABLE",
+                            "Service is temporarily unavailable.",
+                        )),
+                    )
+                })?;
 
-    let (message, resolved_role, merge_with_previous) =
-        enforce_correct_transcript_guardrails(parsed_output, &prior_history, &target_turn);
+            (
+                parsed_msg,
+                None,
+                None,
+                prompt,
+                CORRECT_TRANSCRIPT_SIMPLE_SYSTEM_PROMPT,
+                prompt_output,
+            )
+        };
 
     tracing::info!(
         endpoint = "/correct-transcript",
         status = 200,
         resolved_role = ?resolved_role,
-        merge_with_previous,
+        merge_with_previous = ?merge_with_previous,
         input_tokens = prompt_output.usage.input_tokens,
         reasoning_tokens = prompt_output.usage.reasoning_tokens,
         output_tokens = prompt_output.usage.output_tokens,
@@ -733,15 +808,14 @@ pub async fn correct_transcript(
 
     let debug_info =
         crate::web::is_admin_authenticated(&headers, &state.admin_password).then(|| {
-            let system_prompt_tokens =
-                crate::prompts::count_gemma_tokens(CORRECT_TRANSCRIPT_SYSTEM_PROMPT);
+            let system_prompt_tokens = crate::prompts::count_gemma_tokens(system_prompt_str);
             let prompt_tokens = if prompt_output.usage.input_tokens > system_prompt_tokens {
                 prompt_output.usage.input_tokens - system_prompt_tokens
             } else {
                 crate::prompts::count_gemma_tokens(&prompt)
             };
             DebugInfo {
-                system_prompt: CORRECT_TRANSCRIPT_SYSTEM_PROMPT.to_string(),
+                system_prompt: system_prompt_str.to_string(),
                 prompt,
                 system_prompt_tokens,
                 prompt_tokens,
@@ -756,8 +830,8 @@ pub async fn correct_transcript(
 
     Ok(Json(CorrectTranscriptResponse {
         message,
-        resolved_role: is_contextual_history.then_some(resolved_role),
-        merge_with_previous: is_contextual_history.then_some(merge_with_previous),
+        resolved_role,
+        merge_with_previous,
         debug_info,
     }))
 }

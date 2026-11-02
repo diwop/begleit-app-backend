@@ -1005,6 +1005,24 @@ details[open] > summary .chevron-svg {
   color: var(--text-muted);
 }
 
+.model-progress-bar-container {
+  width: 60px;
+  height: 6px;
+  background-color: light-dark(#e2e8f0, #334155);
+  border-radius: 9999px;
+  overflow: hidden;
+  margin-left: 0.25rem;
+  flex-shrink: 0;
+}
+
+.model-progress-bar-fill {
+  height: 100%;
+  width: 0%;
+  background-color: #f59e0b;
+  border-radius: 9999px;
+  transition: width 0.15s ease-out;
+}
+
 .engine-status-dot {
   width: 0.5rem;
   height: 0.5rem;
