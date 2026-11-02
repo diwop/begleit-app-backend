@@ -742,3 +742,218 @@ async fn test_authenticated_vad_diarization_and_static_assets() {
         .unwrap();
     assert_eq!(bad_res.status(), reqwest::StatusCode::NOT_FOUND);
 }
+
+/// Verifies that an unauthenticated GET to `/analytics` redirects or serves the login card with next=/analytics.
+#[tokio::test]
+async fn test_unauthenticated_analytics_serves_login_page() {
+    let base_url = start_server().await;
+    let client = reqwest::Client::new();
+
+    let res = client
+        .get(format!("{}/analytics", base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), reqwest::StatusCode::OK);
+
+    let html = res.text().await.unwrap();
+    assert!(
+        html.contains("Admin-Anmeldung"),
+        "HTML should contain login heading"
+    );
+    assert!(
+        html.contains("value=\"/analytics\""),
+        "HTML should contain next parameter pointing to /analytics"
+    );
+}
+
+/// Verifies that GET `/analytics` with a valid session cookie serves the Nutzungsanalyse page.
+#[tokio::test]
+async fn test_authenticated_analytics_page() {
+    let base_url = start_server().await;
+    let client = reqwest::Client::new();
+
+    let valid_token = web::generate_session_token("admin");
+
+    let res = client
+        .get(format!("{}/analytics", base_url))
+        .header(header::COOKIE, format!("admin_session={valid_token}"))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), reqwest::StatusCode::OK);
+    let html = res.text().await.unwrap();
+    assert!(
+        html.contains("Nutzungsanalyse"),
+        "HTML should contain 'Nutzungsanalyse' title"
+    );
+    assert!(
+        html.contains("kpi-total-requests"),
+        "HTML should contain KPI card for total requests"
+    );
+    assert!(
+        html.contains("kpi-error-rate"),
+        "HTML should contain KPI card for error rate"
+    );
+    assert!(
+        html.contains("kpi-avg-latency"),
+        "HTML should contain KPI card for avg latency"
+    );
+    assert!(
+        html.contains("kpi-total-tokens"),
+        "HTML should contain KPI card for total tokens"
+    );
+    assert!(
+        html.contains("chart-requests-status"),
+        "HTML should contain canvas for requests status chart"
+    );
+    assert!(
+        html.contains("chart-latencies"),
+        "HTML should contain canvas for latencies chart"
+    );
+    assert!(
+        html.contains("chart-tokens"),
+        "HTML should contain canvas for tokens chart"
+    );
+    assert!(
+        html.contains("chart-topics"),
+        "HTML should contain canvas for topics chart"
+    );
+    assert!(
+        html.contains("chart-categories"),
+        "HTML should contain canvas for categories chart"
+    );
+    assert!(
+        html.contains("chart-types"),
+        "HTML should contain canvas for types chart"
+    );
+    assert!(
+        html.contains("chart-history"),
+        "HTML should contain canvas for history distribution chart"
+    );
+    assert!(
+        html.contains("/static/chart.js"),
+        "HTML should include local Chart.js bundle"
+    );
+}
+
+/// Verifies that GET `/api/admin/analytics` without authentication returns 401 Unauthorized.
+#[tokio::test]
+async fn test_analytics_api_unauthorized() {
+    let base_url = start_server().await;
+    let client = reqwest::Client::new();
+
+    let res = client
+        .get(format!("{}/api/admin/analytics", base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), reqwest::StatusCode::UNAUTHORIZED);
+}
+
+/// Verifies that GET `/api/admin/analytics` with admin authentication returns valid JSON report.
+#[tokio::test]
+async fn test_analytics_api_authorized() {
+    let base_url = start_server().await;
+    let client = reqwest::Client::new();
+
+    let valid_token = web::generate_session_token("admin");
+
+    // Record some sample metrics
+    diwop_begleitapp::metrics::record_http_request("/translate", 200, 0.125);
+    diwop_begleitapp::metrics::record_token_usage("/translate", 80, 20, 30);
+    diwop_begleitapp::metrics::record_translate_history_length(3);
+    diwop_begleitapp::metrics::record_translate_classification("medical", "translation", "warning");
+
+    let res = client
+        .get(format!("{}/api/admin/analytics?range=24h", base_url))
+        .header(header::COOKIE, format!("admin_session={valid_token}"))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), reqwest::StatusCode::OK);
+    let json: serde_json::Value = res.json().await.unwrap();
+
+    assert_eq!(json["time_range"], "24h");
+    assert!(json["summary"]["total_requests"].as_u64().unwrap() >= 1);
+    assert!(json["summary"]["total_tokens"].as_u64().unwrap() >= 130);
+
+    let endpoints = json["requests_by_endpoint"].as_array().unwrap();
+    assert!(endpoints.iter().any(|e| e["endpoint"] == "/translate"));
+
+    let topics = json["translation_by_topic"].as_array().unwrap();
+    assert!(topics.iter().any(|t| t["topic"] == "medical"));
+
+    let categories = json["translation_by_category"].as_array().unwrap();
+    assert!(categories.iter().any(|c| c["category"] == "warning"));
+
+    let history = json["history_length_distribution"].as_array().unwrap();
+    assert!(history.iter().any(|h| h["bucket"] == "3-5"));
+}
+
+/// Verifies that GET `/static/chart.js` serves the vendored Chart.js bundle with ETag and 304 handling.
+#[tokio::test]
+async fn test_static_chart_js() {
+    let base_url = start_server().await;
+    let client = reqwest::Client::new();
+
+    let res = client
+        .get(format!("{}/static/chart.js", base_url))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), reqwest::StatusCode::OK);
+    assert_eq!(
+        res.headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|h| h.to_str().ok()),
+        Some("text/javascript; charset=utf-8")
+    );
+
+    let etag = res
+        .headers()
+        .get(header::ETAG)
+        .and_then(|h| h.to_str().ok())
+        .expect("ETag header should be present")
+        .to_string();
+
+    // Conditional GET with If-None-Match
+    let not_modified_res = client
+        .get(format!("{}/static/chart.js", base_url))
+        .header(header::IF_NONE_MATCH, etag)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(not_modified_res.status(), reqwest::StatusCode::NOT_MODIFIED);
+}
+
+/// Verifies that the dashboard contains a link to `/analytics`.
+#[tokio::test]
+async fn test_dashboard_contains_analytics_link() {
+    let base_url = start_server().await;
+    let client = reqwest::Client::new();
+
+    let valid_token = web::generate_session_token("admin");
+
+    let res = client
+        .get(format!("{}/", base_url))
+        .header(header::COOKIE, format!("admin_session={valid_token}"))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), reqwest::StatusCode::OK);
+    let html = res.text().await.unwrap();
+    assert!(
+        html.contains("href=\"/analytics\""),
+        "Dashboard should link to /analytics"
+    );
+    assert!(
+        html.contains("Nutzungsanalyse ansehen"),
+        "Dashboard should contain link text 'Nutzungsanalyse ansehen'"
+    );
+}

@@ -1,0 +1,503 @@
+{% extends "base.html" %}
+
+{% block title %}Nutzungsanalyse | diwop Admin{% endblock %}
+
+{% block content %}
+<div class="analytics-page">
+  <header class="analytics-header">
+    <div class="analytics-header-left">
+      <a href="/" class="btn btn-secondary btn-sm nav-back-link">
+        <svg class="icon-svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <line x1="19" y1="12" x2="5" y2="12"></line>
+          <polyline points="12 19 5 12 12 5"></polyline>
+        </svg>
+        <span>Dashboard</span>
+      </a>
+      <h1 class="analytics-title">Nutzungsanalyse</h1>
+    </div>
+
+    <div class="analytics-header-right">
+      <div class="time-range-group" role="group" aria-label="Zeitraum auswählen">
+        <button type="button" class="time-range-btn" data-range="1h">1 Stunde</button>
+        <button type="button" class="time-range-btn active" data-range="24h">24 Stunden</button>
+        <button type="button" class="time-range-btn" data-range="7d">7 Tage</button>
+        <button type="button" class="time-range-btn" data-range="30d">30 Tage</button>
+      </div>
+
+      <button type="button" id="refresh-analytics-btn" class="btn btn-secondary btn-sm analytics-refresh-btn" title="Statistiken aktualisieren">
+        <svg class="icon-svg" id="refresh-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
+          <path d="M3 3v5h5"></path>
+          <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"></path>
+          <path d="M16 21h5v-5"></path>
+        </svg>
+        <span>Aktualisieren</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- Top KPI Cards -->
+  <section class="kpi-grid" aria-label="Kennzahlen-Übersicht">
+    <div class="kpi-card">
+      <span class="kpi-label">Gesamtanfragen</span>
+      <span class="kpi-value" id="kpi-total-requests">0</span>
+      <span class="kpi-subtext" id="kpi-total-subtext">Im ausgewählten Zeitraum</span>
+    </div>
+
+    <div class="kpi-card">
+      <span class="kpi-label">Fehlerrate</span>
+      <span class="kpi-value" id="kpi-error-rate">0.0%</span>
+      <span class="kpi-subtext">HTTP 4xx &amp; 5xx Antworten</span>
+    </div>
+
+    <div class="kpi-card">
+      <span class="kpi-label">Ø Latenz</span>
+      <span class="kpi-value" id="kpi-avg-latency">0 ms</span>
+      <span class="kpi-subtext">Mittlere Antwortzeit</span>
+    </div>
+
+    <div class="kpi-card">
+      <span class="kpi-label">Token-Gesamtverbrauch</span>
+      <span class="kpi-value" id="kpi-total-tokens">0</span>
+      <span class="kpi-subtext">Eingabe, Reasoning &amp; Ausgabe</span>
+    </div>
+  </section>
+
+  <!-- Charts 2-Column Responsive Grid -->
+  <section class="analytics-charts-grid" aria-label="Diagramme">
+    <!-- Chart 1: Requests & Status Codes -->
+    <div class="chart-card">
+      <div class="chart-card-header">
+        <h2 class="chart-title">HTTP-Anfragen &amp; Statuscodes</h2>
+        <p class="chart-desc">Erfolgreiche (2xx) und fehlerhafte (4xx, 5xx) Anfragen nach API-Endpunkt</p>
+      </div>
+      <div class="chart-container">
+        <canvas id="chart-requests-status"></canvas>
+      </div>
+    </div>
+
+    <!-- Chart 2: Request Durations / Latencies -->
+    <div class="chart-card">
+      <div class="chart-card-header">
+        <h2 class="chart-title">Anfragedauern (Latenz)</h2>
+        <p class="chart-desc">Durchschnittliche Antwortzeit und 95. Perzentil (p95) in Millisekunden</p>
+      </div>
+      <div class="chart-container">
+        <canvas id="chart-latencies"></canvas>
+      </div>
+    </div>
+
+    <!-- Chart 3: Token Usage by Endpoint & Kind -->
+    <div class="chart-card">
+      <div class="chart-card-header">
+        <h2 class="chart-title">Token-Verbrauch</h2>
+        <p class="chart-desc">GenAI-Token nach Endpunkt und Art (Eingabe, Reasoning, Ausgabe)</p>
+      </div>
+      <div class="chart-container">
+        <canvas id="chart-tokens"></canvas>
+      </div>
+    </div>
+
+    <!-- Chart 4: Translation Requests by Topic -->
+    <div class="chart-card">
+      <div class="chart-card-header">
+        <h2 class="chart-title">Übersetzungsanfragen nach Thema</h2>
+        <p class="chart-desc">Klassifizierte Dialogthemen für Übersetzungen</p>
+      </div>
+      <div class="chart-container">
+        <canvas id="chart-topics"></canvas>
+      </div>
+    </div>
+
+    <!-- Chart 5: Translation Requests by Alert Level -->
+    <div class="chart-card">
+      <div class="chart-card-header">
+        <h2 class="chart-title">Übersetzungsanfragen nach Hinweisstufe</h2>
+        <p class="chart-desc">Verteilung nach Sicherheits- und Hinweiskategorie (ok, info, warning, danger)</p>
+      </div>
+      <div class="chart-container">
+        <canvas id="chart-categories"></canvas>
+      </div>
+    </div>
+
+    <!-- Chart 6: Translation Requests by Type -->
+    <div class="chart-card">
+      <div class="chart-card-header">
+        <h2 class="chart-title">Übersetzungsanfragen nach Art</h2>
+        <p class="chart-desc">Verhältnis zwischen inhaltlicher Übersetzung und reiner Formatierung</p>
+      </div>
+      <div class="chart-container">
+        <canvas id="chart-types"></canvas>
+      </div>
+    </div>
+
+    <!-- Chart 7: History Length Distribution -->
+    <div class="chart-card chart-card-full">
+      <div class="chart-card-header">
+        <h2 class="chart-title">Verlaufslänge von Übersetzungsanfragen</h2>
+        <p class="chart-desc">Anzahl übergebener vorheriger Dialog-Nachrichten je Anfrage</p>
+      </div>
+      <div class="chart-container">
+        <canvas id="chart-history"></canvas>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script src="/static/chart.js"></script>
+<script>
+(function() {
+  'use strict';
+
+  let currentRange = '24h';
+  let charts = {};
+
+  const isDarkMode = () => window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+
+  function getThemeColors() {
+    const dark = isDarkMode();
+    return {
+      textColor: dark ? '#cbd5e1' : '#475569',
+      gridColor: dark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.06)',
+      tooltipBg: dark ? '#1e293b' : '#ffffff',
+      tooltipBorder: dark ? '#334155' : '#e2e8f0',
+      tooltipText: dark ? '#f8fafc' : '#0f172a',
+    };
+  }
+
+  function formatNumber(num) {
+    return new Intl.NumberFormat('de-DE').format(num || 0);
+  }
+
+  function initCharts() {
+    const theme = getThemeColors();
+
+    // Chart.js global defaults
+    Chart.defaults.color = theme.textColor;
+    Chart.defaults.font.family = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+    Chart.defaults.font.size = 12;
+
+    // 1. Requests & Status (Stacked Bar)
+    const ctxStatus = document.getElementById('chart-requests-status').getContext('2d');
+    charts.requestsStatus = new Chart(ctxStatus, {
+      type: 'bar',
+      data: {
+        labels: [],
+        datasets: [
+          {
+            label: '2xx (Erfolgreich)',
+            data: [],
+            backgroundColor: '#22c55e',
+            borderRadius: 4,
+          },
+          {
+            label: '4xx (Clientfehler)',
+            data: [],
+            backgroundColor: '#f59e0b',
+            borderRadius: 4,
+          },
+          {
+            label: '5xx (Serverfehler)',
+            data: [],
+            backgroundColor: '#ef4444',
+            borderRadius: 4,
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          x: { stacked: true, grid: { color: theme.gridColor } },
+          y: { stacked: true, beginAtZero: true, grid: { color: theme.gridColor }, ticks: { precision: 0 } }
+        },
+        plugins: {
+          legend: { position: 'bottom' }
+        }
+      }
+    });
+
+    // 2. Latencies (Bar)
+    const ctxLatencies = document.getElementById('chart-latencies').getContext('2d');
+    charts.latencies = new Chart(ctxLatencies, {
+      type: 'bar',
+      data: {
+        labels: [],
+        datasets: [
+          {
+            label: 'Ø Latenz (ms)',
+            data: [],
+            backgroundColor: '#0284c7',
+            borderRadius: 4,
+          },
+          {
+            label: 'p95 Latenz (ms)',
+            data: [],
+            backgroundColor: '#6366f1',
+            borderRadius: 4,
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          x: { grid: { color: theme.gridColor } },
+          y: { beginAtZero: true, grid: { color: theme.gridColor }, title: { display: true, text: 'Millisekunden' } }
+        },
+        plugins: {
+          legend: { position: 'bottom' }
+        }
+      }
+    });
+
+    // 3. Tokens (Stacked Bar)
+    const ctxTokens = document.getElementById('chart-tokens').getContext('2d');
+    charts.tokens = new Chart(ctxTokens, {
+      type: 'bar',
+      data: {
+        labels: [],
+        datasets: [
+          {
+            label: 'Eingabe-Token',
+            data: [],
+            backgroundColor: '#3b82f6',
+            borderRadius: 4,
+          },
+          {
+            label: 'Reasoning-Token',
+            data: [],
+            backgroundColor: '#8b5cf6',
+            borderRadius: 4,
+          },
+          {
+            label: 'Ausgabe-Token',
+            data: [],
+            backgroundColor: '#10b981',
+            borderRadius: 4,
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          x: { stacked: true, grid: { color: theme.gridColor } },
+          y: { stacked: true, beginAtZero: true, grid: { color: theme.gridColor }, ticks: { precision: 0 } }
+        },
+        plugins: {
+          legend: { position: 'bottom' }
+        }
+      }
+    });
+
+    // 4. Topics (Doughnut)
+    const ctxTopics = document.getElementById('chart-topics').getContext('2d');
+    charts.topics = new Chart(ctxTopics, {
+      type: 'doughnut',
+      data: {
+        labels: [],
+        datasets: [{
+          data: [],
+          backgroundColor: [
+            '#0ea5e9', '#14b8a6', '#f59e0b', '#8b5cf6', '#ec4899',
+            '#6366f1', '#10b981', '#f97316', '#64748b', '#84cc16'
+          ],
+          borderWidth: 2,
+          borderColor: isDarkMode() ? '#0f172a' : '#ffffff'
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { position: 'right', labels: { boxWidth: 12 } }
+        }
+      }
+    });
+
+    // 5. Alert Categories (Doughnut)
+    const ctxCategories = document.getElementById('chart-categories').getContext('2d');
+    charts.categories = new Chart(ctxCategories, {
+      type: 'doughnut',
+      data: {
+        labels: ['ok', 'info', 'warning', 'danger'],
+        datasets: [{
+          data: [0, 0, 0, 0],
+          backgroundColor: ['#22c55e', '#3b82f6', '#f59e0b', '#ef4444'],
+          borderWidth: 2,
+          borderColor: isDarkMode() ? '#0f172a' : '#ffffff'
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { position: 'bottom' }
+        }
+      }
+    });
+
+    // 6. Classification Types (Doughnut / Bar)
+    const ctxTypes = document.getElementById('chart-types').getContext('2d');
+    charts.types = new Chart(ctxTypes, {
+      type: 'doughnut',
+      data: {
+        labels: ['Übersetzung', 'Formatierung'],
+        datasets: [{
+          data: [0, 0],
+          backgroundColor: ['#0f4d65', '#38bdf8'],
+          borderWidth: 2,
+          borderColor: isDarkMode() ? '#0f172a' : '#ffffff'
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { position: 'bottom' }
+        }
+      }
+    });
+
+    // 7. History Length (Bar)
+    const ctxHistory = document.getElementById('chart-history').getContext('2d');
+    charts.history = new Chart(ctxHistory, {
+      type: 'bar',
+      data: {
+        labels: ['0', '1-2', '3-5', '6-10', '11+'],
+        datasets: [{
+          label: 'Anzahl Anfragen',
+          data: [0, 0, 0, 0, 0],
+          backgroundColor: '#475569',
+          borderRadius: 4,
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          x: { grid: { color: theme.gridColor }, title: { display: true, text: 'Vorherige Nachrichten im Dialog' } },
+          y: { beginAtZero: true, grid: { color: theme.gridColor }, ticks: { precision: 0 } }
+        },
+        plugins: {
+          legend: { display: false }
+        }
+      }
+    });
+  }
+
+  async function loadAnalytics(range) {
+    const refreshBtn = document.getElementById('refresh-analytics-btn');
+    if (refreshBtn) refreshBtn.disabled = true;
+
+    try {
+      const resp = await fetch(`/api/admin/analytics?range=${encodeURIComponent(range)}`);
+      if (!resp.ok) {
+        throw new Error(`HTTP ${resp.status}`);
+      }
+      const data = await resp.json();
+      updateDashboard(data);
+    } catch (err) {
+      console.error('Fehler beim Laden der Analytics-Daten:', err);
+    } finally {
+      if (refreshBtn) refreshBtn.disabled = false;
+    }
+  }
+
+  function updateDashboard(data) {
+    // 1. KPI Cards
+    document.getElementById('kpi-total-requests').textContent = formatNumber(data.summary.total_requests);
+    document.getElementById('kpi-error-rate').textContent = `${(data.summary.error_rate_percent || 0).toFixed(1)}%`;
+    document.getElementById('kpi-avg-latency').textContent = `${(data.summary.avg_latency_ms || 0).toFixed(0)} ms`;
+    document.getElementById('kpi-total-tokens').textContent = formatNumber(data.summary.total_tokens);
+
+    // 2. Chart: Requests & Status
+    const endpoints = data.requests_by_endpoint.map(e => e.endpoint);
+    charts.requestsStatus.data.labels = endpoints;
+    charts.requestsStatus.data.datasets[0].data = data.requests_by_endpoint.map(e => e.status_2xx);
+    charts.requestsStatus.data.datasets[1].data = data.requests_by_endpoint.map(e => e.status_4xx);
+    charts.requestsStatus.data.datasets[2].data = data.requests_by_endpoint.map(e => e.status_5xx);
+    charts.requestsStatus.update();
+
+    // 3. Chart: Latencies
+    charts.latencies.data.labels = data.latencies_by_endpoint.map(l => l.endpoint);
+    charts.latencies.data.datasets[0].data = data.latencies_by_endpoint.map(l => l.avg_ms);
+    charts.latencies.data.datasets[1].data = data.latencies_by_endpoint.map(l => l.p95_ms);
+    charts.latencies.update();
+
+    // 4. Chart: Tokens
+    charts.tokens.data.labels = data.token_usage_by_endpoint.map(t => t.endpoint);
+    charts.tokens.data.datasets[0].data = data.token_usage_by_endpoint.map(t => t.input_tokens);
+    charts.tokens.data.datasets[1].data = data.token_usage_by_endpoint.map(t => t.reasoning_tokens);
+    charts.tokens.data.datasets[2].data = data.token_usage_by_endpoint.map(t => t.response_tokens);
+    charts.tokens.update();
+
+    // 5. Chart: Topics
+    const activeTopics = (data.translation_by_topic || []).filter(t => t.count > 0);
+    const displayTopics = activeTopics.length > 0 ? activeTopics : data.translation_by_topic;
+    charts.topics.data.labels = displayTopics.map(t => t.topic);
+    charts.topics.data.datasets[0].data = displayTopics.map(t => t.count);
+    charts.topics.update();
+
+    // 6. Chart: Categories
+    const catMap = { ok: 0, info: 0, warning: 0, danger: 0 };
+    (data.translation_by_category || []).forEach(c => {
+      if (catMap[c.category] !== undefined) catMap[c.category] = c.count;
+    });
+    charts.categories.data.datasets[0].data = [catMap.ok, catMap.info, catMap.warning, catMap.danger];
+    charts.categories.update();
+
+    // 7. Chart: Types
+    let transCount = 0;
+    let formatCount = 0;
+    (data.translation_by_type || []).forEach(t => {
+      if (t.classification_type === 'translation') transCount = t.count;
+      else if (t.classification_type === 'formatting') formatCount = t.count;
+    });
+    charts.types.data.datasets[0].data = [transCount, formatCount];
+    charts.types.update();
+
+    // 8. Chart: History
+    charts.history.data.labels = (data.history_length_distribution || []).map(h => h.bucket);
+    charts.history.data.datasets[0].data = (data.history_length_distribution || []).map(h => h.count);
+    charts.history.update();
+  }
+
+  // Event Listeners
+  document.addEventListener('DOMContentLoaded', () => {
+    initCharts();
+    loadAnalytics(currentRange);
+
+    // Range buttons
+    document.querySelectorAll('.time-range-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.time-range-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        currentRange = btn.getAttribute('data-range');
+        loadAnalytics(currentRange);
+      });
+    });
+
+    // Refresh button
+    const refreshBtn = document.getElementById('refresh-analytics-btn');
+    if (refreshBtn) {
+      refreshBtn.addEventListener('click', () => loadAnalytics(currentRange));
+    }
+
+    // Color theme change listener
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+      const theme = getThemeColors();
+      Chart.defaults.color = theme.textColor;
+      Object.values(charts).forEach(c => {
+        if (c.options.scales) {
+          if (c.options.scales.x) c.options.scales.x.grid.color = theme.gridColor;
+          if (c.options.scales.y) c.options.scales.y.grid.color = theme.gridColor;
+        }
+        c.update();
+      });
+    });
+  });
+})();
+</script>
+{% endblock %}

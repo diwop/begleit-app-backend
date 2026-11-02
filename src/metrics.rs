@@ -74,6 +74,12 @@ pub fn record_http_request(endpoint: &'static str, status_code: u16, duration_se
     METRICS
         .http_request_duration
         .record(duration_secs, &attributes);
+
+    crate::analytics::IN_MEMORY_METRICS_STORE.record_http_request(
+        endpoint,
+        status_code,
+        duration_secs,
+    );
 }
 
 /// Records token usage for upstream LLM requests by token type.
@@ -104,6 +110,13 @@ pub fn record_token_usage(
             KeyValue::new("token_type", "output"),
         ],
     );
+
+    crate::analytics::IN_MEMORY_METRICS_STORE.record_token_usage(
+        endpoint,
+        input_tokens,
+        reasoning_tokens,
+        output_tokens,
+    );
 }
 
 /// Records the number of messages in the conversation history passed to `/translate`.
@@ -111,6 +124,8 @@ pub fn record_translate_history_length(history_len: usize) {
     METRICS
         .translate_history_length
         .record(history_len as u64, &[]);
+
+    crate::analytics::IN_MEMORY_METRICS_STORE.record_history_length(history_len as u64);
 }
 
 /// Records a completed `/translate` dialog classification with `topic`, `classification_type`, and `classification_category` attributes.
@@ -126,6 +141,12 @@ pub fn record_translate_classification(
             KeyValue::new("classification_type", classification_type),
             KeyValue::new("classification_category", classification_category),
         ],
+    );
+
+    crate::analytics::IN_MEMORY_METRICS_STORE.record_classification(
+        topic,
+        classification_type,
+        classification_category,
     );
 }
 
