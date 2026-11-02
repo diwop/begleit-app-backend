@@ -700,7 +700,7 @@ pub async fn correct_transcript(
                 })?;
 
             crate::metrics::record_token_usage(
-                "/correct-transcript",
+                "correct-transcript",
                 prompt_output.usage.input_tokens,
                 prompt_output.usage.reasoning_tokens,
                 prompt_output.usage.output_tokens,
@@ -762,7 +762,7 @@ pub async fn correct_transcript(
                 })?;
 
             crate::metrics::record_token_usage(
-                "/correct-transcript",
+                "correct-transcript",
                 prompt_output.usage.input_tokens,
                 prompt_output.usage.reasoning_tokens,
                 prompt_output.usage.output_tokens,
@@ -1139,7 +1139,7 @@ pub async fn translate(
         })?;
 
     crate::metrics::record_token_usage(
-        "/translate",
+        "translate",
         prompt_output.usage.input_tokens,
         prompt_output.usage.reasoning_tokens,
         prompt_output.usage.output_tokens,
@@ -1184,7 +1184,7 @@ pub async fn translate(
         })?;
 
     crate::metrics::record_token_usage(
-        "/translate/classify",
+        "classify",
         classify_output.usage.input_tokens,
         classify_output.usage.reasoning_tokens,
         classify_output.usage.output_tokens,

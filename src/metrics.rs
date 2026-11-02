@@ -82,9 +82,9 @@ pub fn record_http_request(endpoint: &'static str, status_code: u16, duration_se
     );
 }
 
-/// Records token usage for upstream LLM requests by token type.
+/// Records token usage for upstream LLM requests by prompt and token type.
 pub fn record_token_usage(
-    endpoint: &'static str,
+    prompt: &'static str,
     input_tokens: u64,
     reasoning_tokens: u64,
     output_tokens: u64,
@@ -92,27 +92,27 @@ pub fn record_token_usage(
     METRICS.gen_ai_token_usage.record(
         input_tokens,
         &[
-            KeyValue::new("endpoint", endpoint),
+            KeyValue::new("prompt", prompt),
             KeyValue::new("token_type", "input"),
         ],
     );
     METRICS.gen_ai_token_usage.record(
         reasoning_tokens,
         &[
-            KeyValue::new("endpoint", endpoint),
+            KeyValue::new("prompt", prompt),
             KeyValue::new("token_type", "reasoning"),
         ],
     );
     METRICS.gen_ai_token_usage.record(
         output_tokens,
         &[
-            KeyValue::new("endpoint", endpoint),
+            KeyValue::new("prompt", prompt),
             KeyValue::new("token_type", "output"),
         ],
     );
 
     crate::analytics::IN_MEMORY_METRICS_STORE.record_token_usage(
-        endpoint,
+        prompt,
         input_tokens,
         reasoning_tokens,
         output_tokens,
@@ -181,9 +181,9 @@ mod tests {
     fn test_record_metrics_invocations() {
         record_http_request("/correct-transcript", 200, 0.042);
         record_http_request("/translate", 422, 0.010);
-        record_token_usage("/correct-transcript", 50, 15, 25);
-        record_token_usage("/translate", 120, 30, 45);
-        record_token_usage("/translate/classify", 80, 10, 12);
+        record_token_usage("correct-transcript", 50, 15, 25);
+        record_token_usage("translate", 120, 30, 45);
+        record_token_usage("classify", 80, 10, 12);
         record_translate_history_length(4);
         record_translate_classification("juridical", "warning", "juridical");
     }
@@ -213,7 +213,7 @@ mod tests {
         metrics.gen_ai_token_usage.record(
             42,
             &[
-                KeyValue::new("endpoint", "/correct-transcript"),
+                KeyValue::new("prompt", "correct-transcript"),
                 KeyValue::new("token_type", "input"),
             ],
         );
