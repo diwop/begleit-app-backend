@@ -14,9 +14,19 @@ locals {
     OTEL_RESOURCE_ATTRIBUTES = var.otel_resource_attributes
   } : {}
 
+  metrics_provider_env = var.metrics_provider != "" ? {
+    METRICS_PROVIDER = var.metrics_provider
+  } : {}
+
+  cloudwatch_namespace_env = var.cloudwatch_metrics_namespace != "" ? {
+    CLOUDWATCH_METRICS_NAMESPACE = var.cloudwatch_metrics_namespace
+  } : {}
+
   environment_variables = merge(
     local.base_env,
     local.otel_endpoint_env,
     local.otel_attributes_env,
+    local.metrics_provider_env,
+    local.cloudwatch_namespace_env,
   )
 }

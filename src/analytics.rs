@@ -829,10 +829,10 @@ impl MetricsQueryService for CloudWatchMetricsProvider {
         );
 
         // 2. Endpoint status codes (time-series & totals) & latencies
-        let status_classes = [("2xx", "200"), ("4xx", "400"), ("5xx", "500")];
+        let status_classes = ["2xx", "4xx", "5xx"];
 
         for (ep_idx, ep) in DEFAULT_ENDPOINTS.iter().enumerate() {
-            for (sc_name, sc_val) in status_classes {
+            for sc_name in status_classes {
                 let id = format!("req_{ep_idx}_{sc_name}");
                 queries.push(
                     MetricDataQuery::builder()
@@ -851,8 +851,8 @@ impl MetricsQueryService for CloudWatchMetricsProvider {
                                         )
                                         .dimensions(
                                             Dimension::builder()
-                                                .name("status_code")
-                                                .value(sc_val)
+                                                .name("status_class")
+                                                .value(sc_name)
                                                 .build(),
                                         )
                                         .build(),
@@ -1043,6 +1043,35 @@ impl MetricsQueryService for CloudWatchMetricsProvider {
             );
         }
 
+        // 7. History length distribution
+        let history_buckets = ["0", "1-2", "3-5", "6-10", "11+"];
+        for (idx, bucket) in history_buckets.iter().enumerate() {
+            queries.push(
+                MetricDataQuery::builder()
+                    .id(format!("hist_{idx}"))
+                    .metric_stat(
+                        MetricStat::builder()
+                            .metric(
+                                Metric::builder()
+                                    .namespace(&self.namespace)
+                                    .metric_name("diwop.translate.history_length")
+                                    .dimensions(
+                                        Dimension::builder()
+                                            .name("history_bucket")
+                                            .value(*bucket)
+                                            .build(),
+                                    )
+                                    .build(),
+                            )
+                            .period(period_secs)
+                            .stat("SampleCount")
+                            .build(),
+                    )
+                    .return_data(true)
+                    .build(),
+            );
+        }
+
         // Execute GetMetricData request
         let client = self.get_client().await;
         let mut req = client
@@ -1054,10 +1083,11 @@ impl MetricsQueryService for CloudWatchMetricsProvider {
             req = req.metric_data_queries(q);
         }
 
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| AnalyticsError::CloudWatchError(e.to_string()))?;
+        let resp = req.send().await.map_err(|e| {
+            AnalyticsError::CloudWatchError(
+                aws_sdk_cloudwatch::error::DisplayErrorContext(&e).to_string(),
+            )
+        })?;
 
         let mut report = AnalyticsReport::empty_at(range, now);
 
@@ -1142,6 +1172,12 @@ impl MetricsQueryService for CloudWatchMetricsProvider {
                 if let Ok(ct_idx) = stripped.parse::<usize>() {
                     if let Some(ct) = report.translation_by_type.get_mut(ct_idx) {
                         ct.count = sum_val as u64;
+                    }
+                }
+            } else if let Some(stripped) = id.strip_prefix("hist_") {
+                if let Ok(h_idx) = stripped.parse::<usize>() {
+                    if let Some(h) = report.history_length_distribution.get_mut(h_idx) {
+                        h.count = sum_val as u64;
                     }
                 }
             }
@@ -1489,5 +1525,27 @@ mod tests {
                 .status_2xx,
             1
         );
+    }
+
+    #[test]
+    fn test_create_metrics_query_service_provider_selection() {
+        // Default / unset -> memory
+        std::env::remove_var("METRICS_PROVIDER");
+        let service = create_metrics_query_service();
+        assert!(!format!("{service:p}").is_empty());
+
+        // stackit -> stackit stub
+        std::env::set_var("METRICS_PROVIDER", "stackit");
+        let service = create_metrics_query_service();
+        assert!(!format!("{service:p}").is_empty());
+
+        // cloudwatch -> cloudwatch provider
+        std::env::set_var("METRICS_PROVIDER", "cloudwatch");
+        std::env::set_var("CLOUDWATCH_METRICS_NAMESPACE", "custom-ns");
+        let service = create_metrics_query_service();
+        assert!(!format!("{service:p}").is_empty());
+
+        std::env::remove_var("METRICS_PROVIDER");
+        std::env::remove_var("CLOUDWATCH_METRICS_NAMESPACE");
     }
 }

@@ -66,9 +66,17 @@ pub static METRICS: LazyLock<Metrics> = LazyLock::new(|| {
 
 /// Records HTTP request count and duration metrics.
 pub fn record_http_request(endpoint: &'static str, status_code: u16, duration_secs: f64) {
+    let status_class = match status_code {
+        200..=299 => "2xx",
+        400..=499 => "4xx",
+        500..=599 => "5xx",
+        _ => "other",
+    };
+
     let attributes = [
         KeyValue::new("endpoint", endpoint),
         KeyValue::new("status_code", status_code as i64),
+        KeyValue::new("status_class", status_class),
     ];
     METRICS.http_request_count.add(1, &attributes);
     METRICS
@@ -121,9 +129,18 @@ pub fn record_token_usage(
 
 /// Records the number of messages in the conversation history passed to `/translate`.
 pub fn record_translate_history_length(history_len: usize) {
-    METRICS
-        .translate_history_length
-        .record(history_len as u64, &[]);
+    let history_bucket = match history_len {
+        0 => "0",
+        1..=2 => "1-2",
+        3..=5 => "3-5",
+        6..=10 => "6-10",
+        _ => "11+",
+    };
+
+    METRICS.translate_history_length.record(
+        history_len as u64,
+        &[KeyValue::new("history_bucket", history_bucket)],
+    );
 
     crate::analytics::IN_MEMORY_METRICS_STORE.record_history_length(history_len as u64);
 }

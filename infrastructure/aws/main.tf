@@ -1,14 +1,67 @@
 locals {
   name_prefix        = "${module.app_config.app_name}-${var.environment}"
   custom_domain_name = var.custom_domain_name != "" ? var.custom_domain_name : "${var.environment}.${var.hosted_zone_name}"
+  adot_config        = <<-EOT
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+
+    processors:
+      batch:
+        timeout: 10s
+
+    exporters:
+      awsemf:
+        namespace: diwop
+        region: "${var.aws_region}"
+        log_group_name: "/ecs/${module.app_config.app_name}-${var.environment}"
+        dimension_rollup_option: "NoDimensionRollup"
+        retain_initial_value_of_delta_metric: true
+        metric_declarations:
+          - dimensions:
+              - [endpoint, status_class]
+              - [endpoint]
+              - []
+            metric_name_selectors:
+              - "^http\\.server\\.request\\.count$"
+          - dimensions:
+              - [endpoint]
+            metric_name_selectors:
+              - "^http\\.server\\.request\\.duration$"
+          - dimensions:
+              - [prompt, token_type]
+            metric_name_selectors:
+              - "^gen_ai\\.client\\.token\\.usage$"
+          - dimensions:
+              - [history_bucket]
+            metric_name_selectors:
+              - "^diwop\\.translate\\.history_length$"
+          - dimensions:
+              - [topic]
+              - [classification_type]
+              - [classification_category]
+            metric_name_selectors:
+              - "^diwop\\.translate\\.classification\\.count$"
+
+    service:
+      pipelines:
+        metrics:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [awsemf]
+  EOT
 }
 
 module "app_config" {
   source = "../modules/app-config"
 
-  environment                 = var.environment
-  otel_exporter_otlp_endpoint = var.otel_exporter_otlp_endpoint
-  otel_resource_attributes    = "deployment.environment=${var.environment}"
+  environment                  = var.environment
+  otel_exporter_otlp_endpoint  = var.otel_exporter_otlp_endpoint != "" ? var.otel_exporter_otlp_endpoint : "http://127.0.0.1:4317"
+  otel_resource_attributes     = "deployment.environment=${var.environment}"
+  metrics_provider             = "cloudwatch"
+  cloudwatch_metrics_namespace = "diwop"
 }
 
 # 1. Container Registry (Amazon ECR)
@@ -126,10 +179,49 @@ resource "aws_iam_role_policy" "ecs_secret_read" {
   policy = data.aws_iam_policy_document.ecs_secret_read.json
 }
 
-# Unprivileged task role (application makes no AWS SDK calls)
+# Task role for application (CloudWatch query) and ADOT collector (EMF metric ingestion)
 resource "aws_iam_role" "ecs_task" {
   name               = "${local.name_prefix}-ecs-task"
   assume_role_policy = data.aws_iam_policy_document.ecs_tasks_assume.json
+}
+
+data "aws_iam_policy_document" "ecs_task_cloudwatch" {
+  statement {
+    sid    = "CloudWatchMetricsQuery"
+    effect = "Allow"
+    actions = [
+      "cloudwatch:GetMetricData",
+    ]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "CloudWatchEmfLogIngestion"
+    effect = "Allow"
+    actions = [
+      "logs:CreateLogStream",
+      "logs:PutLogEvents",
+      "logs:DescribeLogStreams",
+    ]
+    resources = [
+      "${aws_cloudwatch_log_group.app.arn}:*",
+    ]
+  }
+
+  statement {
+    sid    = "CloudWatchLogGroupDescribe"
+    effect = "Allow"
+    actions = [
+      "logs:DescribeLogGroups",
+    ]
+    resources = ["*"]
+  }
+}
+
+resource "aws_iam_role_policy" "ecs_task_cloudwatch" {
+  name   = "${local.name_prefix}-task-cloudwatch"
+  role   = aws_iam_role.ecs_task.id
+  policy = data.aws_iam_policy_document.ecs_task_cloudwatch.json
 }
 
 # 4. CloudWatch Log Group (ingests container stdout JSON logs)
@@ -380,6 +472,25 @@ resource "aws_ecs_task_definition" "app" {
           "awslogs-stream-prefix" = "ecs"
         }
       }
+    },
+    {
+      name      = "aws-otel-collector"
+      image     = "public.ecr.aws/aws-observability/aws-otel-collector:latest"
+      essential = true
+      environment = [
+        {
+          name  = "AOT_CONFIG_CONTENT"
+          value = local.adot_config
+        }
+      ]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.app.name
+          "awslogs-region"        = var.aws_region
+          "awslogs-stream-prefix" = "ecs-adot"
+        }
+      }
     }
   ])
 }
@@ -423,6 +534,7 @@ resource "aws_ecs_service" "app" {
     aws_lb_listener.https,
     aws_ssm_parameter.api_key,
     aws_iam_role_policy.ecs_secret_read,
+    aws_iam_role_policy.ecs_task_cloudwatch,
   ]
 }
 
@@ -571,6 +683,7 @@ data "aws_iam_policy_document" "github_actions_deploy" {
       "iam:ListAttachedRolePolicies",
       "iam:PassRole",
       "iam:PutRolePolicy",
+      "iam:DeleteRolePolicy",
     ]
     resources = [
       aws_iam_role.ecs_execution.arn,
