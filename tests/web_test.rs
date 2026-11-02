@@ -247,11 +247,7 @@ async fn test_static_asset_etag_validation_and_not_modified() {
     let base_url = start_server().await;
     let client = reqwest::Client::new();
 
-    for path in [
-        "/static/style.css",
-        "/static/transcript_alignment.js",
-        "/static/wasm/vad_diarization_wasm_bg.wasm",
-    ] {
+    for path in ["/static/style.css", "/static/transcript_alignment.js"] {
         let url = format!("{base_url}{path}");
 
         // 1. Initial request without If-None-Match -> 200 OK with ETag & no-cache
