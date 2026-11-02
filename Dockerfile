@@ -25,14 +25,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends bzip2 ca-certif
     && cp /tmp/ort-extract/package/dist/ort-wasm-simd-threaded*.wasm /static/ort/ \
     && rm -rf /tmp/ort.tgz /tmp/ort-extract /tmp/pyannote.tar.bz2 /tmp/pyannote-extract /tmp/voxblink2_fp32.onnx /tmp/quantize_voxblink2_int8.py /root/.cache /root/.local
 
-# Stage 2: Pre-build and cache external Rust dependencies (invalidates only when Cargo.toml or Cargo.lock changes)
+# Stage 2: Pre-build and cache external Rust dependencies
 FROM rust:bookworm AS deps
 
 WORKDIR /usr/src/app
 
 COPY Cargo.toml Cargo.lock ./
 COPY crates/vad-diarization-wasm/Cargo.toml ./crates/vad-diarization-wasm/Cargo.toml
-RUN mkdir -p src crates/vad-diarization-wasm/src \
+RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,id=cargo-target,target=/usr/src/app/target,sharing=locked \
+    mkdir -p src crates/vad-diarization-wasm/src \
     && echo "pub fn dummy() {}" > src/lib.rs \
     && echo "fn main() {}" > src/main.rs \
     && echo "pub fn dummy() {}" > crates/vad-diarization-wasm/src/lib.rs \
@@ -45,15 +48,20 @@ FROM deps AS indexer
 COPY assets/gemma-4-tokenizer.json.gz ./assets/gemma-4-tokenizer.json.gz
 COPY prompts/translate-dynamic-few-shots-sample.md ./prompts/translate-dynamic-few-shots-sample.md
 COPY src/few_shots.rs ./src/few_shots.rs
-RUN mkdir -p crates/vad-diarization-wasm/src \
+RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,id=cargo-target,target=/usr/src/app/target,sharing=locked \
+    mkdir -p crates/vad-diarization-wasm/src \
     && echo "pub fn dummy() {}" > crates/vad-diarization-wasm/src/lib.rs \
     && printf 'pub mod few_shots;\n' > src/lib.rs \
     && printf '#[tokio::main]\nasync fn main() {\n    tracing_subscriber::fmt().init();\n    diwop_begleitapp::few_shots::run_prepare_few_shots_cli().await.expect("Failed to prepare few-shots");\n}\n' > src/main.rs \
-    && cargo build --release -p diwop-begleitapp
+    && cargo build --release -p diwop-begleitapp \
+    && cp target/release/diwop-begleitapp /usr/local/bin/prepare-few-shots \
+    && rm -rf target/release/diwop-begleitapp* target/release/deps/diwop_begleitapp* target/release/deps/libdiwop_begleitapp* target/release/.fingerprint/diwop-begleitapp-*
 
 COPY --from=models /models/multilingual-e5-base ./models/multilingual-e5-base
 COPY data ./data
-RUN ./target/release/diwop-begleitapp
+RUN /usr/local/bin/prepare-few-shots
 
 # Stage 4: Compile crates/vad-diarization-wasm to WebAssembly (supports both linux/arm64 and linux/amd64 builders)
 FROM rust:bookworm AS wasm-builder
@@ -76,7 +84,10 @@ RUN ARCH="$(uname -m)" \
 
 COPY Cargo.toml Cargo.lock ./
 COPY crates/vad-diarization-wasm ./crates/vad-diarization-wasm
-RUN mkdir -p src /wasm-pkg \
+RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,id=cargo-wasm-target,target=/usr/src/app/target,sharing=locked \
+    mkdir -p src /wasm-pkg \
     && echo "pub fn dummy() {}" > src/lib.rs \
     && echo "fn main() {}" > src/main.rs \
     && cargo build --release -p vad-diarization-wasm --target wasm32-unknown-unknown \
@@ -91,7 +102,11 @@ COPY prompts ./prompts
 COPY assets ./assets
 COPY static ./static
 COPY templates ./templates
-RUN cargo build --release -p diwop-begleitapp
+RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,id=cargo-target,target=/usr/src/app/target,sharing=locked \
+    cargo build --release -p diwop-begleitapp \
+    && cp target/release/diwop-begleitapp /usr/local/bin/diwop-begleitapp
 
 # Stage 6: Minimal hardened production runtime image
 FROM debian:bookworm-slim
@@ -110,7 +125,7 @@ COPY --from=models /models/vad-diarization /app/models/vad-diarization
 COPY --from=models /static/ort /app/static/ort
 COPY --from=indexer /usr/src/app/data/few_shots_index.json.gz /app/data/few_shots_index.json.gz
 COPY --from=wasm-builder /wasm-pkg /app/static/wasm
-COPY --from=builder /usr/src/app/target/release/diwop-begleitapp /app/diwop-begleitapp
+COPY --from=builder /usr/local/bin/diwop-begleitapp /app/diwop-begleitapp
 
 USER 10001:10001
 
