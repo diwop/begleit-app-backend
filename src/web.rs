@@ -1,10 +1,10 @@
 use askama::Template;
 use axum::{
-    extract::{Path as AxumPath, State},
+    extract::{Path as AxumPath, Query, State},
     http::{header, HeaderMap, StatusCode},
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
-    Form, Router,
+    Form, Json, Router,
 };
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -40,6 +40,12 @@ static VAD_WORKLET_JS_ETAG: LazyLock<String> =
 static TRANSCRIPT_ALIGNMENT_JS_ETAG: LazyLock<String> =
     LazyLock::new(|| compute_etag(TRANSCRIPT_ALIGNMENT_JS.as_bytes()));
 
+/// Static Chart.js JavaScript library embedded at compile time.
+const CHART_JS: &str = include_str!("../static/chart.js");
+
+/// Precomputed SHA-256 ETag for the compile-time embedded Chart.js library.
+static CHART_JS_ETAG: LazyLock<String> = LazyLock::new(|| compute_etag(CHART_JS.as_bytes()));
+
 /// Name of the session cookie used to authenticate the admin web interface.
 pub const SESSION_COOKIE_NAME: &str = "admin_session";
 
@@ -68,6 +74,17 @@ pub struct DialogTranslationTemplate {
 #[template(path = "vad_diarization.html")]
 pub struct VadDiarizationTemplate;
 
+/// Askama template rendering the analytics dashboard at `/analytics`.
+#[derive(Template)]
+#[template(path = "analytics.html")]
+pub struct AnalyticsTemplate;
+
+/// Query parameters for fetching analytics metrics (`GET /api/admin/analytics`).
+#[derive(serde::Deserialize)]
+pub struct AnalyticsQuery {
+    pub range: Option<String>,
+}
+
 /// Categorizes allowlisted static asset directories served from disk for WASM VAD & Diarization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StaticAssetCategory {
@@ -86,27 +103,36 @@ pub struct LoginForm {
     pub next: Option<String>,
 }
 
-/// Shared application state for the web router holding the configured admin password and optional API key.
+/// Shared application state for the web router holding the configured admin password, optional API key, and analytics service.
 #[derive(Clone)]
 pub struct WebState {
     pub admin_password: Arc<String>,
     pub api_key: Option<Arc<String>>,
+    pub analytics_service: Arc<dyn crate::analytics::MetricsQueryService>,
 }
 
 /// Creates the web interface router for the HTML administration pages and static assets.
-pub fn router(admin_password: Arc<String>, api_key: Option<Arc<String>>) -> Router {
+pub fn router(
+    admin_password: Arc<String>,
+    api_key: Option<Arc<String>>,
+    analytics_service: Arc<dyn crate::analytics::MetricsQueryService>,
+) -> Router {
     let state = WebState {
         admin_password,
         api_key,
+        analytics_service,
     };
 
     Router::new()
         .route("/", get(index))
         .route("/dialog-translation", get(dialog_translation))
         .route("/vad-diarization", get(vad_diarization))
+        .route("/analytics", get(analytics))
+        .route("/api/admin/analytics", get(get_analytics_data))
         .route("/login", post(login))
         .route("/logout", post(logout))
         .route("/static/style.css", get(serve_style))
+        .route("/static/chart.js", get(serve_chart_js))
         .route("/static/ort_bridge.js", get(serve_ort_bridge))
         .route("/static/vad_worklet.js", get(serve_vad_worklet))
         .route(
@@ -324,6 +350,64 @@ async fn vad_diarization(State(state): State<WebState>, headers: HeaderMap) -> R
     }
 }
 
+/// Handler for `GET /analytics`: Renders the analytics dashboard if logged in,
+/// or the login card with a return target redirect otherwise.
+async fn analytics(State(state): State<WebState>, headers: HeaderMap) -> Response {
+    if let Some(cookie_val) = extract_session_cookie(&headers) {
+        if is_valid_session(&cookie_val, &state.admin_password) {
+            let template = AnalyticsTemplate;
+            return match template.render() {
+                Ok(html) => Html(html).into_response(),
+                Err(e) => {
+                    tracing::error!("Failed to render analytics template: {e}");
+                    (StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error").into_response()
+                }
+            };
+        }
+    }
+
+    let template = LoginTemplate {
+        error_message: None,
+        next: Some("/analytics".to_string()),
+    };
+    match template.render() {
+        Ok(html) => Html(html).into_response(),
+        Err(e) => {
+            tracing::error!("Failed to render login template: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error").into_response()
+        }
+    }
+}
+
+/// Handler for `GET /api/admin/analytics`: Returns JSON metrics for the requested time range if authenticated as admin.
+async fn get_analytics_data(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    Query(query): Query<AnalyticsQuery>,
+) -> Response {
+    if !is_admin_authenticated(&headers, &state.admin_password) {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+
+    let range = query
+        .range
+        .as_deref()
+        .and_then(crate::analytics::TimeRange::from_str_opt)
+        .unwrap_or_default();
+
+    match state.analytics_service.query_analytics(range).await {
+        Ok(report) => Json(report).into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to query analytics");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to retrieve analytics: {e}"),
+            )
+                .into_response()
+        }
+    }
+}
+
 /// Handler for `POST /login`: Validates the admin password and sets an `HttpOnly` session cookie on success.
 async fn login(State(state): State<WebState>, Form(form): Form<LoginForm>) -> Response {
     let trimmed_pw = form.password.trim();
@@ -536,6 +620,24 @@ async fn serve_style(headers: HeaderMap) -> Response {
             StatusCode::OK,
             build_static_headers("text/css; charset=utf-8", "no-cache", &STYLE_CSS_ETAG),
             STYLE_CSS,
+        )
+            .into_response()
+    }
+}
+
+/// Handler for `GET /static/chart.js`: Serves the embedded Chart.js bundle with ETag validation.
+async fn serve_chart_js(headers: HeaderMap) -> Response {
+    if matches_if_none_match(&headers, &CHART_JS_ETAG) {
+        (
+            StatusCode::NOT_MODIFIED,
+            build_static_headers("text/javascript; charset=utf-8", "no-cache", &CHART_JS_ETAG),
+        )
+            .into_response()
+    } else {
+        (
+            StatusCode::OK,
+            build_static_headers("text/javascript; charset=utf-8", "no-cache", &CHART_JS_ETAG),
+            CHART_JS,
         )
             .into_response()
     }

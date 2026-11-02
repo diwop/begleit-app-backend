@@ -1,3 +1,4 @@
+pub mod analytics;
 pub mod api;
 pub mod auth;
 pub mod few_shots;
@@ -201,7 +202,8 @@ pub fn create_app_with_runner_and_readiness(
     ));
 
     let swagger_ui = configure_swagger_ui(is_secured);
-    let web_router = web::router(admin_password, expected_api_key.clone());
+    let analytics_service = crate::analytics::create_metrics_query_service();
+    let web_router = web::router(admin_password, expected_api_key.clone(), analytics_service);
 
     let readiness_state = Arc::clone(&readiness);
     let health_router = Router::new()
