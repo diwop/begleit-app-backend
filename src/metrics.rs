@@ -202,7 +202,7 @@ mod tests {
         record_token_usage("translate", 120, 30, 45);
         record_token_usage("classify", 80, 10, 12);
         record_translate_history_length(4);
-        record_translate_classification("juridical", "warning", "juridical");
+        record_translate_classification("juridical", "translation", "juridical");
     }
 
     #[test]
