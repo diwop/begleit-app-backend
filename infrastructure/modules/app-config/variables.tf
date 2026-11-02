@@ -45,3 +45,15 @@ variable "otel_resource_attributes" {
   type        = string
   default     = ""
 }
+
+variable "metrics_provider" {
+  description = "Metrics query provider for /analytics (e.g. memory, cloudwatch, stackit)."
+  type        = string
+  default     = ""
+}
+
+variable "cloudwatch_metrics_namespace" {
+  description = "CloudWatch metrics namespace for /analytics (defaults to diwop if unset)."
+  type        = string
+  default     = ""
+}

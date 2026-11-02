@@ -105,17 +105,20 @@ fn init_tracing() -> (Option<SdkTracerProvider>, Option<SdkMeterProvider>) {
         use opentelemetry::trace::TracerProvider;
         let tracer = tracer_provider.tracer("diwop-begleitapp");
 
-        // Build Metrics Exporter
+        // Build Metrics Exporter with Delta temporality for CloudWatch / OTLP collectors
         let metric_exporter = opentelemetry_otlp::MetricExporter::builder()
             .with_tonic()
             .with_endpoint(&otel_endpoint)
+            .with_temporality(opentelemetry_sdk::metrics::Temporality::Delta)
             .build()
             .expect("Failed to build OTLP metric exporter");
 
-        // Metrics Provider natively via OTLP pipeline
+        // Metrics Provider natively via OTLP pipeline (15s export interval)
         let meter_provider = SdkMeterProvider::builder()
             .with_reader(
-                opentelemetry_sdk::metrics::PeriodicReader::builder(metric_exporter).build(),
+                opentelemetry_sdk::metrics::PeriodicReader::builder(metric_exporter)
+                    .with_interval(std::time::Duration::from_secs(15))
+                    .build(),
             )
             .with_resource(resource)
             .build();
