@@ -1,4 +1,7 @@
-use crate::api::{ConversationMessage, Role, TranslationType, Warning, WarningType};
+use crate::api::{
+    ConversationMessage, CorrectTranscriptHistoryItem, PartnerRole, Role, TranslationType, Warning,
+    WarningType,
+};
 pub use crate::few_shots::count_gemma_tokens;
 use crate::few_shots::FewShotEntry;
 use rig::client::CompletionClient;
@@ -17,6 +20,16 @@ pub const CORRECT_TRANSCRIPT_SYSTEM_PROMPT: &str =
 /// User prompt template for `/correct-transcript`.
 pub const CORRECT_TRANSCRIPT_PROMPT_TEMPLATE: &str =
     include_str!("../prompts/correct-transcript.md");
+
+/// JSON Schema string defining the structured output of `/correct-transcript` (`prompts/correct-transcript-schema.json`).
+pub const CORRECT_TRANSCRIPT_SCHEMA_JSON: &str =
+    include_str!("../prompts/correct-transcript-schema.json");
+
+/// Parsed JSON Schema value passed to `generationConfig.responseJsonSchema` during `/correct-transcript`.
+pub static CORRECT_TRANSCRIPT_RESPONSE_SCHEMA: LazyLock<serde_json::Value> = LazyLock::new(|| {
+    serde_json::from_str(CORRECT_TRANSCRIPT_SCHEMA_JSON)
+        .expect("prompts/correct-transcript-schema.json must be valid JSON")
+});
 
 /// System prompt for `/translate` (`prompts/translate-system.md`).
 pub const TRANSLATE_SYSTEM_PROMPT: &str = include_str!("../prompts/translate-system.md");
@@ -191,8 +204,18 @@ impl ClassificationCategory {
     }
 }
 
-/// Structured output produced by the dialog classification prompt (`type`, `category`, and `topic`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+/// Raw partner role inference returned by the dialog classification model (`roleType` + `confidence`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModelPartnerRole {
+    /// Optional inferred German role label (e.g. `"ÄrztIn"`, `"Arzt"`, `"SachbearbeiterIn"`) or `None`.
+    pub role_type: Option<String>,
+    /// Confidence score in `[0.0, 1.0]`.
+    pub confidence: f64,
+}
+
+/// Structured output produced by the dialog classification prompt (`type`, `category`, `topic`, and optional `partnerRole`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DialogClassification {
     /// Severity tier (`pass`, `info`, `warning`, or `danger`).
@@ -202,6 +225,9 @@ pub struct DialogClassification {
     pub category: ClassificationCategory,
     /// Overall topic of the conversation (`"other"` fallback).
     pub topic: DialogTopic,
+    /// Optional contextual role inference for the speaking partner of `# Aussage`.
+    #[serde(default, rename = "partnerRole")]
+    pub partner_role: Option<ModelPartnerRole>,
 }
 
 impl DialogClassification {
@@ -226,6 +252,41 @@ impl DialogClassification {
                         | ClassificationCategory::Injection
                 )
         )
+    }
+
+    /// Normalizes and validates `partner_role` into an API [`PartnerRole`], returning `None` when
+    /// `role_type` is absent, empty, longer than 40 characters, a generic placeholder, or when
+    /// `confidence` is `<= 0.0` or non-finite.
+    pub fn normalized_partner_role(&self) -> Option<PartnerRole> {
+        let raw = self.partner_role.as_ref()?;
+        let role_type = raw.role_type.as_deref()?.trim();
+        if role_type.is_empty() || role_type.chars().count() > 40 {
+            return None;
+        }
+        let lower = role_type.to_lowercase();
+        if matches!(
+            lower.as_str(),
+            "gesprächspartnerin"
+                | "gesprächspartner"
+                | "partner"
+                | "person"
+                | "unbekannt"
+                | "other"
+                | "null"
+        ) {
+            return None;
+        }
+        if !raw.confidence.is_finite() {
+            return None;
+        }
+        let confidence = raw.confidence.clamp(0.0, 1.0);
+        if confidence <= 0.0 {
+            return None;
+        }
+        Some(PartnerRole {
+            role_type: role_type.to_string(),
+            confidence,
+        })
     }
 }
 
@@ -425,9 +486,38 @@ impl PromptRunner for GeminiPromptRunner {
     }
 }
 
+/// Verified speaker role returned by the `/correct-transcript` model (`user` or `partner`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ResolvedSpeakerRole {
+    User,
+    Partner,
+}
+
+impl From<ResolvedSpeakerRole> for Role {
+    fn from(value: ResolvedSpeakerRole) -> Self {
+        match value {
+            ResolvedSpeakerRole::User => Role::User,
+            ResolvedSpeakerRole::Partner => Role::Partner,
+        }
+    }
+}
+
+/// Structured JSON output produced by the `/correct-transcript` model (`message`, `resolvedRole`, `mergeWithPrevious`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CorrectTranscriptModelOutput {
+    /// Corrected transcript of the current turn (or unified text when `merge_with_previous` is `true`).
+    pub message: String,
+    /// Verified speaker role (`user` or `partner`).
+    pub resolved_role: ResolvedSpeakerRole,
+    /// Whether this turn is a direct continuation of the immediately preceding spoken turn by the same speaker.
+    pub merge_with_previous: bool,
+}
+
 /// Fallback [`PromptRunner`] used in local debug/test builds when `GEMINI_API_KEY` is not set.
 /// Extracts the final ```input block from the prompt and echoes it back deterministically
-/// (or returns a valid `pass`/`ok`/`other` JSON classification for `CLASSIFY_DIALOG_SYSTEM_PROMPT`),
+/// (emitting structured JSON for `CORRECT_TRANSCRIPT_SYSTEM_PROMPT` and `CLASSIFY_DIALOG_SYSTEM_PROMPT`),
 /// tokenized using the Gemma 4 tokenizer.
 #[derive(Debug, Default, Clone)]
 pub struct EchoPromptRunner;
@@ -445,7 +535,15 @@ impl PromptRunner for EchoPromptRunner {
             let output_text = if system_prompt == TRANSLATE_SYSTEM_PROMPT {
                 format!("FORMATIERUNG\n{input}")
             } else if system_prompt == CLASSIFY_DIALOG_SYSTEM_PROMPT.as_str() {
-                r#"{"type":"pass","category":"ok","topic":"other"}"#.to_string()
+                r#"{"type":"pass","category":"ok","topic":"other","partnerRole":{"roleType":null,"confidence":0.0}}"#.to_string()
+            } else if system_prompt == CORRECT_TRANSCRIPT_SYSTEM_PROMPT {
+                let resolved_role = extract_provisional_role(prompt);
+                serde_json::to_string(&CorrectTranscriptModelOutput {
+                    message: input.to_string(),
+                    resolved_role,
+                    merge_with_previous: false,
+                })
+                .expect("Failed to serialize EchoPromptRunner CorrectTranscriptModelOutput")
             } else {
                 input.to_string()
             };
@@ -477,6 +575,15 @@ impl PromptRunner for EchoPromptRunner {
     }
 }
 
+/// Extracts the provisional speaker role (`user` or `partner`) from a rendered `/correct-transcript` prompt.
+fn extract_provisional_role(prompt: &str) -> ResolvedSpeakerRole {
+    if prompt.contains("- Vorläufige Rolle: user") {
+        ResolvedSpeakerRole::User
+    } else {
+        ResolvedSpeakerRole::Partner
+    }
+}
+
 /// Extracts the text inside the last ` ```input ... ``` ` fence of a rendered prompt template.
 fn extract_input_block(prompt: &str) -> Option<&str> {
     let marker = "```input\n";
@@ -491,9 +598,221 @@ pub fn sanitize(content: &str) -> String {
     content.replace("```", "'''")
 }
 
-/// Renders the user prompt for `/correct-transcript` by injecting the sanitized `input` message.
+/// Returns the effective acoustic user likelihood in `[0.0, 1.0]` for a [`CorrectTranscriptHistoryItem`],
+/// mapping omitted `user_likelihood` deterministically from `role` (`1.0` for `User`, `0.0` for `Partner` / `PartnerSimple`).
+pub fn effective_user_likelihood(item: &CorrectTranscriptHistoryItem) -> f32 {
+    item.user_likelihood
+        .unwrap_or(match item.role {
+            Role::User => 1.0,
+            Role::Partner | Role::PartnerSimple => 0.0,
+        })
+        .clamp(0.0, 1.0)
+}
+
+/// Slices `history` so at most the last 5 `user`/`partner` turns (and any attached `partner_simple`
+/// entries following them) are retained for `/correct-transcript` context.
+pub fn cap_correct_transcript_history_turns(
+    history: &[CorrectTranscriptHistoryItem],
+) -> &[CorrectTranscriptHistoryItem] {
+    let mut turn_count = 0usize;
+    let mut start_idx = 0usize;
+
+    for (idx, item) in history.iter().enumerate().rev() {
+        if matches!(item.role, Role::User | Role::Partner) {
+            turn_count += 1;
+            if turn_count == 5 {
+                start_idx = idx;
+                break;
+            }
+        }
+    }
+
+    &history[start_idx..]
+}
+
+/// Formats prior [`CorrectTranscriptHistoryItem`] entries for `# Gesprächsverlauf` in `/correct-transcript`,
+/// capping to the last 5 `user`/`partner` turns and including optional partner numbers and acoustic metadata tags.
+/// Returns `"keine Historie"` when `prior_items` is empty.
+pub fn format_correct_transcript_history(prior_items: &[CorrectTranscriptHistoryItem]) -> String {
+    let capped = cap_correct_transcript_history_turns(prior_items);
+    if capped.is_empty() {
+        return "keine Historie".to_string();
+    }
+
+    let mut last_partner_num: Option<u32> = None;
+    let mut blocks = Vec::with_capacity(capped.len());
+
+    for entry in capped {
+        let msg = sanitize(&entry.message);
+        match entry.role {
+            Role::PartnerSimple => {
+                let n = entry.partner_number.or(last_partner_num);
+                match n {
+                    Some(num) => blocks.push(format!("Partner {num} (Leichte Sprache): {msg}")),
+                    None => blocks.push(format!("Partner (Leichte Sprache): {msg}")),
+                }
+            }
+            Role::User | Role::Partner => {
+                let role_label = if entry.role == Role::User {
+                    last_partner_num = None;
+                    "User".to_string()
+                } else {
+                    last_partner_num = entry.partner_number;
+                    match entry.partner_number {
+                        Some(num) => format!("Partner {num}"),
+                        None => "Partner".to_string(),
+                    }
+                };
+                let likelihood = effective_user_likelihood(entry);
+                let mut meta_parts = Vec::with_capacity(3);
+                if let Some(ref cid) = entry.cluster_id {
+                    let trimmed_cid = sanitize(cid).trim().to_string();
+                    if !trimmed_cid.is_empty() {
+                        meta_parts.push(format!("clusterId={trimmed_cid}"));
+                    }
+                }
+                meta_parts.push(format!("userLikelihood={likelihood:.2}"));
+                if let Some(pause) = entry.pause_ms {
+                    meta_parts.push(format!("pauseMs={pause}"));
+                }
+                blocks.push(format!("{role_label} [{}]: {msg}", meta_parts.join(", ")));
+            }
+        }
+    }
+
+    blocks.join("\n\n")
+}
+
+/// Renders the contextual user prompt for `/correct-transcript` (`prompts/correct-transcript.md`)
+/// from `prior_items` and the `target` turn to correct.
+pub fn build_correct_transcript_contextual_prompt(
+    prior_items: &[CorrectTranscriptHistoryItem],
+    target: &CorrectTranscriptHistoryItem,
+) -> String {
+    let history_str = format_correct_transcript_history(prior_items);
+    let provisional_role = match (target.role, target.partner_number) {
+        (Role::User, _) => "user".to_string(),
+        (Role::Partner | Role::PartnerSimple, Some(n)) => format!("partner (Partner {n})"),
+        (Role::Partner | Role::PartnerSimple, None) => "partner".to_string(),
+    };
+    let cluster_id_str = target
+        .cluster_id
+        .as_deref()
+        .map(sanitize)
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "unbekannt".to_string());
+    let likelihood_str = format!("{:.2}", effective_user_likelihood(target));
+    let pause_str = target
+        .pause_ms
+        .map(|ms| format!("{ms} ms"))
+        .unwrap_or_else(|| "unbekannt".to_string());
+
+    CORRECT_TRANSCRIPT_PROMPT_TEMPLATE
+        .replace("%HISTORY%", &history_str)
+        .replace("%PROVISIONAL_ROLE%", &provisional_role)
+        .replace("%CLUSTER_ID%", cluster_id_str.trim())
+        .replace("%USER_LIKELIHOOD%", &likelihood_str)
+        .replace("%PAUSE_MS%", &pause_str)
+        .replace("%INPUT%", &sanitize(&target.message))
+}
+
+/// Renders the user prompt for `/correct-transcript` for a single legacy `input` message (`Role::Partner` default).
 pub fn build_correct_transcript_prompt(input: &str) -> String {
-    CORRECT_TRANSCRIPT_PROMPT_TEMPLATE.replace("%INPUT%", &sanitize(input))
+    let target = CorrectTranscriptHistoryItem {
+        role: Role::Partner,
+        message: input.to_string(),
+        partner_number: None,
+        cluster_id: None,
+        user_likelihood: None,
+        pause_ms: None,
+    };
+    build_correct_transcript_contextual_prompt(&[], &target)
+}
+
+/// Parses and validates the structured JSON output of `/correct-transcript` into a [`CorrectTranscriptModelOutput`].
+///
+/// Strips optional surrounding Markdown code fences (e.g. ` ```json ... ``` `) and deserializes the JSON payload.
+pub fn parse_correct_transcript_output(
+    raw: &str,
+) -> Result<CorrectTranscriptModelOutput, PromptError> {
+    let mut trimmed = raw.trim();
+    if let Some(rest) = trimmed.strip_prefix("```") {
+        let rest = rest.strip_prefix("json").unwrap_or(rest).trim_start();
+        if let Some(inner) = rest.strip_suffix("```") {
+            trimmed = inner.trim();
+        }
+    }
+
+    serde_json::from_str(trimmed).map_err(|e| {
+        PromptError(format!(
+            "Failed to parse correct-transcript JSON output: {e}"
+        ))
+    })
+}
+
+/// Applies deterministic acoustic and structural guardrails to a [`CorrectTranscriptModelOutput`]:
+///
+/// 1. Forces `merge_with_previous = false` when:
+///    - there is no preceding spoken (`user` or `partner`) turn in `prior_items`,
+///    - the target turn carries no diarization metadata (`cluster_id`, `user_likelihood`, and `pause_ms` are all `None`), or
+///    - the preceding spoken turn and target turn have contradictory acoustic locks (`>= 0.80` vs `<= 0.10`).
+/// 2. Enforces acoustic confidence locks on `resolved_role`:
+///    - When `!merge_with_previous`: effective `user_likelihood >= 0.80` locks `Role::User`; `<= 0.10` locks `Role::Partner`.
+///    - When `merge_with_previous`: if either the preceding spoken turn or target turn is acoustically locked (`>= 0.80` or `<= 0.10`), locks `resolved_role` to that role.
+/// 3. Guarantees a non-empty `message` string (falling back to `target.message` if empty or if a contradictory-lock merge veto had to discard a combined message).
+pub fn enforce_correct_transcript_guardrails(
+    raw_output: CorrectTranscriptModelOutput,
+    prior_items: &[CorrectTranscriptHistoryItem],
+    target: &CorrectTranscriptHistoryItem,
+) -> (String, Role, bool) {
+    let prior_spoken = prior_items
+        .iter()
+        .rev()
+        .find(|item| matches!(item.role, Role::User | Role::Partner));
+
+    let has_diarization_meta = target.cluster_id.is_some()
+        || target.user_likelihood.is_some()
+        || target.pause_ms.is_some();
+
+    let target_p = effective_user_likelihood(target);
+    let mut merge =
+        raw_output.merge_with_previous && has_diarization_meta && prior_spoken.is_some();
+    let mut vetoed_contradictory_merge = false;
+
+    if let (true, Some(prev)) = (merge, prior_spoken) {
+        let prev_p = effective_user_likelihood(prev);
+        let contradictory =
+            (prev_p >= 0.80 && target_p <= 0.10) || (prev_p <= 0.10 && target_p >= 0.80);
+        if contradictory {
+            merge = false;
+            vetoed_contradictory_merge = true;
+        }
+    }
+
+    let mut resolved_role: Role = raw_output.resolved_role.into();
+    if merge {
+        if let Some(prev) = prior_spoken {
+            let prev_p = effective_user_likelihood(prev);
+            if prev_p >= 0.80 || target_p >= 0.80 {
+                resolved_role = Role::User;
+            } else if prev_p <= 0.10 || target_p <= 0.10 {
+                resolved_role = Role::Partner;
+            }
+        }
+    } else if target_p >= 0.80 {
+        resolved_role = Role::User;
+    } else if target_p <= 0.10 {
+        resolved_role = Role::Partner;
+    }
+
+    let trimmed_msg = raw_output.message.trim();
+    let message = if trimmed_msg.is_empty() || vetoed_contradictory_merge {
+        target.message.trim().to_string()
+    } else {
+        trimmed_msg.to_string()
+    };
+
+    (message, resolved_role, merge)
 }
 
 /// Counts the number of `user` and `partner` turns in `history` (excluding `partner_simple` translations).
@@ -528,8 +847,8 @@ pub fn cap_history_turns(history: &[ConversationMessage]) -> &[ConversationMessa
     &history[start_idx..]
 }
 
-/// Formats the prior conversation messages into `User: ...`, `Partner: ...`, and
-/// `Partner (Leichte Sprache): ...` blocks (capped to the last 5 `user`/`partner` turns),
+/// Formats the prior conversation messages into `User: ...`, `Partner [n]: ...`, and
+/// `Partner [n] (Leichte Sprache): ...` blocks (capped to the last 5 `user`/`partner` turns),
 /// or `"keine Historie"` when empty.
 pub fn format_translate_history(history: &[ConversationMessage]) -> String {
     let capped = cap_history_turns(history);
@@ -537,18 +856,34 @@ pub fn format_translate_history(history: &[ConversationMessage]) -> String {
         return "keine Historie".to_string();
     }
 
-    capped
-        .iter()
-        .map(|entry| {
-            let prefix = match entry.role {
-                Role::User => "User:",
-                Role::Partner => "Partner:",
-                Role::PartnerSimple => "Partner (Leichte Sprache):",
-            };
-            format!("{} {}", prefix, sanitize(&entry.message))
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n")
+    let mut last_partner_num: Option<u32> = None;
+    let mut blocks = Vec::with_capacity(capped.len());
+
+    for entry in capped {
+        let prefix = match entry.role {
+            Role::User => {
+                last_partner_num = None;
+                "User:".to_string()
+            }
+            Role::Partner => {
+                last_partner_num = entry.partner_number;
+                match entry.partner_number {
+                    Some(num) => format!("Partner {num}:"),
+                    None => "Partner:".to_string(),
+                }
+            }
+            Role::PartnerSimple => {
+                let n = entry.partner_number.or(last_partner_num);
+                match n {
+                    Some(num) => format!("Partner {num} (Leichte Sprache):"),
+                    None => "Partner (Leichte Sprache):".to_string(),
+                }
+            }
+        };
+        blocks.push(format!("{} {}", prefix, sanitize(&entry.message)));
+    }
+
+    blocks.join("\n\n")
 }
 
 /// Renders the user prompt for `/translate` without few-shot examples (zero-shot fallback).
@@ -564,12 +899,28 @@ pub fn build_translate_prompt_with_few_shots(
     input: &str,
     examples: &[FewShotEntry],
 ) -> String {
+    build_translate_prompt_with_few_shots_for_partner(history, input, None, examples)
+}
+
+/// Renders the user prompt for `/translate` with an optional speaking `partner_number` (`Partner {n}:` header inside `input`).
+/// Falls back to [`TRANSLATE_PROMPT_TEMPLATE`] when `examples` is empty.
+pub fn build_translate_prompt_with_few_shots_for_partner(
+    history: &[ConversationMessage],
+    input: &str,
+    partner_number: Option<u32>,
+    examples: &[FewShotEntry],
+) -> String {
     let history_value = format_translate_history(history);
     let sanitized_input = sanitize(input);
+    let input_partner_header = match partner_number {
+        Some(n) => format!("Partner {n}:\n"),
+        None => String::new(),
+    };
 
     if examples.is_empty() {
         return TRANSLATE_PROMPT_TEMPLATE
             .replace("%HISTORY%", &history_value)
+            .replace("%INPUT_PARTNER_HEADER%", &input_partner_header)
             .replace("%INPUT%", &sanitized_input);
     }
 
@@ -582,6 +933,7 @@ pub fn build_translate_prompt_with_few_shots(
     TRANSLATE_DYNAMIC_FEW_SHOTS_PROMPT_TEMPLATE
         .replace("%FEW_SHOTS%", &few_shots_str)
         .replace("%HISTORY%", &history_value)
+        .replace("%INPUT_PARTNER_HEADER%", &input_partner_header)
         .replace("%INPUT%", &sanitized_input)
 }
 
@@ -615,9 +967,32 @@ pub fn build_classify_dialog_prompt(
     input: &str,
     translation: &str,
 ) -> String {
+    build_classify_dialog_prompt_for_partner(history, input, translation, None)
+}
+
+/// Renders the user prompt for the dialog classification step (`prompts/classify-dialog.md`)
+/// with an optional speaking `partner_number` (`Partner {n}:` and `Partner {n} (leichte Sprache):`).
+pub fn build_classify_dialog_prompt_for_partner(
+    history: &[ConversationMessage],
+    input: &str,
+    translation: &str,
+    partner_number: Option<u32>,
+) -> String {
     let history_value = format_translate_history(history);
+    let (partner_label, partner_simple_label) = match partner_number {
+        Some(n) => (
+            format!("Partner {n}"),
+            format!("Partner {n} (leichte Sprache)"),
+        ),
+        None => (
+            "Partner".to_string(),
+            "Partner (leichte Sprache)".to_string(),
+        ),
+    };
     CLASSIFY_DIALOG_PROMPT_TEMPLATE
         .replace("%HISTORY%", &history_value)
+        .replace("%PARTNER_LABEL%", &partner_label)
+        .replace("%PARTNER_SIMPLE_LABEL%", &partner_simple_label)
         .replace("%INPUT%", &sanitize(input))
         .replace("%TRANSLATION%", &sanitize(translation))
 }
@@ -686,7 +1061,7 @@ fn build_static_warning(
 /// - `danger` (`safety`, `youth-protection`): blocks the translation by returning an empty `content` (`""`),
 ///   `TranslationType::Translation`, and a `danger` box with `revealable: false`.
 pub fn apply_classification(
-    classification: DialogClassification,
+    classification: &DialogClassification,
     model_type: TranslationType,
     translated_content: String,
 ) -> (TranslationType, String, Option<Warning>) {
@@ -867,13 +1242,249 @@ mod tests {
         assert_eq!(sanitize("code ```block``` here"), "code '''block''' here");
     }
 
-    /// Verifies that `build_correct_transcript_prompt` injects the sanitized input and has no unreplaced placeholders.
+    /// Verifies that `build_correct_transcript_prompt` and `build_correct_transcript_contextual_prompt`
+    /// inject sanitized history, acoustic metadata, and input with no unreplaced placeholders.
     #[test]
     fn test_build_correct_transcript_prompt() {
         let prompt = build_correct_transcript_prompt("hallo ```welt```");
+        assert!(prompt.contains("```history\nkeine Historie\n```"));
+        assert!(prompt.contains("- Vorläufige Rolle: partner"));
+        assert!(prompt.contains("- Akustische Cluster-ID: unbekannt"));
+        assert!(prompt.contains("- Akustische Nutzer-Wahrscheinlichkeit (`userLikelihood`): 0.00"));
+        assert!(prompt.contains("- Sprechpause zur vorherigen Aussage (`pauseMs`): unbekannt"));
         assert!(prompt.contains("```input\nhallo '''welt'''\n```"));
         assert!(!prompt.contains("%INPUT%"));
         assert!(!prompt.contains("%HISTORY%"));
+        assert!(!prompt.contains("%PROVISIONAL_ROLE%"));
+        assert!(!prompt.contains("%CLUSTER_ID%"));
+        assert!(!prompt.contains("%USER_LIKELIHOOD%"));
+        assert!(!prompt.contains("%PAUSE_MS%"));
+
+        let prior = vec![
+            CorrectTranscriptHistoryItem {
+                role: Role::Partner,
+                message: "Nehmen Sie Ibuprofen oder L-Thyroxin?".to_string(),
+                partner_number: None,
+                cluster_id: Some("cluster_1".to_string()),
+                user_likelihood: Some(0.06),
+                pause_ms: None,
+            },
+            CorrectTranscriptHistoryItem {
+                role: Role::PartnerSimple,
+                message: "Nehmen Sie Ibuprofen oder L-Thyroxin?".to_string(),
+                partner_number: None,
+                cluster_id: None,
+                user_likelihood: None,
+                pause_ms: None,
+            },
+        ];
+        let target = CorrectTranscriptHistoryItem {
+            role: Role::Partner,
+            message: "ich nehme l tür rock sin".to_string(),
+            partner_number: None,
+            cluster_id: Some("cluster_0".to_string()),
+            user_likelihood: Some(0.29),
+            pause_ms: Some(520),
+        };
+        let ctx_prompt = build_correct_transcript_contextual_prompt(&prior, &target);
+        assert!(ctx_prompt.contains(
+            "Partner [clusterId=cluster_1, userLikelihood=0.06]: Nehmen Sie Ibuprofen oder L-Thyroxin?"
+        ));
+        assert!(
+            ctx_prompt.contains("Partner (Leichte Sprache): Nehmen Sie Ibuprofen oder L-Thyroxin?")
+        );
+        assert!(ctx_prompt.contains("- Vorläufige Rolle: partner"));
+        assert!(ctx_prompt.contains("- Akustische Cluster-ID: cluster_0"));
+        assert!(
+            ctx_prompt.contains("- Akustische Nutzer-Wahrscheinlichkeit (`userLikelihood`): 0.29")
+        );
+        assert!(ctx_prompt.contains("- Sprechpause zur vorherigen Aussage (`pauseMs`): 520 ms"));
+        assert!(ctx_prompt.contains("```input\nich nehme l tür rock sin\n```"));
+
+        // Numbered partner in history and target
+        let numbered_prior = vec![
+            CorrectTranscriptHistoryItem {
+                role: Role::Partner,
+                message: "Guten Tag.".to_string(),
+                partner_number: Some(1),
+                cluster_id: Some("cluster_1".to_string()),
+                user_likelihood: Some(0.05),
+                pause_ms: None,
+            },
+            CorrectTranscriptHistoryItem {
+                role: Role::PartnerSimple,
+                message: "Guten Tag.".to_string(),
+                partner_number: None,
+                cluster_id: None,
+                user_likelihood: None,
+                pause_ms: None,
+            },
+        ];
+        let numbered_target = CorrectTranscriptHistoryItem {
+            role: Role::Partner,
+            message: "und hier ist ihr rezept".to_string(),
+            partner_number: Some(2),
+            cluster_id: Some("cluster_2".to_string()),
+            user_likelihood: Some(0.08),
+            pause_ms: Some(610),
+        };
+        let numbered_prompt =
+            build_correct_transcript_contextual_prompt(&numbered_prior, &numbered_target);
+        assert!(numbered_prompt
+            .contains("Partner 1 [clusterId=cluster_1, userLikelihood=0.05]: Guten Tag."));
+        assert!(numbered_prompt.contains("Partner 1 (Leichte Sprache): Guten Tag."));
+        assert!(numbered_prompt.contains("- Vorläufige Rolle: partner (Partner 2)"));
+    }
+
+    /// Verifies that `parse_correct_transcript_output` and `enforce_correct_transcript_guardrails`
+    /// enforce acoustic locks (`>= 0.80` -> `user`, `<= 0.10` -> `partner`), allow borderline flips
+    /// (`0.10 < p < 0.80`), and veto illegal or contradictory `mergeWithPrevious` flags.
+    #[test]
+    fn test_parse_and_enforce_correct_transcript_guardrails() {
+        let schema = &*CORRECT_TRANSCRIPT_RESPONSE_SCHEMA;
+        assert_eq!(schema["title"], "CorrectTranscriptOutput");
+
+        // 1. Parse raw & fenced JSON; reject unknown fields or invalid roles
+        let parsed_fenced = parse_correct_transcript_output(
+            "```json\n{\"message\":\"Ich nehme L-Thyroxin.\",\"resolvedRole\":\"user\",\"mergeWithPrevious\":false}\n```",
+        )
+        .unwrap();
+        assert_eq!(parsed_fenced.message, "Ich nehme L-Thyroxin.");
+        assert_eq!(parsed_fenced.resolved_role, ResolvedSpeakerRole::User);
+        assert!(!parsed_fenced.merge_with_previous);
+
+        assert!(parse_correct_transcript_output(
+            r#"{"message":"Hallo","resolvedRole":"partner_simple","mergeWithPrevious":false}"#
+        )
+        .is_err());
+        assert!(parse_correct_transcript_output(
+            r#"{"message":"Hallo","resolvedRole":"user","mergeWithPrevious":false,"extra":1}"#
+        )
+        .is_err());
+
+        // 2. Legacy / no-diarization target forces merge = false and locks role via mapped 0.0 / 1.0 confidence
+        let legacy_target = CorrectTranscriptHistoryItem {
+            role: Role::Partner,
+            message: "roher text".to_string(),
+            partner_number: None,
+            cluster_id: None,
+            user_likelihood: None,
+            pause_ms: None,
+        };
+        let (msg, role, merge) = enforce_correct_transcript_guardrails(
+            CorrectTranscriptModelOutput {
+                message: "Korrigierter Text.".to_string(),
+                resolved_role: ResolvedSpeakerRole::User, // hallucinated flip
+                merge_with_previous: true,                // hallucinated merge
+            },
+            &[],
+            &legacy_target,
+        );
+        assert_eq!(msg, "Korrigierter Text.");
+        assert_eq!(role, Role::Partner);
+        assert!(!merge);
+
+        // 3. Uncertain zone (0.29) allows LLM role flip (partner -> user)
+        let prior = vec![CorrectTranscriptHistoryItem {
+            role: Role::Partner,
+            message: "Wie kann ich helfen?".to_string(),
+            partner_number: None,
+            cluster_id: Some("cluster_1".to_string()),
+            user_likelihood: Some(0.05),
+            pause_ms: None,
+        }];
+        let uncertain_target = CorrectTranscriptHistoryItem {
+            role: Role::Partner,
+            message: "ich habe einen termin".to_string(),
+            partner_number: None,
+            cluster_id: Some("cluster_0".to_string()),
+            user_likelihood: Some(0.29),
+            pause_ms: Some(480),
+        };
+        let (msg2, role2, merge2) = enforce_correct_transcript_guardrails(
+            CorrectTranscriptModelOutput {
+                message: "Ich habe einen Termin.".to_string(),
+                resolved_role: ResolvedSpeakerRole::User,
+                merge_with_previous: false,
+            },
+            &prior,
+            &uncertain_target,
+        );
+        assert_eq!(msg2, "Ich habe einen Termin.");
+        assert_eq!(role2, Role::User);
+        assert!(!merge2);
+
+        // 4. High-confidence user (0.88) locks Role::User even if LLM returns Partner
+        let locked_user_target = CorrectTranscriptHistoryItem {
+            role: Role::User,
+            message: "ja genau".to_string(),
+            partner_number: None,
+            cluster_id: Some("cluster_0".to_string()),
+            user_likelihood: Some(0.88),
+            pause_ms: Some(300),
+        };
+        let (_, role3, _) = enforce_correct_transcript_guardrails(
+            CorrectTranscriptModelOutput {
+                message: "Ja, genau.".to_string(),
+                resolved_role: ResolvedSpeakerRole::Partner,
+                merge_with_previous: false,
+            },
+            &prior,
+            &locked_user_target,
+        );
+        assert_eq!(role3, Role::User);
+
+        // 5. Valid split-turn merge (prev 0.85 User + target 0.34 uncertain -> merged Role::User)
+        let prior_user = vec![CorrectTranscriptHistoryItem {
+            role: Role::User,
+            message: "Warum kann er nur Sailor, aber nicht.".to_string(),
+            partner_number: None,
+            cluster_id: Some("cluster_0".to_string()),
+            user_likelihood: Some(0.85),
+            pause_ms: None,
+        }];
+        let split_tail = CorrectTranscriptHistoryItem {
+            role: Role::Partner,
+            message: "sailors".to_string(),
+            partner_number: None,
+            cluster_id: Some("cluster_1".to_string()),
+            user_likelihood: Some(0.34),
+            pause_ms: Some(350),
+        };
+        let (msg4, role4, merge4) = enforce_correct_transcript_guardrails(
+            CorrectTranscriptModelOutput {
+                message: "Warum kann er nur Sailor, aber nicht Sailors?".to_string(),
+                resolved_role: ResolvedSpeakerRole::Partner, // locked prev 0.85 forces User!
+                merge_with_previous: true,
+            },
+            &prior_user,
+            &split_tail,
+        );
+        assert_eq!(msg4, "Warum kann er nur Sailor, aber nicht Sailors?");
+        assert_eq!(role4, Role::User);
+        assert!(merge4);
+
+        // 6. Contradictory acoustic locks (prev 0.85 User vs target 0.04 Partner) veto merge and fall back to target message
+        let contradictory_tail = CorrectTranscriptHistoryItem {
+            role: Role::Partner,
+            message: "Das weiß ich nicht.".to_string(),
+            partner_number: None,
+            cluster_id: Some("cluster_1".to_string()),
+            user_likelihood: Some(0.04),
+            pause_ms: Some(250),
+        };
+        let (msg5, role5, merge5) = enforce_correct_transcript_guardrails(
+            CorrectTranscriptModelOutput {
+                message: "Warum kann er nur Sailor, aber nicht Das weiß ich nicht.".to_string(),
+                resolved_role: ResolvedSpeakerRole::User,
+                merge_with_previous: true,
+            },
+            &prior_user,
+            &contradictory_tail,
+        );
+        assert_eq!(msg5, "Das weiß ich nicht.");
+        assert_eq!(role5, Role::Partner);
+        assert!(!merge5);
     }
 
     /// Verifies `format_translate_history`, `count_history_turns`, `determine_history_bucket`, `partner_simple` capping,
@@ -887,14 +1498,17 @@ mod tests {
             ConversationMessage {
                 role: Role::User,
                 message: "Frage 1".to_string(),
+                partner_number: None,
             },
             ConversationMessage {
                 role: Role::Partner,
                 message: "Antwort 1".to_string(),
+                partner_number: None,
             },
             ConversationMessage {
                 role: Role::PartnerSimple,
                 message: "ÜBERSETZUNG\nEinfache Antwort 1".to_string(),
+                partner_number: None,
             },
         ];
         // partner_simple does not increment turn count
@@ -908,7 +1522,32 @@ mod tests {
         ));
         assert!(prompt.contains("```input\nNeue Aussage\n```"));
         assert!(!prompt.contains("%HISTORY%"));
+        assert!(!prompt.contains("%INPUT_PARTNER_HEADER%"));
         assert!(!prompt.contains("%INPUT%"));
+
+        // Numbered partners in history and target
+        let numbered_history = vec![
+            ConversationMessage {
+                role: Role::Partner,
+                message: "Antwort von Partner 1".to_string(),
+                partner_number: Some(1),
+            },
+            ConversationMessage {
+                role: Role::PartnerSimple,
+                message: "ÜBERSETZUNG\nEinfache Antwort 1".to_string(),
+                partner_number: None,
+            },
+        ];
+        let numbered_prompt = build_translate_prompt_with_few_shots_for_partner(
+            &numbered_history,
+            "Aussage von Partner 2",
+            Some(2),
+            &[],
+        );
+        assert!(numbered_prompt.contains(
+            "Partner 1: Antwort von Partner 1\n\nPartner 1 (Leichte Sprache): ÜBERSETZUNG\nEinfache Antwort 1"
+        ));
+        assert!(numbered_prompt.contains("Partner 2:\n```input\nAussage von Partner 2\n```"));
     }
 
     /// Verifies that `cap_history_turns` retains at most the last 5 `user`/`partner` turns along with their `partner_simple` translations.
@@ -918,42 +1557,52 @@ mod tests {
             ConversationMessage {
                 role: Role::User,
                 message: "Turn 1 (dropped)".to_string(),
+                partner_number: None,
             },
             ConversationMessage {
                 role: Role::Partner,
                 message: "Turn 2 (dropped)".to_string(),
+                partner_number: None,
             },
             ConversationMessage {
                 role: Role::PartnerSimple,
                 message: "Simple 2 (dropped)".to_string(),
+                partner_number: None,
             },
             ConversationMessage {
                 role: Role::User,
                 message: "Turn 3 (kept 1)".to_string(),
+                partner_number: None,
             },
             ConversationMessage {
                 role: Role::Partner,
                 message: "Turn 4 (kept 2)".to_string(),
+                partner_number: None,
             },
             ConversationMessage {
                 role: Role::PartnerSimple,
                 message: "Simple 4 (kept)".to_string(),
+                partner_number: None,
             },
             ConversationMessage {
                 role: Role::User,
                 message: "Turn 5 (kept 3)".to_string(),
+                partner_number: None,
             },
             ConversationMessage {
                 role: Role::Partner,
                 message: "Turn 6 (kept 4)".to_string(),
+                partner_number: None,
             },
             ConversationMessage {
                 role: Role::PartnerSimple,
                 message: "Simple 6 (kept)".to_string(),
+                partner_number: None,
             },
             ConversationMessage {
                 role: Role::User,
                 message: "Turn 7 (kept 5)".to_string(),
+                partner_number: None,
             },
         ];
 
@@ -1075,6 +1724,7 @@ mod tests {
         let history = vec![ConversationMessage {
             role: Role::User,
             message: "Hallo ```Welt```".to_string(),
+            partner_number: None,
         }];
         let rendered = build_classify_dialog_prompt(
             &history,
@@ -1082,15 +1732,29 @@ mod tests {
             "Einfache ```Übersetzung```",
         );
         assert!(rendered.contains("User: Hallo '''Welt'''"));
-        assert!(rendered.contains("```input\nOriginal '''input'''\n```"));
-        assert!(rendered.contains("```translation\nEinfache '''Übersetzung'''\n```"));
+        assert!(rendered.contains("Partner:\n```input\nOriginal '''input'''\n```"));
+        assert!(rendered.contains(
+            "Partner (leichte Sprache):\n```translation\nEinfache '''Übersetzung'''\n```"
+        ));
         assert!(!rendered.contains("%HISTORY%"));
+        assert!(!rendered.contains("%PARTNER_LABEL%"));
+        assert!(!rendered.contains("%PARTNER_SIMPLE_LABEL%"));
         assert!(!rendered.contains("%INPUT%"));
         assert!(!rendered.contains("%TRANSLATION%"));
+
+        let numbered = build_classify_dialog_prompt_for_partner(
+            &history,
+            "Original",
+            "Einfache Übersetzung",
+            Some(2),
+        );
+        assert!(numbered.contains("Partner 2:\n```input\nOriginal\n```"));
+        assert!(numbered
+            .contains("Partner 2 (leichte Sprache):\n```translation\nEinfache Übersetzung\n```"));
     }
 
     /// Verifies that `parse_classify_dialog_output` accepts all valid `(type, category, topic)` combinations
-    /// (including optional Markdown ```json fences) and rejects invalid pairs, unknown fields, or malformed JSON.
+    /// (including optional Markdown ```json fences and `partnerRole`) and rejects invalid pairs, unknown fields, or malformed JSON.
     #[test]
     fn test_parse_classify_dialog_output() {
         let valid_cases = [
@@ -1101,13 +1765,13 @@ mod tests {
                 DialogTopic::Other,
             ),
             (
-                "```json\n{\"type\": \"info\", \"category\": \"uncertain\", \"topic\": \"shopping\"}\n```",
+                "```json\n{\"type\": \"info\", \"category\": \"uncertain\", \"topic\": \"shopping\", \"partnerRole\": {\"roleType\": \"VerkäuferIn\", \"confidence\": 0.91}}\n```",
                 ClassificationLevel::Info,
                 ClassificationCategory::Uncertain,
                 DialogTopic::Shopping,
             ),
             (
-                r#"{"type":"warning","category":"medical","topic":"medical"}"#,
+                r#"{"type":"warning","category":"medical","topic":"medical","partnerRole":{"roleType":"Arzt","confidence":0.95}}"#,
                 ClassificationLevel::Warning,
                 ClassificationCategory::Medical,
                 DialogTopic::Medical,
@@ -1162,6 +1826,31 @@ mod tests {
             assert_eq!(parsed.category, expected_cat);
             assert_eq!(parsed.topic, expected_topic);
         }
+
+        // Verify normalized_partner_role sanitization
+        let with_role = parse_classify_dialog_output(
+            r#"{"type":"warning","category":"medical","topic":"medical","partnerRole":{"roleType":"  ÄrztIn  ","confidence":0.92}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            with_role.normalized_partner_role(),
+            Some(PartnerRole {
+                role_type: "ÄrztIn".to_string(),
+                confidence: 0.92,
+            })
+        );
+
+        let generic_placeholder = parse_classify_dialog_output(
+            r#"{"type":"pass","category":"ok","topic":"other","partnerRole":{"roleType":"GesprächspartnerIn","confidence":0.95}}"#,
+        )
+        .unwrap();
+        assert_eq!(generic_placeholder.normalized_partner_role(), None);
+
+        let zero_confidence = parse_classify_dialog_output(
+            r#"{"type":"pass","category":"ok","topic":"other","partnerRole":{"roleType":null,"confidence":0.0}}"#,
+        )
+        .unwrap();
+        assert_eq!(zero_confidence.normalized_partner_role(), None);
 
         // Invalid hierarchy pairings must fail closed
         assert!(parse_classify_dialog_output(
@@ -1223,10 +1912,11 @@ mod tests {
 
         // 1. pass / ok -> no warning, content preserved
         let (t, c, w) = apply_classification(
-            DialogClassification {
+            &DialogClassification {
                 r#type: ClassificationLevel::Pass,
                 category: ClassificationCategory::Ok,
                 topic: DialogTopic::Medical,
+                partner_role: None,
             },
             TranslationType::Formatting,
             "Einfacher Text".to_string(),
@@ -1237,10 +1927,11 @@ mod tests {
 
         // 2. info / uncertain -> Info box, revealable = false, content preserved
         let (t, c, w) = apply_classification(
-            DialogClassification {
+            &DialogClassification {
                 r#type: ClassificationLevel::Info,
                 category: ClassificationCategory::Uncertain,
                 topic: DialogTopic::Other,
+                partner_role: None,
             },
             TranslationType::Translation,
             "Unsicherer Text".to_string(),
@@ -1260,10 +1951,11 @@ mod tests {
             ClassificationCategory::Authorities,
         ] {
             let (t, c, w) = apply_classification(
-                DialogClassification {
+                &DialogClassification {
                     r#type: ClassificationLevel::Warning,
                     category: cat,
                     topic: DialogTopic::Juridical,
+                    partner_role: None,
                 },
                 TranslationType::Translation,
                 "Erklärender Text".to_string(),
@@ -1281,10 +1973,11 @@ mod tests {
             ClassificationCategory::Injection,
         ] {
             let (t, c, w) = apply_classification(
-                DialogClassification {
+                &DialogClassification {
                     r#type: ClassificationLevel::Danger,
                     category: cat,
                     topic: DialogTopic::Social,
+                    partner_role: None,
                 },
                 TranslationType::Translation,
                 "Ausgeblendeter Text".to_string(),
@@ -1302,10 +1995,11 @@ mod tests {
             ClassificationCategory::YouthProtection,
         ] {
             let (t, c, w) = apply_classification(
-                DialogClassification {
+                &DialogClassification {
                     r#type: ClassificationLevel::Danger,
                     category: cat,
                     topic: DialogTopic::Emergency,
+                    partner_role: None,
                 },
                 TranslationType::Formatting,
                 "Verbotener Text".to_string(),
@@ -1343,17 +2037,25 @@ mod tests {
     }
 
     /// Verifies that `EchoPromptRunner` accurately counts Gemma 4 tokens, mocks reasoning thoughts,
-    /// and emits valid classification JSON when called with `CLASSIFY_DIALOG_SYSTEM_PROMPT`.
+    /// and emits valid structured JSON for both `CORRECT_TRANSCRIPT_SYSTEM_PROMPT` and `CLASSIFY_DIALOG_SYSTEM_PROMPT`.
     #[tokio::test]
     async fn test_echo_prompt_runner_tokens_and_reasoning() {
         let runner = EchoPromptRunner;
-        let prompt = "```input\nHallo Welt\n```";
+        let prompt = build_correct_transcript_prompt("Hallo Welt");
         let output = runner
-            .run_prompt(CORRECT_TRANSCRIPT_SYSTEM_PROMPT, prompt, "minimal")
+            .run_prompt_with_schema(
+                CORRECT_TRANSCRIPT_SYSTEM_PROMPT,
+                &prompt,
+                "minimal",
+                &CORRECT_TRANSCRIPT_RESPONSE_SCHEMA,
+            )
             .await
             .unwrap();
 
-        assert_eq!(output.text, "Hallo Welt");
+        let parsed_ct = parse_correct_transcript_output(&output.text).unwrap();
+        assert_eq!(parsed_ct.message, "Hallo Welt");
+        assert_eq!(parsed_ct.resolved_role, ResolvedSpeakerRole::Partner);
+        assert!(!parsed_ct.merge_with_previous);
         assert_eq!(
             output.reasoning,
             Some("I am thinking about 'Hallo Welt'".to_string())

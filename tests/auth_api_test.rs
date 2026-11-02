@@ -27,6 +27,7 @@ async fn test_auth_header_validation() {
     let payload = ConversationMessage {
         role: Role::Partner,
         message: "sie müssen den antrag bis ende nächste woche abgeben".to_string(),
+        partner_number: None,
     };
 
     let res = rest_client

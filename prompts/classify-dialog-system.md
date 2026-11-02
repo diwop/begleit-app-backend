@@ -40,6 +40,21 @@ Ordne zusätzlich das übergeordnete Thema des Dialogs anhand von Historie und A
 - `juridical`: Recht, Gesetz, Gericht, Polizei-Vernehmung, Anwalt, rechtliche Streitigkeiten
 - `other`: Fallback, wenn keines der anderen Themen eindeutig passt
 
+# Rolle des Gesprächspartners (`partnerRole`)
+
+Bestimme zusätzlich im Objekt `partnerRole` (`roleType` und `confidence`), welche konkrete Rolle oder Funktion die sprechende Person aus `# Aussage` (z. B. `Partner`, `Partner 1` oder `Partner 2`) im Gespräch hat:
+
+- Beziehe dich bei mehreren nummerierten Gesprächspartnern (`Partner 1`, `Partner 2`) ausschließlich auf den Gesprächspartner, der `# Aussage` spricht.
+- `roleType` ist eine kurze, respektvolle deutsche Rollen-, Berufs- oder Beziehungsbezeichnung für die Anzeige als Kartentitel (maximal 35 Zeichen, kein Markdown):
+  - Wenn das Geschlecht aus der Anrede oder Selbstvorstellung eindeutig hervorgeht (z. B. „Herr Doktor“, „Ihr Sachbearbeiter“), verwende die passende männliche oder weibliche Form (z. B. `"Arzt"`, `"Ärztin"`, `"Sachbearbeiter"`, `"Sachbearbeiterin"`, `"Apotheker"`, `"Apothekerin"`, `"Polizist"`, `"Polizistin"`, `"Berater"`, `"Beraterin"`).
+  - Wenn die Rolle klar ist, das Geschlecht aber nicht genannt wird, verwende das inklusive Binnen-I passend zu „NutzerIn“ und „GesprächspartnerIn“ oder eine geschlechtsneutrale Bezeichnung (z. B. `"ÄrztIn"`, `"SachbearbeiterIn"`, `"ApothekerIn"`, `"PolizistIn"`, `"BeraterIn"`, `"VerkäuferIn"`, `"Pflegekraft"`, `"Praxis-Team"`, `"Rettungsdienst"`).
+  - Nenne niemals Personennamen in `roleType` (also `"Arzt"`, niemals `"Dr. Müller"`).
+  - Verwende niemals allgemeine Platzhalter wie `"GesprächspartnerIn"`, `"Partner"` oder `"Unbekannt"`. Wenn die Rolle aus dem Kontext nicht erkennbar ist, setze `"roleType": null` und `"confidence": 0.0`.
+- `confidence` gibt deine Sicherheit zwischen `0.0` und `1.0` an:
+  - `0.85` bis `1.00`: Direkte Anrede/Selbstvorstellung (z. B. „Hallo, Frau Doktor“, „Hier ist die Polizei“) oder eindeutige rollenspezifische Handlung (z. B. Medikamentendosis ärztlich anpassen, Bescheid/Antrag im Amt prüfen).
+  - `0.50` bis `0.84`: Plausible Vermutung aus dem Kontext, aber noch nicht eindeutig (z. B. „Nehmen Sie im Wartezimmer Platz“ → `"Praxis-Team"` mit `0.60`, oder privates Gespräch → `"Bekannter"` / `"FreundIn"` mit `0.60`).
+  - `0.00` bis `0.49`: Zu wenig Kontext (z. B. reine Begrüßung) → `"roleType": null`, `"confidence": 0.0`.
+
 # Format
 
 Gib dein Ergebnis als JSON und nichts anderes zurück, damit es direkt eingelesen werden kann.

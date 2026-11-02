@@ -1,0 +1,2286 @@
+{% extends "base.html" %}
+
+{% block title %}Automatische Sprechererkennung | diwop{% endblock %}
+
+{% block content %}
+<div class="dialog-page">
+  <header class="dialog-header">
+    <div class="dialog-header-left">
+      <a href="/" class="btn btn-secondary btn-sm nav-back-link">
+        <svg class="icon-svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <line x1="19" y1="12" x2="5" y2="12"></line>
+          <polyline points="12 19 5 12 12 5"></polyline>
+        </svg>
+        <span>Dashboard</span>
+      </a>
+      <h1 class="dialog-title">Automatische Sprechererkennung</h1>
+    </div>
+
+    <div class="dialog-header-center">
+      <div id="engine-status-pill" class="engine-status-pill" aria-live="polite">
+        <span class="engine-status-dot" aria-hidden="true"></span>
+        <span id="engine-status-text">Modelle werden geladen…</span>
+      </div>
+      <div id="dialog-header-stats" class="dialog-header-stats" style="display: none;" aria-label="Token-Statistiken">
+        <span class="stats-badge" id="stats-input-badge">0 Eingabetoken</span>
+        <span class="stats-badge" id="stats-output-badge">0 Ausgabetoken</span>
+        <span class="stats-badge stats-badge-cost" id="stats-cost-badge">0,00 €</span>
+      </div>
+    </div>
+
+    <div class="dialog-header-right">
+      <button
+        type="button"
+        id="toggle-debug-btn"
+        class="btn btn-secondary btn-sm toggle-debug-btn"
+        aria-pressed="true"
+        title="Debug-Informationen in Karten ausblenden"
+      >
+        <svg class="icon-svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect width="8" height="14" x="8" y="6" rx="4"></rect>
+          <path d="m19 7-3 2"></path>
+          <path d="m5 7 3 2"></path>
+          <path d="m19 19-3-2"></path>
+          <path d="m5 19 3-2"></path>
+          <path d="M20 13h-4"></path>
+          <path d="M4 13h4"></path>
+          <path d="m10 4 1 2"></path>
+          <path d="m14 4-1 2"></path>
+        </svg>
+        <span class="toggle-debug-label">Debug</span>
+      </button>
+      <button type="button" id="reset-diarization-btn" class="btn btn-secondary btn-sm">
+        <svg class="icon-svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <polyline points="1 4 1 10 7 10"></polyline>
+          <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>
+        </svg>
+        <span>Neuer Dialog</span>
+      </button>
+      <form method="post" action="/logout" class="inline-logout-form">
+        <button type="submit" class="btn btn-secondary btn-sm">Abmelden</button>
+      </form>
+    </div>
+  </header>
+
+  <!-- Global Banner Area (always visible in calibration and diarization views) -->
+  <div class="dialog-banner-container">
+    <div id="stt-unsupported-banner" class="warning-box warning-danger" style="display: none;" role="alert">
+      Die Web Speech API wird in Ihrem Browser nicht unterstützt. Bitte verwenden Sie Google Chrome, Microsoft Edge oder Safari für die Spracheingabe.
+    </div>
+    <div id="engine-error-banner" class="warning-box warning-danger" style="display: none;" role="alert"></div>
+  </div>
+
+  <!-- Calibration View -->
+  <div id="calibration-view" class="dialog-scroll-container" style="display: none;">
+    <div class="dialog-feed calibration-container">
+      <div class="empty-state calibration-card">
+        <h2 class="calibration-title">Stimme von NutzerIn kalibrieren</h2>
+        <p class="empty-state-text calibration-desc">
+          Damit die App Ihre Stimme automatisch von anderen GesprächspartnerInnen unterscheiden kann, lesen Sie bitte den folgenden Text mit Ihrer normalen Stimme laut vor. Ihre Stimme verbleibt dabei stets sicher auf diesem Gerät.
+        </p>
+
+        <div class="calibration-quote">
+          „Hallo! Wie geht es Ihnen heute? Ich nutze diese App, um Gespräche im Alltag besser zu verstehen. Können Sie mir das bitte kurz in einfachen Worten erklären?“
+        </div>
+
+        <div class="calibration-progress-section">
+          <div class="calibration-progress-track" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
+            <div id="calibration-progress-fill" class="calibration-progress-fill"></div>
+          </div>
+          <div class="calibration-progress-labels">
+            <span id="calibration-progress-label">0,0 / 5,0 Sek. Sprache erkannt</span>
+            <span id="calibration-embedding-label">0 Einbettungen</span>
+          </div>
+        </div>
+
+        <p id="calibration-hint" class="empty-state-text calibration-hint">
+          Tippen Sie unten auf „Aufnahme“ und lesen Sie den Text laut vor. Nach 5 Sekunden Sprache wird die Kalibrierung automatisch abgeschlossen.
+        </p>
+
+        <div class="calibration-actions">
+          <button type="button" id="calibration-cancel-btn" class="btn btn-secondary btn-sm calibration-cancel-btn" style="display: none;">
+            Abbrechen
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Regular Diarization Feed View -->
+  <div id="diarization-view" class="dialog-scroll-container">
+    <div id="dialog-feed" class="dialog-feed" role="log" aria-live="polite">
+      <div id="empty-state" class="empty-state">
+        <p class="empty-state-text">
+          Tippen Sie unten auf den Aufnahme-Button, um das Gespräch zu starten. Sprecherwechsel werden automatisch erkannt („NutzerIn“, „GesprächspartnerIn 1“, …).
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <footer class="bottom-bar">
+    <div class="record-control">
+      <button
+        type="button"
+        id="record-diarization-btn"
+        class="record-btn"
+        aria-label="Aufnahme starten"
+        aria-pressed="false"
+        disabled
+      >
+        <svg class="record-icon icon-mic" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+          <line x1="12" y1="19" x2="12" y2="23"></line>
+          <line x1="8" y1="23" x2="16" y2="23"></line>
+        </svg>
+        <svg class="record-icon icon-stop" width="24" height="24" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style="display: none;">
+          <rect x="5" y="5" width="14" height="14" rx="2" ry="2"></rect>
+        </svg>
+      </button>
+      <span id="record-btn-label" class="record-label">Aufnahme</span>
+      <button type="button" id="recalibrate-voice-btn" class="recalibrate-link">
+        Stimme von NutzerIn neu kalibrieren
+      </button>
+    </div>
+  </footer>
+</div>
+
+<script type="module">
+  import '/static/ort_bridge.js';
+  import {
+    PartnerRoleTracker,
+    TranscriptAligner,
+    TtsPlaybackController,
+    buildCorrectTranscriptHistory,
+    buildTranslateHistoryMessages,
+    extractPartnerNumberFromSpeakerId,
+    normalizePartnerSimpleContent,
+    speakerIdToApiRole,
+  } from '/static/transcript_alignment.js';
+  import initWasm, { DiarizationEngine } from '/static/wasm/vad_diarization_wasm.js';
+
+  const SAMPLE_RATE = 16000;
+  const SAB_RING_CAPACITY = 65536;
+  const VOICE_RECOGNITION_THRESHOLD = 0.52;
+  const SEGMENTATION_MODEL_FILENAME = 'pyannote_segmentation_3_0.onnx';
+  const EMBEDDING_MODEL_FILENAME = 'wespeaker_voxblink2_samresnet100_LM.int8.onnx';
+  const EXPECTED_EMBEDDING_DIM = 256;
+
+  // IndexedDB Voice Profile Persistence (PRD-2)
+  const IDB_NAME = 'diwop_voice_profiles';
+  const IDB_VERSION = 1;
+  const IDB_STORE = 'profiles';
+  let dbPromise = null;
+
+  function getDb() {
+    if (!dbPromise) {
+      dbPromise = new Promise((resolve, reject) => {
+        const req = indexedDB.open(IDB_NAME, IDB_VERSION);
+        req.onupgradeneeded = (e) => {
+          const db = e.target.result;
+          if (!db.objectStoreNames.contains(IDB_STORE)) {
+            db.createObjectStore(IDB_STORE, { keyPath: 'id' });
+          }
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => {
+          dbPromise = null;
+          reject(req.error);
+        };
+      });
+    }
+    return dbPromise;
+  }
+
+  async function getStoredVoiceProfile(id = 'NutzerIn') {
+    try {
+      const db = await getDb();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(IDB_STORE, 'readonly');
+        const store = tx.objectStore(IDB_STORE);
+        const req = store.get(id);
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = () => reject(req.error);
+      });
+    } catch (err) {
+      console.warn('Failed to read voice profile from IndexedDB:', err);
+      return null;
+    }
+  }
+
+  async function saveVoiceProfile(profile) {
+    const db = await getDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(IDB_STORE, 'readwrite');
+      const store = tx.objectStore(IDB_STORE);
+      const req = store.put(profile);
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  // DOM Elements
+  const calibrationView = document.getElementById('calibration-view');
+  const diarizationView = document.getElementById('diarization-view');
+  const calibrationProgressFill = document.getElementById('calibration-progress-fill');
+  const calibrationProgressLabel = document.getElementById('calibration-progress-label');
+  const calibrationEmbeddingLabel = document.getElementById('calibration-embedding-label');
+  const calibrationCancelBtn = document.getElementById('calibration-cancel-btn');
+  const recalibrateBtn = document.getElementById('recalibrate-voice-btn');
+
+  const feedEl = document.getElementById('dialog-feed');
+  const scrollContainer = diarizationView;
+  const emptyStateEl = document.getElementById('empty-state');
+  const unsupportedBanner = document.getElementById('stt-unsupported-banner');
+  const errorBanner = document.getElementById('engine-error-banner');
+  const statusPill = document.getElementById('engine-status-pill');
+  const statusText = document.getElementById('engine-status-text');
+  const recordBtn = document.getElementById('record-diarization-btn');
+  const recordBtnLabel = document.getElementById('record-btn-label');
+  const resetBtn = document.getElementById('reset-diarization-btn');
+  const toggleDebugBtn = document.getElementById('toggle-debug-btn');
+  const DEBUG_STORAGE_KEY = 'diwop_show_card_debug';
+
+  function applyCardDebugPreference(showDebug) {
+    if (showDebug) {
+      document.body.classList.remove('hide-card-debug');
+      if (toggleDebugBtn) {
+        toggleDebugBtn.setAttribute('aria-pressed', 'true');
+        toggleDebugBtn.classList.add('is-active');
+        toggleDebugBtn.title = 'Debug-Informationen in Karten ausblenden';
+      }
+    } else {
+      document.body.classList.add('hide-card-debug');
+      if (toggleDebugBtn) {
+        toggleDebugBtn.setAttribute('aria-pressed', 'false');
+        toggleDebugBtn.classList.remove('is-active');
+        toggleDebugBtn.title = 'Debug-Informationen in Karten einblenden';
+      }
+    }
+  }
+
+  function initCardDebugToggle() {
+    let isDebugEnabled = true;
+    try {
+      const saved = localStorage.getItem(DEBUG_STORAGE_KEY);
+      if (saved !== null) {
+        isDebugEnabled = saved === 'true';
+      }
+    } catch (e) {
+      console.warn('Could not read debug toggle preference from localStorage', e);
+    }
+    applyCardDebugPreference(isDebugEnabled);
+
+    if (toggleDebugBtn) {
+      toggleDebugBtn.addEventListener('click', () => {
+        const currentlyHidden = document.body.classList.contains('hide-card-debug');
+        const nextState = currentlyHidden; // if hidden, next state is true (shown)
+        try {
+          localStorage.setItem(DEBUG_STORAGE_KEY, String(nextState));
+        } catch (e) {
+          console.warn('Could not save debug toggle preference to localStorage', e);
+        }
+        applyCardDebugPreference(nextState);
+      });
+    }
+  }
+
+  initCardDebugToggle();
+
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition && unsupportedBanner) {
+    unsupportedBanner.style.display = 'block';
+  }
+
+  // Engine & UI State
+  let engine = null;
+  let backendLabel = 'WASM';
+  let hasCalibratedProfile = false;
+  let currentView = 'diarization'; // 'calibration' | 'diarization'
+  let isRecording = false;
+  let shouldStayRecording = false;
+  let isStoppingCalibration = false;
+
+  // Audio Graph State
+  let audioCtx = null;
+  let mediaStream = null;
+  let sourceNode = null;
+  let workletNode = null;
+  let muteGainNode = null;
+  let sabIndices = null;
+  let sabRing = null;
+  let sabDrainTimer = null;
+  const sabDrainScratch = new Float32Array(4096);
+
+  // Monotonic Session Clock & Processing Queue
+  let sessionStartPerfMs = 0;
+  let totalIngestedSamples = 0;
+  let processingChain = Promise.resolve();
+
+  // SpeechRecognition, Alignment & Conversation Translation State
+  let recognition = null;
+  let recognitionEpoch = 0;
+  const aligner = new TranscriptAligner();
+  const roleTracker = new PartnerRoleTracker();
+  const ttsController = new TtsPlaybackController();
+  /** @type {Map<number, object>} */
+  const turnControllers = new Map();
+  /**
+   * Chronological locked conversation turns sent to `/translate`.
+   * @type {Array<{
+   *   turnId: number,
+   *   role: 'user' | 'partner',
+   *   rawMessage: string,
+   *   correctedMessage: string | null,
+   *   partnerSimpleMessage: string | null
+   * }>}
+   */
+  const conversationTurns = [];
+  let cumulativeInputTokens = 0;
+  let cumulativeOutputTokens = 0;
+
+  function showError(message) {
+    console.error('Diarization UI Error:', message);
+    if (!errorBanner) return;
+    errorBanner.textContent = message;
+    errorBanner.style.display = 'block';
+  }
+
+  function clearError() {
+    if (!errorBanner) return;
+    errorBanner.textContent = '';
+    errorBanner.style.display = 'none';
+  }
+
+  function setStatus(label, stateClass) {
+    if (statusText) statusText.textContent = label;
+    if (statusPill) {
+      statusPill.classList.remove('is-ready', 'is-error', 'is-speaking');
+      if (stateClass) statusPill.classList.add(stateClass);
+    }
+  }
+
+  function resetCalibrationProgress() {
+    if (calibrationProgressFill) calibrationProgressFill.style.width = '0%';
+    if (calibrationProgressLabel) calibrationProgressLabel.textContent = '0,0 / 5,0 Sek. Sprache erkannt';
+    if (calibrationEmbeddingLabel) calibrationEmbeddingLabel.textContent = '0 Einbettungen';
+  }
+
+  function updateCalibrationProgress(speechSec, embCount) {
+    const pct = Math.min(100, Math.max(0, (speechSec / 5.0) * 100));
+    if (calibrationProgressFill) calibrationProgressFill.style.width = `${pct.toFixed(1)}%`;
+    if (calibrationProgressLabel) {
+      calibrationProgressLabel.textContent = `${speechSec.toFixed(1).replace('.', ',')} / 5,0 Sek. Sprache erkannt`;
+    }
+    if (calibrationEmbeddingLabel) {
+      calibrationEmbeddingLabel.textContent = `${embCount} ${embCount === 1 ? 'Einbettung' : 'Einbettungen'}`;
+    }
+  }
+
+  function switchView(view) {
+    currentView = view;
+    if (view === 'calibration') {
+      if (calibrationView) calibrationView.style.display = 'flex';
+      if (diarizationView) diarizationView.style.display = 'none';
+      if (recalibrateBtn) recalibrateBtn.style.display = 'none';
+      if (calibrationCancelBtn) {
+        calibrationCancelBtn.style.display = hasCalibratedProfile ? 'inline-block' : 'none';
+      }
+      resetCalibrationProgress();
+      setStatus(`Kalibrierung (${backendLabel})`, 'is-ready');
+    } else {
+      if (calibrationView) calibrationView.style.display = 'none';
+      if (diarizationView) diarizationView.style.display = 'flex';
+      if (recalibrateBtn) recalibrateBtn.style.display = 'inline-block';
+      setStatus(isRecording ? `Hört zu… (${backendLabel})` : `Bereit (${backendLabel})`, 'is-ready');
+    }
+    updateRecordButtonVisuals();
+  }
+
+  function getSessionTimeSec() {
+    if (!isRecording && totalIngestedSamples > 0) {
+      return totalIngestedSamples / SAMPLE_RATE;
+    }
+    const wallSec = (performance.now() - sessionStartPerfMs) / 1000.0;
+    const audioSec = totalIngestedSamples / SAMPLE_RATE;
+    return audioSec > 0.05 ? audioSec : Math.max(0, wallSec);
+  }
+
+  /**
+   * Initializes the Rust WASM module and loads Silero VAD v5, `pyannote/segmentation-3.0`,
+   * and `WeSpeaker SimAM-ResNet100 (VoxBlink2 + VoxCeleb2 LM)` INT8 ONNX models, then checks
+   * IndexedDB for a calibrated "NutzerIn" profile matching the active model ID and dimension.
+   */
+  async function initializeEngine() {
+    try {
+      setStatus('Modelle werden geladen…', null);
+      await initWasm({ module_or_path: '/static/wasm/vad_diarization_wasm_bg.wasm' });
+
+      const [vadResp, segResp, embedResp] = await Promise.all([
+        fetch('/static/models/silero_vad_v5.onnx'),
+        fetch(`/static/models/${SEGMENTATION_MODEL_FILENAME}`),
+        fetch(`/static/models/${EMBEDDING_MODEL_FILENAME}`),
+      ]);
+
+      if (!vadResp.ok || !segResp.ok || !embedResp.ok) {
+        throw new Error(
+          `Modell-Download fehlgeschlagen (VAD: ${vadResp.status}, Seg: ${segResp.status}, Embedding: ${embedResp.status})`
+        );
+      }
+
+      const [vadBuf, segBuf, embedBuf] = await Promise.all([
+        vadResp.arrayBuffer(),
+        segResp.arrayBuffer(),
+        embedResp.arrayBuffer(),
+      ]);
+
+      engine = await DiarizationEngine.new(
+        new Uint8Array(vadBuf),
+        new Uint8Array(segBuf),
+        new Uint8Array(embedBuf)
+      );
+      engine.set_recognition_threshold(VOICE_RECOGNITION_THRESHOLD);
+      backendLabel = engine.backend_name();
+
+      // Check for saved voice profile in IndexedDB (PRD-2 / PRD-3) and verify modelId + dimension compatibility
+      const savedProfile = await getStoredVoiceProfile('NutzerIn');
+      const isProfileCompatible =
+        savedProfile &&
+        savedProfile.modelId === EMBEDDING_MODEL_FILENAME &&
+        Array.isArray(savedProfile.centroid) &&
+        savedProfile.centroid.length === EXPECTED_EMBEDDING_DIM;
+
+      if (isProfileCompatible) {
+        engine.load_profiles(JSON.stringify([savedProfile]));
+        hasCalibratedProfile = true;
+        switchView('diarization');
+        setStatus(`Bereit (${backendLabel})`, 'is-ready');
+      } else {
+        hasCalibratedProfile = false;
+        switchView('calibration');
+      }
+
+      if (recordBtn) recordBtn.disabled = false;
+    } catch (err) {
+      console.error('Failed to initialize DiarizationEngine:', err);
+      setStatus('Initialisierungsfehler', 'is-error');
+      showError(`Fehler beim Laden der Sprachmodelle: ${err.message || err}`);
+    }
+  }
+
+  function formatSpeakerTitle(speakerId, isLeichte = false) {
+    return roleTracker.formatCardTitle(speakerId, isLeichte);
+  }
+
+  /**
+   * Re-synchronizes active partner speaker IDs across all live and locked UI cards,
+   * updates `partnerNumber` on stored `conversationTurns`, and refreshes every card's
+   * header title so single-partner ("GesprächspartnerIn") vs. multi-partner
+   * ("GesprächspartnerIn 1", "GesprächspartnerIn 2") and high-confidence `roleType`
+   * promotions apply retroactively across all cards of that speaker.
+   */
+  function refreshAllCardTitles() {
+    const activePartnerSpeakerIds = [];
+    for (const ctrl of turnControllers.values()) {
+      if (!ctrl.disposed && ctrl.renderedSpeakerKey && ctrl.renderedSpeakerKey !== 'NutzerIn') {
+        activePartnerSpeakerIds.push(ctrl.renderedSpeakerKey);
+      }
+    }
+    roleTracker.syncActiveSpeakers(activePartnerSpeakerIds);
+
+    for (const ctrl of turnControllers.values()) {
+      if (ctrl.disposed) continue;
+      const sid = ctrl.renderedSpeakerKey;
+      if (ctrl.titleEl) {
+        const nextTitle = formatSpeakerTitle(sid, false);
+        if (ctrl.titleEl.textContent !== nextTitle) {
+          ctrl.titleEl.textContent = nextTitle;
+        }
+      }
+      if (ctrl.leichteCardEl) {
+        const leichteTitleEl = ctrl.leichteCardEl.querySelector('.card-role-title');
+        if (leichteTitleEl) {
+          const nextLeichteTitle = formatSpeakerTitle(sid, true);
+          if (leichteTitleEl.textContent !== nextLeichteTitle) {
+            leichteTitleEl.textContent = nextLeichteTitle;
+          }
+        }
+      }
+      if (ctrl.historyEntry) {
+        ctrl.historyEntry.speakerId = sid || null;
+        ctrl.historyEntry.partnerNumber =
+          ctrl.historyEntry.role === 'partner' ? roleTracker.getPartnerNumber(sid) : null;
+      }
+    }
+  }
+
+  function speakerCardClasses(speakerId) {
+    if (!speakerId) return 'dialog-card card-speaker card-speaker-pending';
+    if (speakerId === 'NutzerIn') return 'dialog-card card-user';
+    const match = /(\d+)$/.exec(speakerId);
+    if (!match) return 'dialog-card card-speaker card-speaker-1';
+    const idx = ((parseInt(match[1], 10) - 1) % 4) + 1;
+    return `dialog-card card-speaker card-speaker-${idx}`;
+  }
+
+  function speakerLeichteCardClasses(speakerId) {
+    const match = /(\d+)$/.exec(speakerId || '');
+    const idx = match ? ((parseInt(match[1], 10) - 1) % 4) + 1 : 1;
+    return `dialog-card card-speaker card-speaker-${idx} card-speaker-leichte`;
+  }
+
+  function scrollToBottom() {
+    if (scrollContainer) {
+      scrollContainer.scrollTop = scrollContainer.scrollHeight;
+    }
+  }
+
+  function escapeHtml(str) {
+    if (!str) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
+  /**
+   * Formats an integer or numeric string into a localized German number string (e.g. `1.234`).
+   */
+  function formatTokens(val) {
+    if (val === null || val === undefined || val === '') return null;
+    const num = typeof val === 'number' ? val : Number(val);
+    if (!Number.isFinite(num) || num < 0) return null;
+    return num.toLocaleString('de-DE');
+  }
+
+  /**
+   * Formats a monetary cost in Euros (`EUR`) with German locale formatting.
+   */
+  function formatPrice(cost) {
+    if (cost === null || cost === undefined || !Number.isFinite(cost) || cost < 0) {
+      return null;
+    }
+    if (cost > 0 && cost < 0.00005) {
+      return '< 0,0001 €';
+    }
+    try {
+      return new Intl.NumberFormat('de-DE', {
+        style: 'currency',
+        currency: 'EUR',
+        minimumFractionDigits: cost < 0.01 ? (cost === 0 ? 2 : 4) : 2,
+        maximumFractionDigits: 4,
+      }).format(cost);
+    } catch (_err) {
+      return `${cost.toFixed(4)} €`;
+    }
+  }
+
+  /**
+   * Updates cumulative session token and cost statistics in the top header.
+   */
+  function updateHeaderStats() {
+    const statsContainer = document.getElementById('dialog-header-stats');
+    const inputEl = document.getElementById('stats-input-badge');
+    const outputEl = document.getElementById('stats-output-badge');
+    const costEl = document.getElementById('stats-cost-badge');
+
+    if (!statsContainer || !inputEl || !outputEl || !costEl) return;
+
+    if (cumulativeInputTokens === 0 && cumulativeOutputTokens === 0) {
+      statsContainer.style.display = 'none';
+      return;
+    }
+
+    statsContainer.style.display = 'flex';
+    inputEl.textContent = `${formatTokens(cumulativeInputTokens)} Eingabetoken`;
+    outputEl.textContent = `${formatTokens(cumulativeOutputTokens)} Ausgabetoken`;
+
+    const totalCost = (cumulativeInputTokens * 0.1 + cumulativeOutputTokens * 0.3) / 1_000_000;
+    costEl.textContent = formatPrice(totalCost);
+  }
+
+  /**
+   * Accumulates spent input and output tokens from an API call's `debugInfo` into session totals.
+   */
+  function recordDebugTokenStats(debugInfo) {
+    if (!debugInfo) return;
+    const inTokens = typeof debugInfo.inputTokens === 'number' ? debugInfo.inputTokens : 0;
+    const reasTokens = typeof debugInfo.reasoningTokens === 'number' ? debugInfo.reasoningTokens : 0;
+    const respTokens = typeof debugInfo.responseTokens === 'number' ? debugInfo.responseTokens : 0;
+    const cls = debugInfo.classification || null;
+    const clsInTokens = cls && typeof cls.inputTokens === 'number' ? cls.inputTokens : 0;
+    const clsReasTokens = cls && typeof cls.reasoningTokens === 'number' ? cls.reasoningTokens : 0;
+    const clsRespTokens = cls && typeof cls.responseTokens === 'number' ? cls.responseTokens : 0;
+    cumulativeInputTokens += inTokens + clsInTokens;
+    cumulativeOutputTokens += reasTokens + respTokens + clsReasTokens + clsRespTokens;
+    updateHeaderStats();
+  }
+
+  /**
+   * Converts reduced Markdown (`##`, `**bold**`, `*italic*`, bullet/numbered lists, line breaks)
+   * into HTML after escaping all raw HTML characters.
+   */
+  function renderSafeMarkdown(markdown) {
+    if (!markdown) return '';
+    let html = escapeHtml(markdown);
+    html = html.replace(/^##\s+(.*$)/gim, '<h3 class="md-heading">$1</h3>');
+    html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+    html = html.replace(/\*(.*?)\*/g, '<em>$1</em>');
+    html = html.replace(/(?:^|\n)\*\s+(.*)/g, '\n<li class="md-li">$1</li>');
+    html = html.replace(/(<li class="md-li">[\s\S]*?<\/li>)/g, '<ul class="md-ul">$1</ul>');
+    html = html.replace(/<\/ul>\s*<ul class="md-ul">/g, '');
+    html = html.replace(/(?:^|\n)(\d+)\.\s+(.*)/g, '\n<li class="md-oli">$2</li>');
+    html = html.replace(/(<li class="md-oli">[\s\S]*?<\/li>)/g, '<ol class="md-ol">$1</ol>');
+    html = html.replace(/<\/ol>\s*<ol class="md-ol">/g, '');
+    html = html.replace(/\n/g, '<br>');
+    return html;
+  }
+
+  const MARKDOWN_SANITIZER_ELEMENTS = ['h3', 'ul', 'ol', 'li', 'br', 'strong', 'em'];
+  const MARKDOWN_SANITIZER_ATTRIBUTES = ['class'];
+
+  /**
+   * Inserts rendered Markdown into `el`, using the native Sanitizer API (`Element.prototype.setHTML`)
+   * with an explicit tag/attribute allowlist when available and falling back to escaped allowlisted
+   * `renderSafeMarkdown` output in browsers without native `setHTML` (e.g. Safari).
+   */
+  function setSafeMarkdownHTML(el, markdown) {
+    if (!el) return;
+    const html = renderSafeMarkdown(markdown);
+    if ('setHTML' in Element.prototype) {
+      el.setHTML(html, {
+        sanitizer: {
+          elements: MARKDOWN_SANITIZER_ELEMENTS,
+          attributes: MARKDOWN_SANITIZER_ATTRIBUTES,
+        },
+      });
+    } else {
+      el.innerHTML = html;
+    }
+  }
+
+  /**
+   * Removes any attached per-card debug badges and collapsible sections when a partial `< 2.0s`
+   * turn correction is superseded by continued speech on the same turn.
+   */
+  function clearCardDebugBlocks(cardEl, headerRowEl) {
+    if (headerRowEl) {
+      for (const sel of [
+        '.card-cost-badge',
+        '.card-input-tokens-badge',
+        '.card-tokens-badge',
+      ]) {
+        const el = headerRowEl.querySelector(sel);
+        if (el) el.remove();
+      }
+    }
+    if (cardEl) {
+      for (const selector of [
+        '.debug-reasoning-details',
+        '.debug-response-tokens-row',
+        '.debug-prompt-details',
+        '.debug-classification-details',
+      ]) {
+        const el = cardEl.querySelector(selector);
+        if (el) el.remove();
+      }
+    }
+  }
+
+  /**
+   * Attaches per-card token/cost badges and collapsible `Reasoning`, `Prompt-Details`, and `Klassifizierung` blocks.
+   */
+  function attachDebugBlocks(cardEl, headerRowEl, bodyEl, debugInfo, reasoningText) {
+    if (!cardEl || !bodyEl || !debugInfo) return;
+
+    clearCardDebugBlocks(cardEl, headerRowEl);
+
+    const inTokens = typeof debugInfo.inputTokens === 'number' ? debugInfo.inputTokens : 0;
+    const reasTokens = typeof debugInfo.reasoningTokens === 'number' ? debugInfo.reasoningTokens : 0;
+    const respTokens = typeof debugInfo.responseTokens === 'number' ? debugInfo.responseTokens : 0;
+    const outTokens = reasTokens + respTokens;
+
+    const cls = debugInfo.classification || null;
+    const clsInTokens = cls && typeof cls.inputTokens === 'number' ? cls.inputTokens : 0;
+    const clsReasTokens = cls && typeof cls.reasoningTokens === 'number' ? cls.reasoningTokens : 0;
+    const clsRespTokens = cls && typeof cls.responseTokens === 'number' ? cls.responseTokens : 0;
+    const clsOutTokens = clsReasTokens + clsRespTokens;
+
+    const totalInTokens = inTokens + clsInTokens;
+    const totalOutTokens = outTokens + clsOutTokens;
+
+    const cardCost = (totalInTokens * 0.1 + totalOutTokens * 0.3) / 1_000_000;
+    const formattedCost = formatPrice(cardCost);
+
+    if (headerRowEl) {
+      let badgesContainer = headerRowEl.querySelector('.card-header-badges');
+      if (!badgesContainer) {
+        badgesContainer = document.createElement('div');
+        badgesContainer.className = 'card-header-badges';
+        headerRowEl.appendChild(badgesContainer);
+      }
+
+      if (formattedCost) {
+        const costBadge = document.createElement('span');
+        costBadge.className = 'debug-pill-badge card-cost-badge';
+        costBadge.textContent = formattedCost;
+        badgesContainer.appendChild(costBadge);
+      }
+
+      const inBadge = document.createElement('span');
+      inBadge.className = 'debug-pill-badge card-input-tokens-badge';
+      inBadge.textContent = `${formatTokens(totalInTokens)} Eingabetoken`;
+      badgesContainer.appendChild(inBadge);
+
+      const outBadge = document.createElement('span');
+      outBadge.className = 'debug-pill-badge card-tokens-badge';
+      outBadge.textContent = `${formatTokens(totalOutTokens)} Ausgabetoken`;
+      badgesContainer.appendChild(outBadge);
+    }
+
+    const chevronSvg14 = `
+      <svg class="chevron-svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M19 9l-7 7-7-7"/>
+      </svg>
+    `;
+
+    // 1. Reasoning collapsible block at top of card body
+    const thoughtText = reasoningText || debugInfo.reasoning || '';
+    if (thoughtText || reasTokens > 0) {
+      const reasoningDetails = document.createElement('details');
+      reasoningDetails.className = 'debug-reasoning-details';
+
+      const reasoningSummary = document.createElement('summary');
+      reasoningSummary.className = 'debug-reasoning-summary';
+      reasoningSummary.innerHTML = `
+        <span>Reasoning</span>
+        <div class="debug-subsummary-right">
+          <span class="debug-pill-badge">${formatTokens(reasTokens)} Ausgabetoken</span>
+          ${chevronSvg14}
+        </div>
+      `;
+      reasoningDetails.appendChild(reasoningSummary);
+
+      const reasoningBody = document.createElement('div');
+      reasoningBody.className = 'debug-reasoning-body';
+      if (thoughtText) {
+        const mdWrap = document.createElement('div');
+        mdWrap.className = 'md-rendered-content';
+        setSafeMarkdownHTML(mdWrap, thoughtText);
+        reasoningBody.appendChild(mdWrap);
+      } else {
+        const fallbackSpan = document.createElement('span');
+        fallbackSpan.className = 'empty-state-text italic';
+        fallbackSpan.textContent = `(${formatTokens(reasTokens)} Ausgabetoken für Gedankengang verwendet)`;
+        reasoningBody.appendChild(fallbackSpan);
+      }
+      reasoningDetails.appendChild(reasoningBody);
+
+      if (bodyEl.firstChild) {
+        bodyEl.insertBefore(reasoningDetails, bodyEl.firstChild);
+      } else {
+        bodyEl.appendChild(reasoningDetails);
+      }
+    }
+
+    // 2. Response tokens row above Prompt-Details block
+    const responseTokensRow = document.createElement('div');
+    responseTokensRow.className = 'debug-response-tokens-row';
+    const respBadge = document.createElement('span');
+    respBadge.className = 'debug-pill-badge';
+    respBadge.textContent = `${formatTokens(respTokens)} Ausgabetoken`;
+    responseTokensRow.appendChild(respBadge);
+    bodyEl.appendChild(responseTokensRow);
+
+    // 3. Prompt-Details collapsible block
+    const promptDetails = document.createElement('details');
+    promptDetails.className = 'debug-prompt-details';
+
+    const promptSummary = document.createElement('summary');
+    promptSummary.className = 'debug-prompt-summary';
+    promptSummary.innerHTML = `
+      <span>Prompt-Details</span>
+      <svg class="chevron-svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M19 9l-7 7-7-7"/>
+      </svg>
+    `;
+    promptDetails.appendChild(promptSummary);
+
+    const promptBody = document.createElement('div');
+    promptBody.className = 'debug-prompt-body';
+
+    if (debugInfo.systemPrompt && debugInfo.systemPrompt.trim()) {
+      const sysDetails = document.createElement('details');
+      sysDetails.className = 'debug-subdetails';
+      const sysTokens = debugInfo.systemTokens ?? debugInfo.systemPromptTokens;
+      const sysTokensHtml =
+        sysTokens != null
+          ? `<span class="debug-pill-badge">${formatTokens(sysTokens)} Eingabetoken</span>`
+          : '';
+      sysDetails.innerHTML = `
+        <summary class="debug-subsummary">
+          <span>System-Prompt</span>
+          <div class="debug-subsummary-right">
+            ${sysTokensHtml}
+            ${chevronSvg14}
+          </div>
+        </summary>
+        <div class="debug-subcontent">
+          <pre class="debug-pre" tabindex="0"><code>${escapeHtml(debugInfo.systemPrompt)}</code></pre>
+        </div>
+      `;
+      promptBody.appendChild(sysDetails);
+    }
+
+    if (debugInfo.prompt && debugInfo.prompt.trim()) {
+      const pDetails = document.createElement('details');
+      pDetails.className = 'debug-subdetails';
+      const pTokens = debugInfo.promptTokens ?? inTokens;
+      const pTokensHtml =
+        pTokens != null
+          ? `<span class="debug-pill-badge">${formatTokens(pTokens)} Eingabetoken</span>`
+          : '';
+      pDetails.innerHTML = `
+        <summary class="debug-subsummary">
+          <span>Prompt</span>
+          <div class="debug-subsummary-right">
+            ${pTokensHtml}
+            ${chevronSvg14}
+          </div>
+        </summary>
+        <div class="debug-subcontent">
+          <pre class="debug-pre" tabindex="0"><code>${escapeHtml(debugInfo.prompt)}</code></pre>
+        </div>
+      `;
+      promptBody.appendChild(pDetails);
+    }
+
+    if (Array.isArray(debugInfo.examples) && debugInfo.examples.length > 0) {
+      debugInfo.examples.forEach((exText, idx) => {
+        if (!exText || !exText.trim()) return;
+        const exDetails = document.createElement('details');
+        exDetails.className = 'debug-subdetails';
+        exDetails.innerHTML = `
+          <summary class="debug-subsummary">
+            <span>Beispiel ${idx + 1}</span>
+            <div class="debug-subsummary-right">
+              ${chevronSvg14}
+            </div>
+          </summary>
+          <div class="debug-subcontent">
+            <div class="md-rendered-content"></div>
+          </div>
+        `;
+        const mdContainer = exDetails.querySelector('.md-rendered-content');
+        setSafeMarkdownHTML(mdContainer, exText);
+        promptBody.appendChild(exDetails);
+      });
+    }
+
+    promptDetails.appendChild(promptBody);
+    bodyEl.appendChild(promptDetails);
+
+    // 4. Klassifizierung collapsible block (when post-translation classification debug info is present)
+    if (cls) {
+      const clsDetails = document.createElement('details');
+      clsDetails.className = 'debug-prompt-details debug-classification-details';
+
+      const clsSummary = document.createElement('summary');
+      clsSummary.className = 'debug-prompt-summary';
+      const topicBadgeHtml = cls.topic
+        ? `<span class="debug-pill-badge">Thema: ${escapeHtml(cls.topic)}</span>`
+        : '';
+      const roleBadgeHtml =
+        cls.partnerRole && cls.partnerRole.roleType
+          ? `<span class="debug-pill-badge">Rolle: ${escapeHtml(cls.partnerRole.roleType)} (${Math.round((cls.partnerRole.confidence || 0) * 100)}%)</span>`
+          : '';
+      const typeCatBadgeHtml =
+        cls.classificationType && cls.category
+          ? `<span class="debug-pill-badge">${escapeHtml(cls.classificationType)} / ${escapeHtml(cls.category)}</span>`
+          : '';
+      clsSummary.innerHTML = `
+        <span>Klassifizierung</span>
+        <div class="debug-subsummary-right">
+          ${topicBadgeHtml}
+          ${roleBadgeHtml}
+          ${typeCatBadgeHtml}
+          <svg class="chevron-svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M19 9l-7 7-7-7"/>
+          </svg>
+        </div>
+      `;
+      clsDetails.appendChild(clsSummary);
+
+      const clsBody = document.createElement('div');
+      clsBody.className = 'debug-prompt-body';
+
+      if ((cls.reasoning && cls.reasoning.trim()) || clsReasTokens > 0) {
+        const clsReasDetails = document.createElement('details');
+        clsReasDetails.className = 'debug-subdetails';
+        clsReasDetails.innerHTML = `
+          <summary class="debug-subsummary">
+            <span>Reasoning</span>
+            <div class="debug-subsummary-right">
+              <span class="debug-pill-badge">${formatTokens(clsReasTokens)} Ausgabetoken</span>
+              ${chevronSvg14}
+            </div>
+          </summary>
+          <div class="debug-subcontent"></div>
+        `;
+        const subContent = clsReasDetails.querySelector('.debug-subcontent');
+        if (cls.reasoning && cls.reasoning.trim()) {
+          const mdDiv = document.createElement('div');
+          mdDiv.className = 'md-rendered-content';
+          setSafeMarkdownHTML(mdDiv, cls.reasoning);
+          subContent.appendChild(mdDiv);
+        } else {
+          const fallbackSpan = document.createElement('span');
+          fallbackSpan.className = 'empty-state-text italic';
+          fallbackSpan.textContent = `(${formatTokens(clsReasTokens)} Ausgabetoken für Gedankengang verwendet)`;
+          subContent.appendChild(fallbackSpan);
+        }
+        clsBody.appendChild(clsReasDetails);
+      }
+
+      if (cls.systemPrompt && cls.systemPrompt.trim()) {
+        const clsSysDetails = document.createElement('details');
+        clsSysDetails.className = 'debug-subdetails';
+        const clsSysTokensHtml =
+          cls.systemPromptTokens != null
+            ? `<span class="debug-pill-badge">${formatTokens(cls.systemPromptTokens)} Eingabetoken</span>`
+            : '';
+        clsSysDetails.innerHTML = `
+          <summary class="debug-subsummary">
+            <span>System-Prompt</span>
+            <div class="debug-subsummary-right">
+              ${clsSysTokensHtml}
+              ${chevronSvg14}
+            </div>
+          </summary>
+          <div class="debug-subcontent">
+            <pre class="debug-pre" tabindex="0"><code>${escapeHtml(cls.systemPrompt)}</code></pre>
+          </div>
+        `;
+        clsBody.appendChild(clsSysDetails);
+      }
+
+      if (cls.prompt && cls.prompt.trim()) {
+        const clsPDetails = document.createElement('details');
+        clsPDetails.className = 'debug-subdetails';
+        const clsPTokens = cls.promptTokens ?? clsInTokens;
+        const clsPTokensHtml =
+          clsPTokens != null
+            ? `<span class="debug-pill-badge">${formatTokens(clsPTokens)} Eingabetoken</span>`
+            : '';
+        clsPDetails.innerHTML = `
+          <summary class="debug-subsummary">
+            <span>Prompt</span>
+            <div class="debug-subsummary-right">
+              ${clsPTokensHtml}
+              ${chevronSvg14}
+            </div>
+          </summary>
+          <div class="debug-subcontent">
+            <pre class="debug-pre" tabindex="0"><code>${escapeHtml(cls.prompt)}</code></pre>
+          </div>
+        `;
+        clsBody.appendChild(clsPDetails);
+      }
+
+      if (cls.rawResponse && cls.rawResponse.trim()) {
+        const clsOutDetails = document.createElement('details');
+        clsOutDetails.className = 'debug-subdetails';
+        clsOutDetails.innerHTML = `
+          <summary class="debug-subsummary">
+            <span>JSON-Ausgabe</span>
+            <div class="debug-subsummary-right">
+              <span class="debug-pill-badge">${formatTokens(clsRespTokens)} Ausgabetoken</span>
+              ${chevronSvg14}
+            </div>
+          </summary>
+          <div class="debug-subcontent">
+            <pre class="debug-pre" tabindex="0"><code>${escapeHtml(cls.rawResponse)}</code></pre>
+          </div>
+        `;
+        clsBody.appendChild(clsOutDetails);
+      }
+
+      clsDetails.appendChild(clsBody);
+      bodyEl.appendChild(clsDetails);
+    }
+  }
+
+  /**
+   * Sends a turn's raw spoken transcript + chronological history + acoustic speaker metadata to
+   * `POST /correct-transcript` (`1.0s` silence or on lock).
+   *
+   * - Cancels any superseded in-flight request via `AbortController` and enforces a `5000 ms` timeout
+   *   so `/translate` can never be blocked indefinitely.
+   * - Once settled (`'done'` or `'failed'`), if the turn has already reached Stage 2 (`locked === true`),
+   *   immediately triggers `commitStage2ForLockedTurn`.
+   */
+  async function correctTranscriptForTurn(uiTurn, turnSnapshot, requestedRaw, reqSeq) {
+    if (uiTurn.correctionAbortController) {
+      try {
+        uiTurn.correctionAbortController.abort();
+      } catch (e) {}
+    }
+    const abortCtrl = new AbortController();
+    uiTurn.correctionAbortController = abortCtrl;
+    uiTurn.correctionState = 'in_flight';
+    const timeoutId = setTimeout(() => {
+      try {
+        abortCtrl.abort();
+      } catch (e) {}
+    }, 5000);
+
+    const provisionalRole = speakerIdToApiRole(turnSnapshot.speakerId);
+    const provisionalPartnerNumber =
+      provisionalRole === 'partner'
+        ? roleTracker.getPartnerNumber(turnSnapshot.speakerId) ??
+          extractPartnerNumberFromSpeakerId(turnSnapshot.speakerId)
+        : null;
+    const historyPayload = buildCorrectTranscriptHistory(conversationTurns, {
+      turnId: turnSnapshot.turnId,
+      role: provisionalRole,
+      speakerId: turnSnapshot.speakerId,
+      partnerNumber: provisionalPartnerNumber,
+      rawText: requestedRaw,
+      clusterId: turnSnapshot.clusterId,
+      userLikelihood: turnSnapshot.userLikelihood,
+      pauseMs: turnSnapshot.pauseMs,
+    });
+
+    try {
+      const res = await fetch('/correct-transcript', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ history: historyPayload }),
+        signal: abortCtrl.signal,
+      });
+
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      if (data && data.debugInfo) {
+        recordDebugTokenStats(data.debugInfo);
+      }
+
+      if (uiTurn.disposed || uiTurn.correctionReqSeq !== reqSeq || uiTurn.latestRawText !== requestedRaw) {
+        return;
+      }
+
+      const resolvedRole =
+        data && (data.resolvedRole === 'user' || data.resolvedRole === 'partner')
+          ? data.resolvedRole
+          : provisionalRole;
+      const mergeWithPrevious = Boolean(data && data.mergeWithPrevious);
+      const correctedMsg =
+        data && typeof data.message === 'string' && data.message.trim().length > 0
+          ? data.message
+          : requestedRaw;
+
+      uiTurn.resolution = {
+        forRawText: requestedRaw,
+        message: correctedMsg,
+        resolvedRole,
+        mergeWithPrevious,
+        debugInfo: data ? data.debugInfo || null : null,
+        reasoning: data ? data.reasoning || null : null,
+      };
+      uiTurn.correctionState = 'done';
+
+      if (!mergeWithPrevious) {
+        uiTurn.correctedText = correctedMsg;
+        uiTurn.correctedForRawText = requestedRaw;
+        uiTurn.textContainerEl.textContent = correctedMsg;
+        if (uiTurn.historyEntry) {
+          uiTurn.historyEntry.correctedMessage = correctedMsg;
+        }
+        if (data && data.debugInfo) {
+          attachDebugBlocks(
+            uiTurn.cardEl,
+            uiTurn.headerRowEl,
+            uiTurn.bodyEl,
+            data.debugInfo,
+            data.reasoning
+          );
+        }
+      }
+
+      if (uiTurn.latestLockSnapshot && !uiTurn.stage2Committed) {
+        commitStage2ForLockedTurn(uiTurn, uiTurn.latestLockSnapshot);
+      }
+      scrollToBottom();
+    } catch (err) {
+      if (uiTurn.disposed || uiTurn.correctionReqSeq !== reqSeq || uiTurn.latestRawText !== requestedRaw) {
+        return;
+      }
+      console.warn('Failed to correct transcript:', err);
+      uiTurn.resolution = {
+        forRawText: requestedRaw,
+        message: null,
+        resolvedRole: provisionalRole,
+        mergeWithPrevious: false,
+        debugInfo: null,
+        reasoning: null,
+      };
+      uiTurn.correctionState = 'failed';
+      if (uiTurn.latestLockSnapshot && !uiTurn.stage2Committed) {
+        commitStage2ForLockedTurn(uiTurn, uiTurn.latestLockSnapshot);
+      }
+    } finally {
+      clearTimeout(timeoutId);
+      if (uiTurn.correctionAbortController === abortCtrl) {
+        uiTurn.correctionAbortController = null;
+      }
+    }
+  }
+
+  /**
+   * Executes Stage 2 once BOTH:
+   * (a) the turn is locked (`2.0s` silence, speaker switch, or `Stopp`) AND
+   * (b) `/correct-transcript` for `turn.rawText` has settled (`'done'` or `'failed'`).
+   *
+   * - Applies `mergeWithPrevious` (merging into the preceding card and removing the split card)
+   *   or `resolvedRole` (updating card header & session `clusterId` binding).
+   * - Fires `POST /translate` if and only if the final resolved role is `'partner'`, passing
+   *   the already-corrected (and merged) transcript.
+   */
+  function commitStage2ForLockedTurn(uiTurn, turn) {
+    if (uiTurn.disposed || uiTurn.stage2Committed) {
+      return;
+    }
+    uiTurn.stage2Committed = true;
+
+    const res =
+      uiTurn.resolution && uiTurn.resolution.forRawText === turn.rawText
+        ? uiTurn.resolution
+        : null;
+    const resolvedRole =
+      res && (res.resolvedRole === 'user' || res.resolvedRole === 'partner')
+        ? res.resolvedRole
+        : speakerIdToApiRole(turn.speakerId);
+    const wantMerge = Boolean(res && res.mergeWithPrevious);
+
+    // 1. Handle split-turn unification (mergeWithPrevious == true)
+    if (wantMerge) {
+      const merged = aligner.mergeLockedTurnIntoPrevious(turn.turnId, resolvedRole);
+      const prevUiTurn = merged ? turnControllers.get(merged.targetTurnId) : null;
+      if (merged && prevUiTurn && !prevUiTurn.disposed) {
+        const unifiedMessage =
+          res && res.message ? res.message : `${prevUiTurn.correctedText || prevUiTurn.latestRawText} ${turn.rawText}`.trim();
+
+        // Restore prevUiTurn.cardEl if it was previously hidden by a formatting-only translation
+        if (prevUiTurn.hiddenByFormatting && !prevUiTurn.cardEl.parentNode) {
+          prevUiTurn.hiddenByFormatting = false;
+          if (prevUiTurn.leichteCardEl && prevUiTurn.leichteCardEl.parentNode === feedEl) {
+            feedEl.insertBefore(prevUiTurn.cardEl, prevUiTurn.leichteCardEl);
+          } else {
+            feedEl.appendChild(prevUiTurn.cardEl);
+          }
+        }
+        // Remove any prior partial translation card on prevUiTurn before re-evaluating
+        if (prevUiTurn.leichteCardEl) {
+          if (prevUiTurn.leichteCardEl.parentNode) {
+            prevUiTurn.leichteCardEl.remove();
+          }
+          prevUiTurn.leichteCardEl = null;
+        }
+
+        prevUiTurn.latestRawText = merged.rawText;
+        prevUiTurn.correctedText = unifiedMessage;
+        prevUiTurn.correctedForRawText = merged.rawText;
+        prevUiTurn.textContainerEl.textContent = unifiedMessage;
+        prevUiTurn.renderedSpeakerKey = merged.speakerId;
+        prevUiTurn.cardEl.className = speakerCardClasses(merged.speakerId);
+        prevUiTurn.titleEl.textContent = formatSpeakerTitle(merged.speakerId);
+
+        if (res && res.debugInfo) {
+          attachDebugBlocks(
+            prevUiTurn.cardEl,
+            prevUiTurn.headerRowEl,
+            prevUiTurn.bodyEl,
+            res.debugInfo,
+            res.reasoning
+          );
+        }
+
+        if (prevUiTurn.historyEntry) {
+          prevUiTurn.historyEntry.role = merged.role;
+          prevUiTurn.historyEntry.speakerId = merged.speakerId;
+          prevUiTurn.historyEntry.partnerNumber =
+            merged.role === 'partner' ? roleTracker.getPartnerNumber(merged.speakerId) : null;
+          prevUiTurn.historyEntry.rawMessage = merged.rawText;
+          prevUiTurn.historyEntry.correctedMessage = unifiedMessage;
+          prevUiTurn.historyEntry.partnerSimpleMessage = null;
+        }
+
+        // Remove the split card
+        uiTurn.disposed = true;
+        if (uiTurn.cardEl && uiTurn.cardEl.parentNode) {
+          uiTurn.cardEl.remove();
+        }
+        if (uiTurn.leichteCardEl && uiTurn.leichteCardEl.parentNode) {
+          uiTurn.leichteCardEl.remove();
+        }
+        turnControllers.delete(uiTurn.turnId);
+        refreshAllCardTitles();
+
+        if (merged.role === 'partner') {
+          runTranslationForTurn(prevUiTurn, prevUiTurn.turnId, merged.speakerId);
+        }
+        scrollToBottom();
+        return;
+      }
+    }
+
+    // 2. Standard turn resolution (or fallback if no preceding turn existed to merge into)
+    const effectiveSpeakerId =
+      aligner.applyTurnRoleResolution(turn.turnId, resolvedRole) || turn.speakerId;
+    const effectiveRole = speakerIdToApiRole(effectiveSpeakerId);
+
+    if (uiTurn.renderedSpeakerKey !== effectiveSpeakerId) {
+      uiTurn.renderedSpeakerKey = effectiveSpeakerId;
+      uiTurn.cardEl.className = speakerCardClasses(effectiveSpeakerId);
+    }
+
+    const effectiveCorrected =
+      res && res.message
+        ? res.message
+        : uiTurn.correctedForRawText === turn.rawText && uiTurn.correctedText
+          ? uiTurn.correctedText
+          : null;
+
+    if (effectiveCorrected && uiTurn.textContainerEl.textContent !== effectiveCorrected) {
+      uiTurn.correctedText = effectiveCorrected;
+      uiTurn.correctedForRawText = turn.rawText;
+      uiTurn.textContainerEl.textContent = effectiveCorrected;
+    }
+
+    const historyEntry = {
+      turnId: turn.turnId,
+      role: effectiveRole,
+      speakerId: effectiveSpeakerId,
+      partnerNumber:
+        effectiveRole === 'partner' ? roleTracker.getPartnerNumber(effectiveSpeakerId) : null,
+      rawMessage: turn.rawText,
+      correctedMessage: effectiveCorrected,
+      partnerSimpleMessage: null,
+      clusterId: turn.clusterId ?? null,
+      userLikelihood: turn.userLikelihood ?? null,
+      pauseMs: turn.pauseMs ?? null,
+    };
+    uiTurn.historyEntry = historyEntry;
+    uiTurn.historyRecorded = true;
+    conversationTurns.push(historyEntry);
+    refreshAllCardTitles();
+
+    if (effectiveRole === 'partner') {
+      runTranslationForTurn(uiTurn, turn.turnId, effectiveSpeakerId);
+    }
+    scrollToBottom();
+  }
+
+  /**
+   * Inserts a `"GesprächspartnerIn N (Leichte Sprache)"` card below `uiTurn.cardEl` and calls
+   * `POST /translate` (`2.0s` silence, speaker switch, or `Stopp`) using chronological history
+   * with corrected transcripts and `partner_simple` entries wherever available.
+   */
+  function runTranslationForTurn(uiTurn, turnId, speakerId) {
+    const leichteCard = document.createElement('div');
+    leichteCard.className = speakerLeichteCardClasses(speakerId);
+
+    const headerRow = document.createElement('div');
+    headerRow.className = 'card-header-row';
+
+    const title = document.createElement('div');
+    title.className = 'card-role-title';
+    title.textContent = formatSpeakerTitle(speakerId, true);
+    headerRow.appendChild(title);
+
+    const body = document.createElement('div');
+    body.className = 'card-content';
+
+    leichteCard.appendChild(headerRow);
+    leichteCard.appendChild(body);
+    uiTurn.leichteCardEl = leichteCard;
+
+    if (uiTurn.cardEl.parentNode === feedEl && uiTurn.cardEl.nextSibling) {
+      feedEl.insertBefore(leichteCard, uiTurn.cardEl.nextSibling);
+    } else {
+      feedEl.appendChild(leichteCard);
+    }
+    scrollToBottom();
+
+    async function executeFetch() {
+      clearCardDebugBlocks(leichteCard, headerRow);
+      body.innerHTML = `
+        <div class="card-loading-state">
+          <span class="spinner" aria-hidden="true"></span>
+          <span class="loading-label">Wird in Leichte Sprache übertragen...</span>
+        </div>
+      `;
+
+      try {
+        const messagesPayload = buildTranslateHistoryMessages(conversationTurns, turnId);
+        const res = await fetch('/translate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ messages: messagesPayload }),
+        });
+
+        if (!res.ok) {
+          throw new Error(`API error ${res.status}`);
+        }
+
+        const data = await res.json();
+        if (data && data.debugInfo) {
+          recordDebugTokenStats(data.debugInfo);
+        }
+
+        if (uiTurn.disposed) {
+          return;
+        }
+
+        if (uiTurn.historyEntry && data && data.content) {
+          uiTurn.historyEntry.partnerSimpleMessage = normalizePartnerSimpleContent(data.content);
+        }
+
+        if (data && data.partnerRole) {
+          const currentSpeakerId = uiTurn.renderedSpeakerKey || speakerId;
+          roleTracker.ingestPartnerRole(currentSpeakerId, data.partnerRole);
+          refreshAllCardTitles();
+        }
+
+        // Mirror /dialog-translation: hide raw partner card when statement only needed formatting
+        if (data.type === 'formatting') {
+          uiTurn.hiddenByFormatting = true;
+          if (uiTurn.cardEl.parentNode) {
+            uiTurn.cardEl.remove();
+          }
+          if (uiTurn.likelihoodBadgeEl) {
+            let bContainer = headerRow.querySelector('.card-header-badges');
+            if (!bContainer) {
+              bContainer = document.createElement('div');
+              bContainer.className = 'card-header-badges';
+              headerRow.appendChild(bContainer);
+            }
+            if (!bContainer.querySelector('.card-likelihood-badge')) {
+              const formattedLikelihood = uiTurn.likelihoodBadgeEl.cloneNode(true);
+              bContainer.prepend(formattedLikelihood);
+            }
+          }
+        }
+
+        body.innerHTML = '';
+
+        if (data.warning) {
+          const warningEl = document.createElement('div');
+          const wType = data.warning.type || 'info';
+          warningEl.className = `warning-box warning-${wType}`;
+
+          const wHeadline = document.createElement('div');
+          wHeadline.className = 'warning-headline';
+          wHeadline.textContent = data.warning.headline;
+          warningEl.appendChild(wHeadline);
+
+          const wBody = document.createElement('div');
+          wBody.className = 'warning-body';
+          setSafeMarkdownHTML(wBody, data.warning.body);
+          warningEl.appendChild(wBody);
+
+          body.appendChild(warningEl);
+        }
+
+        if (data.content) {
+          const contentContainer = document.createElement('div');
+          contentContainer.className = 'md-rendered-content';
+          setSafeMarkdownHTML(contentContainer, data.content);
+
+          if (data.warning && data.warning.revealable) {
+            contentContainer.style.display = 'none';
+
+            const revealBtn = document.createElement('button');
+            revealBtn.type = 'button';
+            revealBtn.className = 'btn btn-secondary btn-sm reveal-btn';
+            revealBtn.textContent = 'Antwort anzeigen';
+            revealBtn.addEventListener('click', () => {
+              contentContainer.style.display = 'block';
+              revealBtn.remove();
+              scrollToBottom();
+            });
+
+            body.appendChild(revealBtn);
+          }
+
+          body.appendChild(contentContainer);
+
+          // Attach accessible "Vorlesen" / Stop button in .card-header-actions
+          let actionsContainer = headerRow.querySelector('.card-header-actions');
+          if (!actionsContainer) {
+            actionsContainer = document.createElement('div');
+            actionsContainer.className = 'card-header-actions';
+            const badgesContainer = headerRow.querySelector('.card-header-badges');
+            if (badgesContainer) {
+              headerRow.insertBefore(actionsContainer, badgesContainer);
+            } else {
+              headerRow.appendChild(actionsContainer);
+            }
+          }
+
+          const playBtn = document.createElement('button');
+          playBtn.type = 'button';
+          playBtn.className = 'card-tts-play-btn';
+          playBtn.setAttribute('aria-label', 'Übersetzung in Leichter Sprache vorlesen');
+          playBtn.setAttribute('aria-pressed', 'false');
+
+          const updatePlayButtonState = () => {
+            const isPlayingThisCard = ttsController.activeCardId === `diarization-turn-${turnId}`;
+            if (isPlayingThisCard) {
+              playBtn.classList.add('is-speaking');
+              playBtn.setAttribute('aria-pressed', 'true');
+              playBtn.setAttribute('aria-label', 'Vorlesen stoppen');
+              playBtn.innerHTML = `
+                <svg class="card-tts-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                  <rect x="5" y="5" width="14" height="14" rx="2" ry="2"></rect>
+                </svg>
+                <span>Stopp</span>
+                <span class="card-tts-wave" aria-hidden="true"><span></span><span></span><span></span></span>
+              `;
+              leichteCard.classList.add('is-tts-playing');
+            } else {
+              playBtn.classList.remove('is-speaking');
+              playBtn.setAttribute('aria-pressed', 'false');
+              playBtn.setAttribute('aria-label', 'Übersetzung in Leichter Sprache vorlesen');
+              playBtn.innerHTML = `
+                <svg class="card-tts-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+                  <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+                </svg>
+                <span>Vorlesen</span>
+              `;
+              leichteCard.classList.remove('is-tts-playing');
+            }
+          };
+
+          playBtn.addEventListener('click', () => {
+            const sid = uiTurn.renderedSpeakerKey || speakerId;
+            const inferred = roleTracker.inferredRoles.get(sid);
+            const pNumber = roleTracker.getPartnerNumber(sid);
+
+            ttsController.speak({
+              cardId: `diarization-turn-${turnId}`,
+              text: data.content,
+              partnerRole: inferred ? inferred.roleType : null,
+              partnerNumber: pNumber,
+              onStateChange: () => {
+                updatePlayButtonState();
+              },
+            });
+            updatePlayButtonState();
+          });
+
+          updatePlayButtonState();
+          actionsContainer.appendChild(playBtn);
+        }
+
+        if (data && data.debugInfo) {
+          attachDebugBlocks(leichteCard, headerRow, body, data.debugInfo, data.reasoning);
+        }
+        scrollToBottom();
+      } catch (err) {
+        console.error('Translation error:', err);
+        if (uiTurn.disposed) {
+          return;
+        }
+        body.innerHTML = `
+          <div class="error-retry-state">
+            <span class="error-msg">Übertragung in Leichte Sprache fehlgeschlagen.</span>
+            <button type="button" class="btn btn-secondary btn-sm retry-btn">Erneut versuchen</button>
+          </div>
+        `;
+        const retryBtn = body.querySelector('.retry-btn');
+        if (retryBtn) {
+          retryBtn.addEventListener('click', executeFetch);
+        }
+        scrollToBottom();
+      }
+    }
+
+    executeFetch();
+  }
+
+  /**
+   * Disposes all active turn controllers, removes dialog cards, and resets conversation history
+   * and cumulative token/cost counters.
+   */
+  function clearDialogFeedState() {
+    ttsController.stop();
+    for (const ctrl of turnControllers.values()) {
+      ctrl.disposed = true;
+      if (ctrl.correctionAbortController) {
+        try {
+          ctrl.correctionAbortController.abort();
+        } catch (e) {}
+      }
+      if (ctrl.cardEl && ctrl.cardEl.parentNode) {
+        ctrl.cardEl.remove();
+      }
+      if (ctrl.leichteCardEl && ctrl.leichteCardEl.parentNode) {
+        ctrl.leichteCardEl.remove();
+      }
+    }
+    turnControllers.clear();
+    conversationTurns.length = 0;
+    roleTracker.reset();
+    cumulativeInputTokens = 0;
+    cumulativeOutputTokens = 0;
+    updateHeaderStats();
+    if (emptyStateEl) {
+      emptyStateEl.style.display = 'block';
+    }
+  }
+
+  /**
+   * Synchronizes `TranscriptAligner` turns against the DOM feed, dispatches `1.0s`-silence
+   * `/correct-transcript` (Stage 1), and gates `2.0s`-silence (or speaker-switch / `Stopp`)
+   * `/translate` calls until `/correct-transcript` has settled (Stage 2).
+   */
+  function syncDialogFeed(nowSec) {
+    const turns = aligner.syncTurns(nowSec);
+    let domMutated = false;
+
+    if (emptyStateEl) {
+      const nextDisplay = turns.length === 0 ? 'block' : 'none';
+      if (emptyStateEl.style.display !== nextDisplay) {
+        emptyStateEl.style.display = nextDisplay;
+      }
+    }
+
+    const activeTurnIds = new Set(turns.map((t) => t.turnId));
+    for (const [id, ctrl] of turnControllers.entries()) {
+      if (!activeTurnIds.has(id)) {
+        ctrl.disposed = true;
+        if (ctrl.correctionAbortController) {
+          try {
+            ctrl.correctionAbortController.abort();
+          } catch (e) {}
+        }
+        if (ctrl.cardEl && ctrl.cardEl.parentNode) {
+          ctrl.cardEl.remove();
+        }
+        if (ctrl.leichteCardEl && ctrl.leichteCardEl.parentNode) {
+          ctrl.leichteCardEl.remove();
+        }
+        turnControllers.delete(id);
+        domMutated = true;
+      }
+    }
+
+    for (const turn of turns) {
+      let uiTurn = turnControllers.get(turn.turnId);
+      if (!uiTurn) {
+        const cardEl = document.createElement('div');
+        const headerRowEl = document.createElement('div');
+        headerRowEl.className = 'card-header-row';
+        const titleEl = document.createElement('div');
+        titleEl.className = 'card-role-title';
+        headerRowEl.appendChild(titleEl);
+
+        const bodyEl = document.createElement('div');
+        bodyEl.className = 'card-content';
+        const textContainerEl = document.createElement('div');
+        textContainerEl.className = 'turn-text-container';
+        bodyEl.appendChild(textContainerEl);
+
+        cardEl.appendChild(headerRowEl);
+        cardEl.appendChild(bodyEl);
+        feedEl.appendChild(cardEl);
+
+        uiTurn = {
+          turnId: turn.turnId,
+          cardEl,
+          headerRowEl,
+          titleEl,
+          bodyEl,
+          textContainerEl,
+          leichteCardEl: null,
+          likelihoodBadgeEl: null,
+          latestRawText: '',
+          renderedPartsKey: null,
+          renderedSpeakerKey: undefined,
+          correctedText: null,
+          correctedForRawText: null,
+          lastCorrectionRequestedRaw: null,
+          correctionReqSeq: 0,
+          correctionState: 'idle',
+          correctionAbortController: null,
+          resolution: null,
+          latestLockSnapshot: null,
+          stage2Committed: false,
+          historyRecorded: false,
+          historyEntry: null,
+          hiddenByFormatting: false,
+          disposed: false,
+        };
+        turnControllers.set(turn.turnId, uiTurn);
+        domMutated = true;
+      }
+
+      // If speaker resumed talking (< 2.0s pause) and rawText changed, abort any in-flight correction
+      if (
+        !turn.locked &&
+        uiTurn.lastCorrectionRequestedRaw !== null &&
+        uiTurn.lastCorrectionRequestedRaw !== turn.rawText
+      ) {
+        if (uiTurn.correctionAbortController) {
+          try {
+            uiTurn.correctionAbortController.abort();
+          } catch (e) {}
+          uiTurn.correctionAbortController = null;
+        }
+        uiTurn.correctionState = 'idle';
+        uiTurn.resolution = null;
+      }
+
+      uiTurn.latestRawText = turn.rawText;
+
+      if (!uiTurn.hiddenByFormatting) {
+        if (uiTurn.renderedSpeakerKey !== turn.speakerId) {
+          uiTurn.renderedSpeakerKey = turn.speakerId;
+          uiTurn.cardEl.className = speakerCardClasses(turn.speakerId);
+          uiTurn.titleEl.textContent = formatSpeakerTitle(turn.speakerId);
+          domMutated = true;
+        }
+
+        // Update user likelihood in percent at the top of the card
+        if (typeof turn.userLikelihood === 'number' && turn.speakerId !== null) {
+          const pct = Math.max(0, Math.min(100, Math.round(turn.userLikelihood * 100)));
+          if (!uiTurn.likelihoodBadgeEl) {
+            const badge = document.createElement('span');
+            badge.className = 'debug-pill-badge card-likelihood-badge';
+            uiTurn.likelihoodBadgeEl = badge;
+            let badgesContainer = uiTurn.headerRowEl.querySelector('.card-header-badges');
+            if (!badgesContainer) {
+              badgesContainer = document.createElement('div');
+              badgesContainer.className = 'card-header-badges';
+              uiTurn.headerRowEl.appendChild(badgesContainer);
+            }
+            badgesContainer.prepend(badge);
+            domMutated = true;
+          }
+          const badgeText = `Nutzer-Wahrscheinlichkeit: ${pct}%`;
+          if (uiTurn.likelihoodBadgeEl.textContent !== badgeText) {
+            uiTurn.likelihoodBadgeEl.textContent = badgeText;
+            uiTurn.likelihoodBadgeEl.classList.toggle('card-likelihood-user', pct >= 50);
+            uiTurn.likelihoodBadgeEl.classList.toggle('card-likelihood-partner', pct < 50);
+            domMutated = true;
+          }
+        } else if (uiTurn.likelihoodBadgeEl) {
+          uiTurn.likelihoodBadgeEl.remove();
+          uiTurn.likelihoodBadgeEl = null;
+          domMutated = true;
+        }
+
+        // If speaker resumed talking after a 1.0s correction (< 2.0s pause), clear stale correction
+        if (
+          uiTurn.correctedForRawText !== null &&
+          uiTurn.correctedForRawText !== turn.rawText
+        ) {
+          uiTurn.correctedText = null;
+          uiTurn.correctedForRawText = null;
+          uiTurn.renderedPartsKey = null;
+          clearCardDebugBlocks(uiTurn.cardEl, uiTurn.headerRowEl);
+          domMutated = true;
+        }
+
+        const hasValidCorrection =
+          uiTurn.correctedText !== null && uiTurn.correctedForRawText === turn.rawText;
+
+        if (!hasValidCorrection) {
+          const partsKey = turn.parts
+            .map((p) => `${p.isInterim ? '1' : '0'}:${p.text}`)
+            .join('|');
+          if (uiTurn.renderedPartsKey !== partsKey) {
+            uiTurn.renderedPartsKey = partsKey;
+            uiTurn.textContainerEl.innerHTML = '';
+            turn.parts.forEach((part, idx) => {
+              if (idx > 0) {
+                uiTurn.textContainerEl.appendChild(document.createTextNode(' '));
+              }
+              const span = document.createElement('span');
+              if (part.isInterim) {
+                span.className = 'interim-text';
+              }
+              span.textContent = part.text;
+              uiTurn.textContainerEl.appendChild(span);
+            });
+            domMutated = true;
+          }
+        }
+      }
+
+      // Stage 1: Trigger /correct-transcript at 1.0s silence (or on immediate lock)
+      if (
+        turn.shouldCorrect &&
+        turn.speakerId !== null &&
+        turn.rawText.length > 0 &&
+        uiTurn.lastCorrectionRequestedRaw !== turn.rawText
+      ) {
+        uiTurn.lastCorrectionRequestedRaw = turn.rawText;
+        uiTurn.correctionReqSeq += 1;
+        correctTranscriptForTurn(
+          uiTurn,
+          turn,
+          turn.rawText,
+          uiTurn.correctionReqSeq
+        );
+      }
+
+      // Stage 2: Lock turn & wait for /correct-transcript to settle before merging or calling /translate
+      if (
+        turn.locked &&
+        turn.speakerId !== null &&
+        turn.rawText.length > 0 &&
+        !uiTurn.stage2Committed
+      ) {
+        uiTurn.latestLockSnapshot = turn;
+        const isSettledForCurrentRaw =
+          uiTurn.lastCorrectionRequestedRaw === turn.rawText &&
+          (uiTurn.correctionState === 'done' || uiTurn.correctionState === 'failed');
+
+        if (isSettledForCurrentRaw) {
+          commitStage2ForLockedTurn(uiTurn, turn);
+          domMutated = true;
+        }
+      } else if (
+        turn.locked &&
+        turn.speakerId !== null &&
+        uiTurn.stage2Committed &&
+        uiTurn.historyRecorded &&
+        uiTurn.historyEntry
+      ) {
+        // 3. Handle retroactive cluster relabeling (e.g. competitive 2-speaker update flipping Turn 1)
+        const updatedRole = speakerIdToApiRole(turn.speakerId);
+        if (uiTurn.historyEntry.role !== updatedRole) {
+          uiTurn.historyEntry.role = updatedRole;
+          if (updatedRole === 'user') {
+            uiTurn.historyEntry.partnerSimpleMessage = null;
+            if (uiTurn.leichteCardEl) {
+              if (uiTurn.hiddenByFormatting && !uiTurn.cardEl.parentNode) {
+                uiTurn.hiddenByFormatting = false;
+                if (uiTurn.leichteCardEl.parentNode === feedEl) {
+                  feedEl.insertBefore(uiTurn.cardEl, uiTurn.leichteCardEl);
+                } else {
+                  feedEl.appendChild(uiTurn.cardEl);
+                }
+              }
+              if (uiTurn.leichteCardEl.parentNode) {
+                uiTurn.leichteCardEl.remove();
+              }
+              uiTurn.leichteCardEl = null;
+              domMutated = true;
+            }
+          } else if (updatedRole === 'partner' && !uiTurn.leichteCardEl) {
+            runTranslationForTurn(uiTurn, turn.turnId, turn.speakerId);
+            domMutated = true;
+          }
+        }
+      }
+    }
+
+    refreshAllCardTitles();
+
+    if (domMutated && turns.length > 0) {
+      scrollToBottom();
+    }
+  }
+
+  /**
+   * Queues downsampled 16 kHz PCM samples into the Rust WASM `DiarizationEngine` sequentially.
+   */
+  function enqueuePcmChunk(pcmChunk) {
+    if (!engine || !pcmChunk || pcmChunk.length === 0) return;
+    const copy = new Float32Array(pcmChunk);
+    totalIngestedSamples += copy.length;
+    const chunkEndTimeSec = totalIngestedSamples / SAMPLE_RATE;
+
+    processingChain = processingChain
+      .then(async () => {
+        if (!engine) return;
+        const jsonStr = await engine.process_audio_chunk(copy);
+        const speaking = engine.is_speaking();
+
+        if (currentView === 'calibration') {
+          const speechSec = engine.onboarding_speech_seconds();
+          const embCount = engine.onboarding_embedding_count();
+          updateCalibrationProgress(speechSec, embCount);
+
+          if (recordBtn) {
+            recordBtn.classList.toggle('is-voice-active', isRecording && speaking);
+          }
+          if (isRecording) {
+            setStatus(
+              speaking ? `Stimme aktiv (${backendLabel})` : `Hört zu… (${backendLabel})`,
+              speaking ? 'is-speaking' : 'is-ready'
+            );
+          }
+
+          // Auto-finish calibration once >= 5.0 seconds of active speech + >= 4 embeddings are captured
+          if (isRecording && speechSec >= 5.0 && embCount >= 4 && !isStoppingCalibration) {
+            setTimeout(() => {
+              completeCalibrationFlow(true);
+            }, 0);
+          }
+          return;
+        }
+
+        if (recordBtn) {
+          recordBtn.classList.toggle('is-voice-active', isRecording && speaking);
+        }
+        if (isRecording) {
+          setStatus(
+            speaking ? `Sprache aktiv (${backendLabel})` : `Hört zu… (${backendLabel})`,
+            speaking ? 'is-speaking' : 'is-ready'
+          );
+        }
+
+        let segmentsChanged = false;
+        if (jsonStr && jsonStr !== '[]') {
+          const parsed = JSON.parse(jsonStr);
+          aligner.ingestDiarizedSegments(parsed);
+          segmentsChanged = true;
+        }
+
+        const prevVadSpeaking = aligner.isVadSpeaking;
+        aligner.notifyVadState(speaking, chunkEndTimeSec);
+        if (
+          segmentsChanged ||
+          aligner.isVadSpeaking !== prevVadSpeaking ||
+          aligner.hasUnlockedTurns()
+        ) {
+          syncDialogFeed(chunkEndTimeSec);
+        }
+      })
+      .catch((err) => {
+        console.error('Error in WASM process_audio_chunk:', err);
+      });
+  }
+
+  function drainSharedRingBuffer() {
+    if (!sabIndices || !sabRing) return;
+    const writeIdx = Atomics.load(sabIndices, 0);
+    let readIdx = Atomics.load(sabIndices, 1);
+    let available = writeIdx - readIdx;
+    if (available <= 0) return;
+
+    if (available > SAB_RING_CAPACITY) {
+      readIdx = writeIdx - SAB_RING_CAPACITY;
+      available = SAB_RING_CAPACITY;
+    }
+
+    while (available > 0) {
+      const batch = Math.min(available, sabDrainScratch.length);
+      for (let i = 0; i < batch; i++) {
+        const slot = (((readIdx + i) % SAB_RING_CAPACITY) + SAB_RING_CAPACITY) % SAB_RING_CAPACITY;
+        sabDrainScratch[i] = sabRing[slot];
+      }
+      readIdx = (readIdx + batch) | 0;
+      Atomics.store(sabIndices, 1, readIdx);
+      available -= batch;
+
+      enqueuePcmChunk(sabDrainScratch.subarray(0, batch));
+    }
+  }
+
+  function startSpeechRecognition() {
+    if (!SpeechRecognition) return;
+
+    recognitionEpoch += 1;
+    const epoch = recognitionEpoch;
+    const rec = new SpeechRecognition();
+    rec.lang = 'de-DE';
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.maxAlternatives = 1;
+
+    rec.onresult = (event) => {
+      // Suppress live STT ingestion if device loudspeaker is actively playing TTS audio (echo guard)
+      if (ttsController.isRecordingGated()) {
+        return;
+      }
+      const nowSec = getSessionTimeSec();
+      aligner.handleRecognitionResults(epoch, event.results, nowSec);
+      syncDialogFeed(nowSec);
+    };
+
+    rec.onerror = (event) => {
+      if (event.error === 'no-speech' || event.error === 'aborted') {
+        return;
+      }
+      console.warn('SpeechRecognition error:', event.error);
+      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+        showError('Mikrofon- oder Spracherkennungszugriff wurde verweigert.');
+      }
+    };
+
+    rec.onend = () => {
+      aligner.finalizeEpoch(epoch);
+      syncDialogFeed(getSessionTimeSec());
+      if (shouldStayRecording && recognition === rec) {
+        try {
+          startSpeechRecognition();
+        } catch (_err) {}
+      }
+    };
+
+    recognition = rec;
+    try {
+      rec.start();
+    } catch (err) {
+      console.warn('Failed to start SpeechRecognition:', err);
+    }
+  }
+
+  function updateRecordButtonVisuals() {
+    if (!recordBtn) return;
+    const micIcon = recordBtn.querySelector('.icon-mic');
+    const stopIcon = recordBtn.querySelector('.icon-stop');
+
+    recordBtn.setAttribute('aria-pressed', isRecording ? 'true' : 'false');
+    if (isRecording) {
+      recordBtn.classList.add('is-recording');
+      recordBtn.setAttribute('aria-label', currentView === 'calibration' ? 'Kalibrierung beenden' : 'Aufnahme beenden');
+      if (micIcon) micIcon.style.display = 'none';
+      if (stopIcon) stopIcon.style.display = 'block';
+      if (recordBtnLabel) recordBtnLabel.textContent = 'Stopp';
+    } else {
+      recordBtn.classList.remove('is-recording', 'is-voice-active');
+      recordBtn.setAttribute('aria-label', currentView === 'calibration' ? 'Kalibrierung starten' : 'Aufnahme starten');
+      if (micIcon) micIcon.style.display = 'block';
+      if (stopIcon) stopIcon.style.display = 'none';
+      if (recordBtnLabel) recordBtnLabel.textContent = 'Aufnahme';
+    }
+  }
+
+  function teardownAudioNodes() {
+    if (sabDrainTimer !== null) {
+      clearInterval(sabDrainTimer);
+      sabDrainTimer = null;
+      drainSharedRingBuffer();
+    }
+    if (recognition) {
+      const recToStop = recognition;
+      recognition = null;
+      try {
+        recToStop.stop();
+      } catch (_err) {}
+    }
+    if (muteGainNode) {
+      try { muteGainNode.disconnect(); } catch (_err) {}
+      muteGainNode = null;
+    }
+    if (sourceNode) {
+      try { sourceNode.disconnect(); } catch (_err) {}
+      sourceNode = null;
+    }
+    if (workletNode) {
+      try { workletNode.disconnect(); } catch (_err) {}
+      workletNode = null;
+    }
+    if (mediaStream) {
+      for (const track of mediaStream.getTracks()) {
+        track.stop();
+      }
+      mediaStream = null;
+    }
+    if (audioCtx) {
+      try { audioCtx.close(); } catch (_err) {}
+      audioCtx = null;
+    }
+    sabIndices = null;
+    sabRing = null;
+  }
+
+  // Calibration Completion Flow
+  async function completeCalibrationFlow(autoComplete) {
+    if (isStoppingCalibration) return;
+    isStoppingCalibration = true;
+
+    shouldStayRecording = false;
+    isRecording = false;
+    updateRecordButtonVisuals();
+    teardownAudioNodes();
+    setStatus('Stimmprofil wird gespeichert…', null);
+
+    try {
+      await processingChain;
+
+      if (engine) {
+        await engine.flush();
+        const profileJson = engine.finish_onboarding();
+        const profile = JSON.parse(profileJson);
+        profile.modelId = EMBEDDING_MODEL_FILENAME;
+        await saveVoiceProfile(profile);
+        hasCalibratedProfile = true;
+        totalIngestedSamples = 0;
+        aligner.reset();
+        clearDialogFeedState();
+        switchView('diarization');
+        setStatus(`Bereit (${backendLabel})`, 'is-ready');
+      }
+    } catch (err) {
+      console.error('Error completing voice calibration:', err);
+      showError(`Fehler bei der Sprachkalibrierung: ${err.message || err}`);
+      setStatus('Kalibrierungsfehler', 'is-error');
+    } finally {
+      isStoppingCalibration = false;
+    }
+  }
+
+  // Calibration Recording Flow (PRD-2)
+  async function startCalibration() {
+    if (!engine || isRecording) return;
+    clearError();
+    resetCalibrationProgress();
+
+    try {
+      mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
+
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === 'suspended') {
+        await audioCtx.resume();
+      }
+      await audioCtx.audioWorklet.addModule('/static/vad_worklet.js');
+
+      engine.start_onboarding('NutzerIn');
+      totalIngestedSamples = 0;
+      sessionStartPerfMs = performance.now();
+
+      const canUseSab =
+        window.crossOriginIsolated && typeof SharedArrayBuffer !== 'undefined';
+
+      if (canUseSab) {
+        const sab = new SharedArrayBuffer(8 + SAB_RING_CAPACITY * Float32Array.BYTES_PER_ELEMENT);
+        sabIndices = new Int32Array(sab, 0, 2);
+        sabRing = new Float32Array(sab, 8, SAB_RING_CAPACITY);
+        workletNode = new AudioWorkletNode(audioCtx, 'vad-audio-worklet', {
+          processorOptions: { sab, ringCapacity: SAB_RING_CAPACITY },
+        });
+        sabDrainTimer = window.setInterval(drainSharedRingBuffer, 32);
+      } else {
+        sabIndices = null;
+        sabRing = null;
+        workletNode = new AudioWorkletNode(audioCtx, 'vad-audio-worklet');
+        workletNode.port.onmessage = (ev) => {
+          if (ev.data) enqueuePcmChunk(ev.data);
+        };
+      }
+
+      sourceNode = audioCtx.createMediaStreamSource(mediaStream);
+      muteGainNode = audioCtx.createGain();
+      muteGainNode.gain.value = 0.0;
+      sourceNode.connect(workletNode);
+      workletNode.connect(muteGainNode);
+      muteGainNode.connect(audioCtx.destination);
+
+      isRecording = true;
+      shouldStayRecording = true;
+      updateRecordButtonVisuals();
+      setStatus(`Kalibriert Stimme… (${backendLabel})`, 'is-speaking');
+    } catch (err) {
+      console.error('Failed to start calibration recording:', err);
+      showError(`Mikrofon konnte nicht gestartet werden: ${err.message || err}`);
+      await stopCalibration(false, true);
+    }
+  }
+
+  async function stopCalibration(autoComplete = false, abort = false) {
+    if (abort) {
+      shouldStayRecording = false;
+      isRecording = false;
+      teardownAudioNodes();
+      updateRecordButtonVisuals();
+      if (engine) engine.reset();
+      return;
+    }
+
+    const currentSpeechSec = engine ? engine.onboarding_speech_seconds() : 0;
+    if (!autoComplete && currentSpeechSec < 3.0) {
+      showError(
+        'Bitte sprechen Sie noch etwas länger (mindestens 3 Sekunden), damit Ihre Stimme zuverlässig erkannt wird.'
+      );
+      return;
+    }
+
+    await completeCalibrationFlow(autoComplete);
+  }
+
+  // Regular Diarization Recording Flow
+  async function startRecording() {
+    if (!engine || isRecording) return;
+    clearError();
+
+    try {
+      mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
+
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === 'suspended') {
+        await audioCtx.resume();
+      }
+      await audioCtx.audioWorklet.addModule('/static/vad_worklet.js');
+
+      if (!aligner.hasContent()) {
+        engine.reset();
+        totalIngestedSamples = 0;
+        aligner.reset();
+      }
+      sessionStartPerfMs = performance.now() - (totalIngestedSamples / SAMPLE_RATE) * 1000.0;
+
+      const canUseSab =
+        window.crossOriginIsolated && typeof SharedArrayBuffer !== 'undefined';
+
+      if (canUseSab) {
+        const sab = new SharedArrayBuffer(8 + SAB_RING_CAPACITY * Float32Array.BYTES_PER_ELEMENT);
+        sabIndices = new Int32Array(sab, 0, 2);
+        sabRing = new Float32Array(sab, 8, SAB_RING_CAPACITY);
+        workletNode = new AudioWorkletNode(audioCtx, 'vad-audio-worklet', {
+          processorOptions: { sab, ringCapacity: SAB_RING_CAPACITY },
+        });
+        sabDrainTimer = window.setInterval(drainSharedRingBuffer, 32);
+      } else {
+        sabIndices = null;
+        sabRing = null;
+        workletNode = new AudioWorkletNode(audioCtx, 'vad-audio-worklet');
+        workletNode.port.onmessage = (ev) => {
+          if (ev.data) enqueuePcmChunk(ev.data);
+        };
+      }
+
+      sourceNode = audioCtx.createMediaStreamSource(mediaStream);
+      muteGainNode = audioCtx.createGain();
+      muteGainNode.gain.value = 0.0;
+      sourceNode.connect(workletNode);
+      workletNode.connect(muteGainNode);
+      muteGainNode.connect(audioCtx.destination);
+
+      isRecording = true;
+      shouldStayRecording = true;
+      aligner.setRecording(true);
+      updateRecordButtonVisuals();
+      setStatus(`Hört zu… (${backendLabel})`, 'is-ready');
+
+      startSpeechRecognition();
+    } catch (err) {
+      console.error('Failed to start recording:', err);
+      showError(`Mikrofon konnte nicht gestartet werden: ${err.message || err}`);
+      await stopRecording();
+    }
+  }
+
+  async function stopRecording() {
+    shouldStayRecording = false;
+    isRecording = false;
+    aligner.setRecording(false);
+    updateRecordButtonVisuals();
+    teardownAudioNodes();
+
+    if (engine) {
+      processingChain = processingChain
+        .then(async () => {
+          const flushedJson = await engine.flush();
+          if (flushedJson && flushedJson !== '[]') {
+            aligner.ingestDiarizedSegments(JSON.parse(flushedJson));
+          }
+          aligner.lockAllResolvedTurns();
+          syncDialogFeed(getSessionTimeSec());
+          setStatus(`Bereit (${backendLabel})`, 'is-ready');
+        })
+        .catch((err) => console.error('Error flushing DiarizationEngine:', err));
+    }
+  }
+
+  async function resetSession() {
+    if (isRecording) {
+      if (currentView === 'calibration') {
+        await stopCalibration(false, true);
+      } else {
+        await stopRecording();
+      }
+    }
+    await processingChain;
+
+    if (engine) {
+      engine.reset();
+    }
+    totalIngestedSamples = 0;
+    aligner.reset();
+    clearDialogFeedState();
+    clearError();
+  }
+
+  // Event Listeners
+  if (recordBtn) {
+    recordBtn.addEventListener('click', () => {
+      if (currentView === 'calibration') {
+        if (isRecording) {
+          stopCalibration(false);
+        } else {
+          startCalibration();
+        }
+      } else {
+        if (isRecording) {
+          stopRecording();
+        } else {
+          startRecording();
+        }
+      }
+    });
+  }
+
+  if (resetBtn) {
+    resetBtn.addEventListener('click', () => {
+      resetSession();
+    });
+  }
+
+  if (recalibrateBtn) {
+    recalibrateBtn.addEventListener('click', async () => {
+      if (isRecording) {
+        await stopRecording();
+      }
+      switchView('calibration');
+    });
+  }
+
+  if (calibrationCancelBtn) {
+    calibrationCancelBtn.addEventListener('click', async () => {
+      if (isRecording) {
+        await stopCalibration(false, true);
+      }
+      switchView('diarization');
+    });
+  }
+
+  initializeEngine();
+</script>
+{% endblock %}

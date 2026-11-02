@@ -1,17 +1,44 @@
 use askama::Template;
 use axum::{
-    extract::State,
+    extract::{Path as AxumPath, State},
     http::{header, HeaderMap, StatusCode},
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
     Form, Router,
 };
 use sha2::{Digest, Sha256};
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::SystemTime;
 use subtle::ConstantTimeEq;
 
 /// Static CSS stylesheet embedded at compile time.
 const STYLE_CSS: &str = include_str!("../static/style.css");
+
+/// ONNX Runtime Web JavaScript bridge embedded at compile time.
+const ORT_BRIDGE_JS: &str = include_str!("../static/ort_bridge.js");
+
+/// 16 kHz downsampling AudioWorkletProcessor script embedded at compile time.
+const VAD_WORKLET_JS: &str = include_str!("../static/vad_worklet.js");
+
+/// Streaming SpeechRecognition-to-Diarization transcript alignment module embedded at compile time.
+const TRANSCRIPT_ALIGNMENT_JS: &str = include_str!("../static/transcript_alignment.js");
+
+/// Precomputed SHA-256 ETag for the compile-time embedded CSS stylesheet.
+static STYLE_CSS_ETAG: LazyLock<String> = LazyLock::new(|| compute_etag(STYLE_CSS.as_bytes()));
+
+/// Precomputed SHA-256 ETag for the compile-time embedded ONNX Runtime Web JavaScript bridge.
+static ORT_BRIDGE_JS_ETAG: LazyLock<String> =
+    LazyLock::new(|| compute_etag(ORT_BRIDGE_JS.as_bytes()));
+
+/// Precomputed SHA-256 ETag for the compile-time embedded AudioWorkletProcessor script.
+static VAD_WORKLET_JS_ETAG: LazyLock<String> =
+    LazyLock::new(|| compute_etag(VAD_WORKLET_JS.as_bytes()));
+
+/// Precomputed SHA-256 ETag for the compile-time embedded transcript alignment module.
+static TRANSCRIPT_ALIGNMENT_JS_ETAG: LazyLock<String> =
+    LazyLock::new(|| compute_etag(TRANSCRIPT_ALIGNMENT_JS.as_bytes()));
 
 /// Name of the session cookie used to authenticate the admin web interface.
 pub const SESSION_COOKIE_NAME: &str = "admin_session";
@@ -36,6 +63,22 @@ pub struct DialogTranslationTemplate {
     pub api_key: String,
 }
 
+/// Askama template rendering the WASM VAD + Speaker Diarization test interface at `/vad-diarization`.
+#[derive(Template)]
+#[template(path = "vad_diarization.html")]
+pub struct VadDiarizationTemplate;
+
+/// Categorizes allowlisted static asset directories served from disk for WASM VAD & Diarization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StaticAssetCategory {
+    /// Compiled `wasm-bindgen` output under `static/wasm/`.
+    Wasm,
+    /// Self-hosted `onnxruntime-web` runtime modules and WASM binaries under `static/ort/`.
+    Ort,
+    /// Self-hosted ONNX speech models under `models/vad-diarization/`.
+    Model,
+}
+
 /// Payload received from the HTML login form submission (`POST /login`).
 #[derive(serde::Deserialize)]
 pub struct LoginForm {
@@ -50,7 +93,7 @@ pub struct WebState {
     pub api_key: Option<Arc<String>>,
 }
 
-/// Creates the web interface router for the HTML administration pages.
+/// Creates the web interface router for the HTML administration pages and static assets.
 pub fn router(admin_password: Arc<String>, api_key: Option<Arc<String>>) -> Router {
     let state = WebState {
         admin_password,
@@ -60,9 +103,19 @@ pub fn router(admin_password: Arc<String>, api_key: Option<Arc<String>>) -> Rout
     Router::new()
         .route("/", get(index))
         .route("/dialog-translation", get(dialog_translation))
+        .route("/vad-diarization", get(vad_diarization))
         .route("/login", post(login))
         .route("/logout", post(logout))
         .route("/static/style.css", get(serve_style))
+        .route("/static/ort_bridge.js", get(serve_ort_bridge))
+        .route("/static/vad_worklet.js", get(serve_vad_worklet))
+        .route(
+            "/static/transcript_alignment.js",
+            get(serve_transcript_alignment),
+        )
+        .route("/static/wasm/{filename}", get(serve_wasm_asset))
+        .route("/static/ort/{filename}", get(serve_ort_asset))
+        .route("/static/models/{filename}", get(serve_model_asset))
         .with_state(state)
 }
 
@@ -231,6 +284,46 @@ async fn dialog_translation(State(state): State<WebState>, headers: HeaderMap) -
     }
 }
 
+/// Handler for `GET /vad-diarization`: Renders the WASM VAD + Speaker Diarization test interface
+/// with Cross-Origin Isolation headers (`COOP` + `COEP`) when logged in, or the login card otherwise.
+async fn vad_diarization(State(state): State<WebState>, headers: HeaderMap) -> Response {
+    if let Some(cookie_val) = extract_session_cookie(&headers) {
+        if is_valid_session(&cookie_val, &state.admin_password) {
+            let template = VadDiarizationTemplate;
+            return match template.render() {
+                Ok(html) => {
+                    let mut resp_headers = HeaderMap::new();
+                    resp_headers.insert(
+                        "cross-origin-opener-policy",
+                        header::HeaderValue::from_static("same-origin"),
+                    );
+                    resp_headers.insert(
+                        "cross-origin-embedder-policy",
+                        header::HeaderValue::from_static("require-corp"),
+                    );
+                    (resp_headers, Html(html)).into_response()
+                }
+                Err(e) => {
+                    tracing::error!("Failed to render vad_diarization template: {e}");
+                    (StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error").into_response()
+                }
+            };
+        }
+    }
+
+    let template = LoginTemplate {
+        error_message: None,
+        next: Some("/vad-diarization".to_string()),
+    };
+    match template.render() {
+        Ok(html) => Html(html).into_response(),
+        Err(e) => {
+            tracing::error!("Failed to render login template: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error").into_response()
+        }
+    }
+}
+
 /// Handler for `POST /login`: Validates the admin password and sets an `HttpOnly` session cookie on success.
 async fn login(State(state): State<WebState>, Form(form): Form<LoginForm>) -> Response {
     let trimmed_pw = form.password.trim();
@@ -285,18 +378,337 @@ async fn logout() -> Response {
     (headers, Redirect::to("/")).into_response()
 }
 
-/// Handler for `GET /static/style.css`: Serves the embedded CSS stylesheet.
-async fn serve_style() -> Response {
+/// Resolves an allowlisted static filename within `category` to its safe local disk [`PathBuf`]
+/// and static MIME `Content-Type` header string, rejecting any unknown file or path traversal attempt.
+pub fn resolve_allowlisted_static_asset(
+    category: StaticAssetCategory,
+    filename: &str,
+) -> Option<(PathBuf, &'static str)> {
+    if filename.is_empty()
+        || filename.contains('/')
+        || filename.contains('\\')
+        || filename.contains("..")
+    {
+        return None;
+    }
+
+    match category {
+        StaticAssetCategory::Wasm => match filename {
+            "vad_diarization_wasm.js" => Some((
+                PathBuf::from("static/wasm").join(filename),
+                "text/javascript; charset=utf-8",
+            )),
+            "vad_diarization_wasm_bg.wasm" => Some((
+                PathBuf::from("static/wasm").join(filename),
+                "application/wasm",
+            )),
+            _ => None,
+        },
+        StaticAssetCategory::Ort => match filename {
+            "ort.webgpu.min.mjs"
+            | "ort.wasm.min.mjs"
+            | "ort-wasm-simd-threaded.mjs"
+            | "ort-wasm-simd-threaded.jsep.mjs"
+            | "ort-wasm-simd-threaded.jspi.mjs"
+            | "ort-wasm-simd-threaded.asyncify.mjs" => Some((
+                PathBuf::from("static/ort").join(filename),
+                "text/javascript; charset=utf-8",
+            )),
+            "ort-wasm-simd-threaded.wasm"
+            | "ort-wasm-simd-threaded.jsep.wasm"
+            | "ort-wasm-simd-threaded.jspi.wasm"
+            | "ort-wasm-simd-threaded.asyncify.wasm" => Some((
+                PathBuf::from("static/ort").join(filename),
+                "application/wasm",
+            )),
+            _ => None,
+        },
+        StaticAssetCategory::Model => match filename {
+            "silero_vad_v5.onnx"
+            | "pyannote_segmentation_3_0.onnx"
+            | "wespeaker_voxblink2_samresnet100_LM.int8.onnx"
+            | "wespeaker_en_voxceleb_resnet152_LM.onnx"
+            | "wespeaker_en_voxceleb_CAM++_LM.onnx" => Some((
+                PathBuf::from("models/vad-diarization").join(filename),
+                "application/octet-stream",
+            )),
+            _ => None,
+        },
+    }
+}
+
+/// Cached metadata and computed SHA-256 ETag for an on-disk static file.
+#[derive(Debug, Clone)]
+struct DiskAssetCacheEntry {
+    modified: SystemTime,
+    file_size: u64,
+    etag: String,
+}
+
+/// In-memory cache mapping disk file paths to their last known modification time, size, and ETag.
+static DISK_ASSET_CACHE: LazyLock<Mutex<HashMap<PathBuf, DiskAssetCacheEntry>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Computes a quoted SHA-256 ETag string (e.g. `"\"d41d8cd9...\""`) for the provided byte slice.
+pub fn compute_etag(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+    let mut etag = String::with_capacity(66);
+    etag.push('"');
+    for b in digest {
+        use std::fmt::Write;
+        let _ = write!(etag, "{b:02x}");
+    }
+    etag.push('"');
+    etag
+}
+
+/// Checks whether the incoming `If-None-Match` request header matches the resource's `etag`.
+///
+/// Supports exact quoted matching, wildcard `*`, and comma-delimited lists per RFC 7232 § 3.2.
+pub fn matches_if_none_match(req_headers: &HeaderMap, etag: &str) -> bool {
+    let Some(header_val) = req_headers.get(header::IF_NONE_MATCH) else {
+        return false;
+    };
+    let Ok(header_str) = header_val.to_str() else {
+        return false;
+    };
+    let trimmed = header_str.trim();
+    if trimmed == "*" {
+        return true;
+    }
+    for item in trimmed.split(',') {
+        let tag = item.trim();
+        let clean_tag = tag.strip_prefix("W/").unwrap_or(tag);
+        let clean_etag = etag.strip_prefix("W/").unwrap_or(etag);
+        if clean_tag == clean_etag {
+            return true;
+        }
+    }
+    false
+}
+
+/// Builds response headers for same-origin static assets compatible with
+/// `Cross-Origin-Embedder-Policy: require-corp` and includes `ETag` and `Cache-Control`.
+fn build_static_headers(
+    content_type: &'static str,
+    cache_control: &'static str,
+    etag: &str,
+) -> HeaderMap {
     let mut headers = HeaderMap::new();
     headers.insert(
         header::CONTENT_TYPE,
-        header::HeaderValue::from_static("text/css; charset=utf-8"),
+        header::HeaderValue::from_static(content_type),
     );
     headers.insert(
         header::CACHE_CONTROL,
-        header::HeaderValue::from_static("public, max-age=3600"),
+        header::HeaderValue::from_static(cache_control),
     );
-    (headers, STYLE_CSS).into_response()
+    if let Ok(etag_val) = header::HeaderValue::from_str(etag) {
+        headers.insert(header::ETAG, etag_val);
+    }
+    headers.insert(
+        "cross-origin-resource-policy",
+        header::HeaderValue::from_static("same-origin"),
+    );
+    headers.insert(
+        "cross-origin-embedder-policy",
+        header::HeaderValue::from_static("require-corp"),
+    );
+    headers.insert(
+        "cross-origin-opener-policy",
+        header::HeaderValue::from_static("same-origin"),
+    );
+    headers
+}
+
+/// Handler for `GET /static/style.css`: Serves the embedded CSS stylesheet with ETag validation.
+async fn serve_style(headers: HeaderMap) -> Response {
+    if matches_if_none_match(&headers, &STYLE_CSS_ETAG) {
+        (
+            StatusCode::NOT_MODIFIED,
+            build_static_headers("text/css; charset=utf-8", "no-cache", &STYLE_CSS_ETAG),
+        )
+            .into_response()
+    } else {
+        (
+            StatusCode::OK,
+            build_static_headers("text/css; charset=utf-8", "no-cache", &STYLE_CSS_ETAG),
+            STYLE_CSS,
+        )
+            .into_response()
+    }
+}
+
+/// Handler for `GET /static/ort_bridge.js`: Serves the embedded ONNX Runtime Web JS bridge with ETag validation.
+async fn serve_ort_bridge(headers: HeaderMap) -> Response {
+    if matches_if_none_match(&headers, &ORT_BRIDGE_JS_ETAG) {
+        (
+            StatusCode::NOT_MODIFIED,
+            build_static_headers(
+                "text/javascript; charset=utf-8",
+                "no-cache",
+                &ORT_BRIDGE_JS_ETAG,
+            ),
+        )
+            .into_response()
+    } else {
+        (
+            StatusCode::OK,
+            build_static_headers(
+                "text/javascript; charset=utf-8",
+                "no-cache",
+                &ORT_BRIDGE_JS_ETAG,
+            ),
+            ORT_BRIDGE_JS,
+        )
+            .into_response()
+    }
+}
+
+/// Handler for `GET /static/vad_worklet.js`: Serves the embedded 16 kHz AudioWorkletProcessor script with ETag validation.
+async fn serve_vad_worklet(headers: HeaderMap) -> Response {
+    if matches_if_none_match(&headers, &VAD_WORKLET_JS_ETAG) {
+        (
+            StatusCode::NOT_MODIFIED,
+            build_static_headers(
+                "text/javascript; charset=utf-8",
+                "no-cache",
+                &VAD_WORKLET_JS_ETAG,
+            ),
+        )
+            .into_response()
+    } else {
+        (
+            StatusCode::OK,
+            build_static_headers(
+                "text/javascript; charset=utf-8",
+                "no-cache",
+                &VAD_WORKLET_JS_ETAG,
+            ),
+            VAD_WORKLET_JS,
+        )
+            .into_response()
+    }
+}
+
+/// Handler for `GET /static/transcript_alignment.js`: Serves the embedded streaming SpeechRecognition-to-Diarization alignment module with ETag validation.
+async fn serve_transcript_alignment(headers: HeaderMap) -> Response {
+    if matches_if_none_match(&headers, &TRANSCRIPT_ALIGNMENT_JS_ETAG) {
+        (
+            StatusCode::NOT_MODIFIED,
+            build_static_headers(
+                "text/javascript; charset=utf-8",
+                "no-cache",
+                &TRANSCRIPT_ALIGNMENT_JS_ETAG,
+            ),
+        )
+            .into_response()
+    } else {
+        (
+            StatusCode::OK,
+            build_static_headers(
+                "text/javascript; charset=utf-8",
+                "no-cache",
+                &TRANSCRIPT_ALIGNMENT_JS_ETAG,
+            ),
+            TRANSCRIPT_ALIGNMENT_JS,
+        )
+            .into_response()
+    }
+}
+
+/// Serves an allowlisted disk file for `category` and `filename`, validating `If-None-Match`
+/// against the cached SHA-256 ETag to return `304 Not Modified` without re-reading
+/// large assets from disk.
+async fn serve_allowlisted_disk_asset(
+    category: StaticAssetCategory,
+    filename: &str,
+    req_headers: &HeaderMap,
+    cache_control: &'static str,
+) -> Response {
+    let Some((path, content_type)) = resolve_allowlisted_static_asset(category, filename) else {
+        return (StatusCode::NOT_FOUND, "Not Found").into_response();
+    };
+
+    let metadata = match tokio::fs::metadata(&path).await {
+        Ok(m) => m,
+        Err(_) => return (StatusCode::NOT_FOUND, "Asset Not Found").into_response(),
+    };
+
+    let mtime = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+    let file_size = metadata.len();
+
+    let cached_etag = {
+        let cache = DISK_ASSET_CACHE.lock().unwrap();
+        cache.get(&path).and_then(|entry| {
+            if entry.modified == mtime && entry.file_size == file_size {
+                Some(entry.etag.clone())
+            } else {
+                None
+            }
+        })
+    };
+
+    let (etag, maybe_bytes) = match cached_etag {
+        Some(tag) => (tag, None),
+        None => {
+            let bytes = match tokio::fs::read(&path).await {
+                Ok(b) => b,
+                Err(_) => return (StatusCode::NOT_FOUND, "Asset Not Found").into_response(),
+            };
+            let computed = compute_etag(&bytes);
+            let mut cache = DISK_ASSET_CACHE.lock().unwrap();
+            cache.insert(
+                path.clone(),
+                DiskAssetCacheEntry {
+                    modified: mtime,
+                    file_size,
+                    etag: computed.clone(),
+                },
+            );
+            (computed, Some(bytes))
+        }
+    };
+
+    if matches_if_none_match(req_headers, &etag) {
+        return (
+            StatusCode::NOT_MODIFIED,
+            build_static_headers(content_type, cache_control, &etag),
+        )
+            .into_response();
+    }
+
+    let bytes = match maybe_bytes {
+        Some(b) => b,
+        None => match tokio::fs::read(&path).await {
+            Ok(b) => b,
+            Err(_) => return (StatusCode::NOT_FOUND, "Asset Not Found").into_response(),
+        },
+    };
+
+    (
+        StatusCode::OK,
+        build_static_headers(content_type, cache_control, &etag),
+        bytes,
+    )
+        .into_response()
+}
+
+/// Handler for `GET /static/wasm/{filename}`: Serves compiled `vad-diarization-wasm` bundle files with ETag validation.
+async fn serve_wasm_asset(headers: HeaderMap, AxumPath(filename): AxumPath<String>) -> Response {
+    serve_allowlisted_disk_asset(StaticAssetCategory::Wasm, &filename, &headers, "no-cache").await
+}
+
+/// Handler for `GET /static/ort/{filename}`: Serves self-hosted `onnxruntime-web` modules and WASM binaries with ETag validation.
+async fn serve_ort_asset(headers: HeaderMap, AxumPath(filename): AxumPath<String>) -> Response {
+    serve_allowlisted_disk_asset(StaticAssetCategory::Ort, &filename, &headers, "no-cache").await
+}
+
+/// Handler for `GET /static/models/{filename}`: Serves allowlisted Silero VAD and WeSpeaker ONNX models with ETag validation.
+async fn serve_model_asset(headers: HeaderMap, AxumPath(filename): AxumPath<String>) -> Response {
+    serve_allowlisted_disk_asset(StaticAssetCategory::Model, &filename, &headers, "no-cache").await
 }
 
 #[cfg(test)]
@@ -436,5 +848,75 @@ mod tests {
         // Placeholder REPLACE_ME or empty password must always be rejected
         assert!(!is_admin_authenticated(&bearer_pw_headers, "REPLACE_ME"));
         assert!(!is_admin_authenticated(&bearer_pw_headers, "   "));
+    }
+
+    /// Verifies strict filename allowlisting and MIME resolution for WASM, ORT, and ONNX static assets.
+    #[test]
+    fn test_resolve_allowlisted_static_asset() {
+        assert_eq!(
+            resolve_allowlisted_static_asset(
+                StaticAssetCategory::Wasm,
+                "vad_diarization_wasm_bg.wasm"
+            ),
+            Some((
+                PathBuf::from("static/wasm/vad_diarization_wasm_bg.wasm"),
+                "application/wasm"
+            ))
+        );
+        assert_eq!(
+            resolve_allowlisted_static_asset(StaticAssetCategory::Ort, "ort.webgpu.min.mjs"),
+            Some((
+                PathBuf::from("static/ort/ort.webgpu.min.mjs"),
+                "text/javascript; charset=utf-8"
+            ))
+        );
+        assert_eq!(
+            resolve_allowlisted_static_asset(StaticAssetCategory::Model, "silero_vad_v5.onnx"),
+            Some((
+                PathBuf::from("models/vad-diarization/silero_vad_v5.onnx"),
+                "application/octet-stream"
+            ))
+        );
+        assert_eq!(
+            resolve_allowlisted_static_asset(
+                StaticAssetCategory::Model,
+                "pyannote_segmentation_3_0.onnx"
+            ),
+            Some((
+                PathBuf::from("models/vad-diarization/pyannote_segmentation_3_0.onnx"),
+                "application/octet-stream"
+            ))
+        );
+        assert_eq!(
+            resolve_allowlisted_static_asset(
+                StaticAssetCategory::Model,
+                "wespeaker_voxblink2_samresnet100_LM.int8.onnx"
+            ),
+            Some((
+                PathBuf::from(
+                    "models/vad-diarization/wespeaker_voxblink2_samresnet100_LM.int8.onnx"
+                ),
+                "application/octet-stream"
+            ))
+        );
+        assert_eq!(
+            resolve_allowlisted_static_asset(
+                StaticAssetCategory::Model,
+                "wespeaker_en_voxceleb_resnet152_LM.onnx"
+            ),
+            Some((
+                PathBuf::from("models/vad-diarization/wespeaker_en_voxceleb_resnet152_LM.onnx"),
+                "application/octet-stream"
+            ))
+        );
+
+        // Reject path traversal and non-allowlisted filenames
+        assert!(
+            resolve_allowlisted_static_asset(StaticAssetCategory::Model, "../Cargo.toml").is_none()
+        );
+        assert!(
+            resolve_allowlisted_static_asset(StaticAssetCategory::Wasm, "unknown.wasm").is_none()
+        );
+        assert!(resolve_allowlisted_static_asset(StaticAssetCategory::Ort, "").is_none());
     }
 }

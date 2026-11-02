@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CorrectTranscriptOutput",
+  "type": "object",
+  "required": ["message", "resolvedRole", "mergeWithPrevious"],
+  "additionalProperties": false,
+  "properties": {
+    "message": {
+      "type": "string",
+      "description": "Korrigiertes Transkript der aktuellen Aussage als reiner Text ohne Markdown (oder die nahtlos zusammengefügte Gesamtaussage, wenn mergeWithPrevious true ist)."
+    },
+    "resolvedRole": {
+      "type": "string",
+      "enum": ["user", "partner"],
+      "description": "Überprüfte Sprecherrolle der aktuellen Aussage ('user' oder 'partner')."
+    },
+    "mergeWithPrevious": {
+      "type": "boolean",
+      "description": "true, wenn die aktuelle Aussage eine direkte Fortsetzung der unmittelbar vorangehenden gesprochenen Aussage derselben Person ist und mit dieser zusammengeführt werden soll; sonst false."
+    }
+  }
+}
