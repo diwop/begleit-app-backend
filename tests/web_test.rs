@@ -805,8 +805,20 @@ async fn test_authenticated_analytics_page() {
         "HTML should contain KPI card for total tokens"
     );
     assert!(
-        html.contains("chart-requests-status"),
-        "HTML should contain canvas for requests status chart"
+        html.contains("chart-requests-correct-transcript"),
+        "HTML should contain canvas for correct-transcript requests chart"
+    );
+    assert!(
+        html.contains("chart-requests-translate"),
+        "HTML should contain canvas for translate requests chart"
+    );
+    assert!(
+        html.contains("API Anfragen: correct-transcript"),
+        "HTML should contain title for correct-transcript API requests chart"
+    );
+    assert!(
+        html.contains("API Anfragen: translate"),
+        "HTML should contain title for translate API requests chart"
     );
     assert!(
         html.contains("chart-latencies"),
@@ -862,7 +874,8 @@ async fn test_analytics_api_authorized() {
 
     // Record some sample metrics
     diwop_begleitapp::metrics::record_http_request("/translate", 200, 0.125);
-    diwop_begleitapp::metrics::record_token_usage("/translate", 80, 20, 30);
+    diwop_begleitapp::metrics::record_token_usage("translate", 80, 20, 30);
+    diwop_begleitapp::metrics::record_token_usage("classify", 40, 5, 10);
     diwop_begleitapp::metrics::record_translate_history_length(3);
     diwop_begleitapp::metrics::record_translate_classification("medical", "translation", "warning");
 
@@ -878,10 +891,23 @@ async fn test_analytics_api_authorized() {
 
     assert_eq!(json["time_range"], "24h");
     assert!(json["summary"]["total_requests"].as_u64().unwrap() >= 1);
-    assert!(json["summary"]["total_tokens"].as_u64().unwrap() >= 130);
+    assert!(json["summary"]["total_tokens"].as_u64().unwrap() >= 185);
 
     let endpoints = json["requests_by_endpoint"].as_array().unwrap();
     assert!(endpoints.iter().any(|e| e["endpoint"] == "/translate"));
+
+    let over_time = json["requests_over_time"].as_array().unwrap();
+    assert!(over_time
+        .iter()
+        .any(|e| e["endpoint"] == "/correct-transcript"));
+    assert!(over_time.iter().any(|e| e["endpoint"] == "/translate"));
+
+    let tokens_by_prompt = json["token_usage_by_prompt"].as_array().unwrap();
+    assert!(tokens_by_prompt
+        .iter()
+        .any(|p| p["prompt"] == "correct-transcript"));
+    assert!(tokens_by_prompt.iter().any(|p| p["prompt"] == "translate"));
+    assert!(tokens_by_prompt.iter().any(|p| p["prompt"] == "classify"));
 
     let topics = json["translation_by_topic"].as_array().unwrap();
     assert!(topics.iter().any(|t| t["topic"] == "medical"));

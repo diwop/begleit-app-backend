@@ -3,7 +3,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, LazyLock, RwLock};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+/// Default monitored API endpoints.
+pub const DEFAULT_ENDPOINTS: [&str; 2] = ["/correct-transcript", "/translate"];
+
+/// Default monitored LLM prompts in pipeline order.
+pub const DEFAULT_PROMPTS: [&str; 3] = ["correct-transcript", "translate", "classify"];
 
 /// Preset time range selection for the analytics dashboard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -27,6 +33,16 @@ impl TimeRange {
             TimeRange::TwentyFourHours => Duration::from_secs(86400),
             TimeRange::SevenDays => Duration::from_secs(7 * 86400),
             TimeRange::ThirtyDays => Duration::from_secs(30 * 86400),
+        }
+    }
+
+    /// Returns `(bucket_duration_secs, num_buckets)` used to build time-series curves over this range.
+    pub fn bucket_config(&self) -> (u64, usize) {
+        match self {
+            TimeRange::OneHour => (300, 12),          // 12 x 5 minutes = 1h
+            TimeRange::TwentyFourHours => (3600, 24), // 24 x 1 hour = 24h
+            TimeRange::SevenDays => (86400, 7),       // 7 x 1 day = 7d
+            TimeRange::ThirtyDays => (86400, 30),     // 30 x 1 day = 30d
         }
     }
 
@@ -70,6 +86,23 @@ pub struct EndpointStatusMetrics {
     pub status_5xx: u64,
 }
 
+/// A single time bucket of HTTP status counts for an endpoint's request curve over time.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TimeSeriesStatusPoint {
+    /// Bucket timestamp in seconds since UNIX_EPOCH.
+    pub timestamp: u64,
+    pub status_2xx: u64,
+    pub status_4xx: u64,
+    pub status_5xx: u64,
+}
+
+/// Time-series of HTTP request counts by status class for a specific API endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EndpointTimeSeriesMetrics {
+    pub endpoint: String,
+    pub series: Vec<TimeSeriesStatusPoint>,
+}
+
 /// Request latency in milliseconds grouped by API endpoint.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EndpointLatencyMetrics {
@@ -78,10 +111,10 @@ pub struct EndpointLatencyMetrics {
     pub p95_ms: f64,
 }
 
-/// Token usage grouped by API endpoint and token type (input, reasoning, response).
+/// Token usage grouped by LLM prompt (`correct-transcript`, `translate`, `classify`) and token type (input, reasoning, response).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct EndpointTokenMetrics {
-    pub endpoint: String,
+pub struct PromptTokenMetrics {
+    pub prompt: String,
     pub input_tokens: u64,
     pub reasoning_tokens: u64,
     pub response_tokens: u64,
@@ -121,8 +154,9 @@ pub struct AnalyticsReport {
     pub time_range: String,
     pub summary: AnalyticsSummary,
     pub requests_by_endpoint: Vec<EndpointStatusMetrics>,
+    pub requests_over_time: Vec<EndpointTimeSeriesMetrics>,
     pub latencies_by_endpoint: Vec<EndpointLatencyMetrics>,
-    pub token_usage_by_endpoint: Vec<EndpointTokenMetrics>,
+    pub token_usage_by_prompt: Vec<PromptTokenMetrics>,
     pub translation_by_topic: Vec<TopicMetric>,
     pub translation_by_category: Vec<CategoryMetric>,
     pub translation_by_type: Vec<ClassificationTypeMetric>,
@@ -130,30 +164,59 @@ pub struct AnalyticsReport {
 }
 
 impl AnalyticsReport {
-    /// Creates an empty analytics report with zeroed counts and default endpoints.
+    /// Creates an empty analytics report with zeroed counts, default endpoints, and default prompts.
     pub fn empty(time_range: TimeRange) -> Self {
-        let default_endpoints = ["/correct-transcript".to_string(), "/translate".to_string()];
-        let requests_by_endpoint = default_endpoints
+        Self::empty_at(time_range, SystemTime::now())
+    }
+
+    /// Creates an empty analytics report anchored at `now` for time-series bucket timestamps.
+    pub fn empty_at(time_range: TimeRange, now: SystemTime) -> Self {
+        let now_secs = now.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+        let (bucket_secs, num_buckets) = time_range.bucket_config();
+        let total_window = bucket_secs * (num_buckets as u64);
+        let start_secs = now_secs.saturating_sub(total_window);
+
+        let requests_by_endpoint = DEFAULT_ENDPOINTS
             .iter()
             .map(|ep| EndpointStatusMetrics {
-                endpoint: ep.clone(),
+                endpoint: (*ep).to_string(),
                 status_2xx: 0,
                 status_4xx: 0,
                 status_5xx: 0,
             })
             .collect();
-        let latencies_by_endpoint = default_endpoints
+
+        let requests_over_time = DEFAULT_ENDPOINTS
+            .iter()
+            .map(|ep| {
+                let series = (0..num_buckets)
+                    .map(|i| TimeSeriesStatusPoint {
+                        timestamp: start_secs + ((i as u64 + 1) * bucket_secs),
+                        status_2xx: 0,
+                        status_4xx: 0,
+                        status_5xx: 0,
+                    })
+                    .collect();
+                EndpointTimeSeriesMetrics {
+                    endpoint: (*ep).to_string(),
+                    series,
+                }
+            })
+            .collect();
+
+        let latencies_by_endpoint = DEFAULT_ENDPOINTS
             .iter()
             .map(|ep| EndpointLatencyMetrics {
-                endpoint: ep.clone(),
+                endpoint: (*ep).to_string(),
                 avg_ms: 0.0,
                 p95_ms: 0.0,
             })
             .collect();
-        let token_usage_by_endpoint = default_endpoints
+
+        let token_usage_by_prompt = DEFAULT_PROMPTS
             .iter()
-            .map(|ep| EndpointTokenMetrics {
-                endpoint: ep.clone(),
+            .map(|p| PromptTokenMetrics {
+                prompt: (*p).to_string(),
                 input_tokens: 0,
                 reasoning_tokens: 0,
                 response_tokens: 0,
@@ -216,8 +279,9 @@ impl AnalyticsReport {
                 total_tokens: 0,
             },
             requests_by_endpoint,
+            requests_over_time,
             latencies_by_endpoint,
-            token_usage_by_endpoint,
+            token_usage_by_prompt,
             translation_by_topic,
             translation_by_category,
             translation_by_type,
@@ -267,7 +331,7 @@ struct HttpEvent {
 #[derive(Debug, Clone)]
 struct TokenEvent {
     timestamp: SystemTime,
-    endpoint: String,
+    prompt: String,
     input_tokens: u64,
     reasoning_tokens: u64,
     output_tokens: u64,
@@ -318,10 +382,10 @@ impl InMemoryMetricsStore {
         }
     }
 
-    /// Records token consumption for an upstream model call.
+    /// Records token consumption for an upstream LLM prompt call.
     pub fn record_token_usage(
         &self,
-        endpoint: &str,
+        prompt: &str,
         input_tokens: u64,
         reasoning_tokens: u64,
         output_tokens: u64,
@@ -329,7 +393,7 @@ impl InMemoryMetricsStore {
         if let Ok(mut events) = self.token_events.write() {
             events.push(TokenEvent {
                 timestamp: SystemTime::now(),
-                endpoint: endpoint.to_string(),
+                prompt: prompt.to_string(),
                 input_tokens,
                 reasoning_tokens,
                 output_tokens,
@@ -371,17 +435,22 @@ impl InMemoryMetricsStore {
         }
     }
 
-    /// Generates an aggregated [`AnalyticsReport`] for events within `cutoff`.
+    /// Generates an aggregated [`AnalyticsReport`] for events within `range`.
     pub fn generate_report(&self, range: TimeRange) -> AnalyticsReport {
         let now = SystemTime::now();
         let cutoff = now.checked_sub(range.duration()).unwrap_or(now);
+        let now_secs = now.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+        let (bucket_secs, num_buckets) = range.bucket_config();
+        let total_window = bucket_secs * (num_buckets as u64);
+        let start_secs = now_secs.saturating_sub(total_window);
 
-        let mut report = AnalyticsReport::empty(range);
+        let mut report = AnalyticsReport::empty_at(range, now);
 
         // Map for endpoint -> (2xx, 4xx, 5xx, durations_ms)
         let mut endpoint_stats: HashMap<String, (u64, u64, u64, Vec<f64>)> = HashMap::new();
-        endpoint_stats.insert("/correct-transcript".to_string(), (0, 0, 0, Vec::new()));
-        endpoint_stats.insert("/translate".to_string(), (0, 0, 0, Vec::new()));
+        for ep in DEFAULT_ENDPOINTS {
+            endpoint_stats.insert(ep.to_string(), (0, 0, 0, Vec::new()));
+        }
 
         let mut total_requests = 0u64;
         let mut total_errors = 0u64;
@@ -398,28 +467,68 @@ impl InMemoryMetricsStore {
                     .or_insert_with(|| (0, 0, 0, Vec::new()));
                 entry.3.push(dur_ms);
 
+                let ev_secs = ev
+                    .timestamp
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let bucket_idx = ((ev_secs.saturating_sub(start_secs) / bucket_secs) as usize)
+                    .min(num_buckets - 1);
+
+                let series_entry = if let Some(existing) = report
+                    .requests_over_time
+                    .iter_mut()
+                    .find(|s| s.endpoint == ev.endpoint)
+                {
+                    existing
+                } else {
+                    let series = (0..num_buckets)
+                        .map(|i| TimeSeriesStatusPoint {
+                            timestamp: start_secs + ((i as u64 + 1) * bucket_secs),
+                            status_2xx: 0,
+                            status_4xx: 0,
+                            status_5xx: 0,
+                        })
+                        .collect();
+                    report.requests_over_time.push(EndpointTimeSeriesMetrics {
+                        endpoint: ev.endpoint.clone(),
+                        series,
+                    });
+                    report.requests_over_time.last_mut().unwrap()
+                };
+
                 if ev.status_code >= 200 && ev.status_code < 300 {
                     entry.0 += 1;
+                    if let Some(pt) = series_entry.series.get_mut(bucket_idx) {
+                        pt.status_2xx += 1;
+                    }
                 } else if ev.status_code >= 400 && ev.status_code < 500 {
                     entry.1 += 1;
                     total_errors += 1;
+                    if let Some(pt) = series_entry.series.get_mut(bucket_idx) {
+                        pt.status_4xx += 1;
+                    }
                 } else if ev.status_code >= 500 {
                     entry.2 += 1;
                     total_errors += 1;
+                    if let Some(pt) = series_entry.series.get_mut(bucket_idx) {
+                        pt.status_5xx += 1;
+                    }
                 }
             }
         }
 
-        // Token usage
+        // Token usage by prompt
         let mut token_stats: HashMap<String, (u64, u64, u64)> = HashMap::new();
-        token_stats.insert("/correct-transcript".to_string(), (0, 0, 0));
-        token_stats.insert("/translate".to_string(), (0, 0, 0));
+        for p in DEFAULT_PROMPTS {
+            token_stats.insert(p.to_string(), (0, 0, 0));
+        }
         let mut total_tokens = 0u64;
 
         if let Ok(events) = self.token_events.read() {
             for ev in events.iter().filter(|e| e.timestamp >= cutoff) {
                 total_tokens += ev.input_tokens + ev.reasoning_tokens + ev.output_tokens;
-                let entry = token_stats.entry(ev.endpoint.clone()).or_insert((0, 0, 0));
+                let entry = token_stats.entry(ev.prompt.clone()).or_insert((0, 0, 0));
                 entry.0 += ev.input_tokens;
                 entry.1 += ev.reasoning_tokens;
                 entry.2 += ev.output_tokens;
@@ -520,19 +629,30 @@ impl InMemoryMetricsStore {
             .latencies_by_endpoint
             .sort_by(|a, b| a.endpoint.cmp(&b.endpoint));
 
-        // Populate token usage
-        report.token_usage_by_endpoint = token_stats
-            .iter()
-            .map(|(ep, (inp, rsn, out))| EndpointTokenMetrics {
-                endpoint: ep.clone(),
-                input_tokens: *inp,
-                reasoning_tokens: *rsn,
-                response_tokens: *out,
+        // Populate token usage by prompt (preserving DEFAULT_PROMPTS pipeline order first)
+        let mut prompt_metrics = Vec::with_capacity(token_stats.len());
+        for p in DEFAULT_PROMPTS {
+            if let Some((inp, rsn, out)) = token_stats.remove(p) {
+                prompt_metrics.push(PromptTokenMetrics {
+                    prompt: p.to_string(),
+                    input_tokens: inp,
+                    reasoning_tokens: rsn,
+                    response_tokens: out,
+                });
+            }
+        }
+        let mut extra_prompts: Vec<_> = token_stats
+            .into_iter()
+            .map(|(p, (inp, rsn, out))| PromptTokenMetrics {
+                prompt: p,
+                input_tokens: inp,
+                reasoning_tokens: rsn,
+                response_tokens: out,
             })
             .collect();
-        report
-            .token_usage_by_endpoint
-            .sort_by(|a, b| a.endpoint.cmp(&b.endpoint));
+        extra_prompts.sort_by(|a, b| a.prompt.cmp(&b.prompt));
+        prompt_metrics.extend(extra_prompts);
+        report.token_usage_by_prompt = prompt_metrics;
 
         // Populate topic counts (preserve default ordering or merge)
         for item in &mut report.translation_by_topic {
@@ -677,14 +797,14 @@ impl MetricsQueryService for CloudWatchMetricsProvider {
         let now = SystemTime::now();
         let start_time = now.checked_sub(range.duration()).unwrap_or(now);
 
+        let now_secs = now.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+        let (bucket_secs, num_buckets) = range.bucket_config();
+        let total_window = bucket_secs * (num_buckets as u64);
+        let start_secs = now_secs.saturating_sub(total_window);
+
         let start_dt = aws_sdk_cloudwatch::primitives::DateTime::from(start_time);
         let end_dt = aws_sdk_cloudwatch::primitives::DateTime::from(now);
-        let period_secs = match range {
-            TimeRange::OneHour => 60,
-            TimeRange::TwentyFourHours => 300,
-            TimeRange::SevenDays => 3600,
-            TimeRange::ThirtyDays => 86400,
-        };
+        let period_secs = bucket_secs as i32;
 
         let mut queries = Vec::new();
 
@@ -708,11 +828,10 @@ impl MetricsQueryService for CloudWatchMetricsProvider {
                 .build(),
         );
 
-        // 2. Endpoint status codes & latencies
-        let endpoints = ["/correct-transcript", "/translate"];
+        // 2. Endpoint status codes (time-series & totals) & latencies
         let status_classes = [("2xx", "200"), ("4xx", "400"), ("5xx", "500")];
 
-        for (ep_idx, ep) in endpoints.iter().enumerate() {
+        for (ep_idx, ep) in DEFAULT_ENDPOINTS.iter().enumerate() {
             for (sc_name, sc_val) in status_classes {
                 let id = format!("req_{ep_idx}_{sc_name}");
                 queries.push(
@@ -790,10 +909,12 @@ impl MetricsQueryService for CloudWatchMetricsProvider {
                     .return_data(true)
                     .build(),
             );
+        }
 
-            // Token types
+        // 3. Token usage by prompt
+        for (p_idx, prompt_name) in DEFAULT_PROMPTS.iter().enumerate() {
             for token_type in ["input", "reasoning", "output"] {
-                let id = format!("tok_{ep_idx}_{token_type}");
+                let id = format!("tok_{p_idx}_{token_type}");
                 queries.push(
                     MetricDataQuery::builder()
                         .id(id)
@@ -805,8 +926,8 @@ impl MetricsQueryService for CloudWatchMetricsProvider {
                                         .metric_name("gen_ai.client.token.usage")
                                         .dimensions(
                                             Dimension::builder()
-                                                .name("endpoint")
-                                                .value(*ep)
+                                                .name("prompt")
+                                                .value(*prompt_name)
                                                 .build(),
                                         )
                                         .dimensions(
@@ -827,7 +948,7 @@ impl MetricsQueryService for CloudWatchMetricsProvider {
             }
         }
 
-        // 3. Topics
+        // 4. Topics
         let topics = [
             "medical",
             "shopping",
@@ -864,7 +985,7 @@ impl MetricsQueryService for CloudWatchMetricsProvider {
             );
         }
 
-        // 4. Alert categories
+        // 5. Alert categories
         let categories = ["ok", "info", "warning", "danger"];
         for (idx, cat) in categories.iter().enumerate() {
             queries.push(
@@ -893,7 +1014,7 @@ impl MetricsQueryService for CloudWatchMetricsProvider {
             );
         }
 
-        // 5. Classification types
+        // 6. Classification types
         let class_types = ["translation", "formatting"];
         for (idx, ct) in class_types.iter().enumerate() {
             queries.push(
@@ -938,7 +1059,7 @@ impl MetricsQueryService for CloudWatchMetricsProvider {
             .await
             .map_err(|e| AnalyticsError::CloudWatchError(e.to_string()))?;
 
-        let mut report = AnalyticsReport::empty(range);
+        let mut report = AnalyticsReport::empty_at(range, now);
 
         for result in resp.metric_data_results() {
             let sum_val: f64 = result.values().iter().sum();
@@ -958,29 +1079,48 @@ impl MetricsQueryService for CloudWatchMetricsProvider {
                                 _ => {}
                             }
                         }
+                        if let Some(ep_series) = report.requests_over_time.get_mut(ep_idx) {
+                            for (ts, val) in result.timestamps().iter().zip(result.values().iter())
+                            {
+                                let ts_secs = ts.secs().max(0) as u64;
+                                let bucket_idx =
+                                    ((ts_secs.saturating_sub(start_secs) / bucket_secs) as usize)
+                                        .min(num_buckets - 1);
+                                if let Some(pt) = ep_series.series.get_mut(bucket_idx) {
+                                    match parts[1] {
+                                        "2xx" => pt.status_2xx += *val as u64,
+                                        "4xx" => pt.status_4xx += *val as u64,
+                                        "5xx" => pt.status_5xx += *val as u64,
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             } else if let Some(stripped) = id.strip_prefix("lat_avg_") {
                 if let Ok(ep_idx) = stripped.parse::<usize>() {
                     if let Some(ep) = report.latencies_by_endpoint.get_mut(ep_idx) {
-                        ep.avg_ms = (sum_val * 1000.0 * 10.0).round() / 10.0;
+                        let count = result.values().len().max(1) as f64;
+                        ep.avg_ms = ((sum_val / count) * 1000.0 * 10.0).round() / 10.0;
                     }
                 }
             } else if let Some(stripped) = id.strip_prefix("lat_p95_") {
                 if let Ok(ep_idx) = stripped.parse::<usize>() {
                     if let Some(ep) = report.latencies_by_endpoint.get_mut(ep_idx) {
-                        ep.p95_ms = (sum_val * 1000.0 * 10.0).round() / 10.0;
+                        let max_p95 = result.values().iter().copied().fold(0.0f64, f64::max);
+                        ep.p95_ms = (max_p95 * 1000.0 * 10.0).round() / 10.0;
                     }
                 }
             } else if let Some(stripped) = id.strip_prefix("tok_") {
                 let parts: Vec<&str> = stripped.split('_').collect();
                 if parts.len() == 2 {
-                    if let Ok(ep_idx) = parts[0].parse::<usize>() {
-                        if let Some(ep) = report.token_usage_by_endpoint.get_mut(ep_idx) {
+                    if let Ok(p_idx) = parts[0].parse::<usize>() {
+                        if let Some(pm) = report.token_usage_by_prompt.get_mut(p_idx) {
                             match parts[1] {
-                                "input" => ep.input_tokens = sum_val as u64,
-                                "reasoning" => ep.reasoning_tokens = sum_val as u64,
-                                "output" => ep.response_tokens = sum_val as u64,
+                                "input" => pm.input_tokens = sum_val as u64,
+                                "reasoning" => pm.reasoning_tokens = sum_val as u64,
+                                "output" => pm.response_tokens = sum_val as u64,
                                 _ => {}
                             }
                         }
@@ -1036,7 +1176,7 @@ impl MetricsQueryService for CloudWatchMetricsProvider {
         };
 
         let total_tokens: u64 = report
-            .token_usage_by_endpoint
+            .token_usage_by_prompt
             .iter()
             .map(|t| t.input_tokens + t.reasoning_tokens + t.response_tokens)
             .sum();
@@ -1131,6 +1271,11 @@ mod tests {
             TimeRange::ThirtyDays.duration(),
             Duration::from_secs(30 * 86400)
         );
+
+        assert_eq!(TimeRange::OneHour.bucket_config(), (300, 12));
+        assert_eq!(TimeRange::TwentyFourHours.bucket_config(), (3600, 24));
+        assert_eq!(TimeRange::SevenDays.bucket_config(), (86400, 7));
+        assert_eq!(TimeRange::ThirtyDays.bucket_config(), (86400, 30));
     }
 
     #[test]
@@ -1143,8 +1288,14 @@ mod tests {
         assert_eq!(report.summary.avg_latency_ms, 0.0);
         assert_eq!(report.summary.total_tokens, 0);
         assert_eq!(report.requests_by_endpoint.len(), 2);
+        assert_eq!(report.requests_over_time.len(), 2);
+        assert_eq!(report.requests_over_time[0].series.len(), 24);
+        assert_eq!(report.requests_over_time[1].series.len(), 24);
         assert_eq!(report.latencies_by_endpoint.len(), 2);
-        assert_eq!(report.token_usage_by_endpoint.len(), 2);
+        assert_eq!(report.token_usage_by_prompt.len(), 3);
+        assert_eq!(report.token_usage_by_prompt[0].prompt, "correct-transcript");
+        assert_eq!(report.token_usage_by_prompt[1].prompt, "translate");
+        assert_eq!(report.token_usage_by_prompt[2].prompt, "classify");
         assert_eq!(report.translation_by_topic.len(), 10);
         assert_eq!(report.translation_by_category.len(), 4);
         assert_eq!(report.translation_by_type.len(), 2);
@@ -1161,9 +1312,10 @@ mod tests {
         store.record_http_request("/correct-transcript", 200, 0.100);
         store.record_http_request("/correct-transcript", 400, 0.050);
 
-        // Record tokens
-        store.record_token_usage("/translate", 100, 50, 40);
-        store.record_token_usage("/correct-transcript", 30, 0, 20);
+        // Record tokens by prompt
+        store.record_token_usage("translate", 100, 50, 40);
+        store.record_token_usage("classify", 60, 10, 15);
+        store.record_token_usage("correct-transcript", 30, 0, 20);
 
         // Record history
         store.record_history_length(0);
@@ -1182,8 +1334,8 @@ mod tests {
         assert_eq!(report.summary.total_requests, 4);
         // Errors: 1 (500) + 1 (400) = 2 out of 4 = 50.0%
         assert_eq!(report.summary.error_rate_percent, 50.0);
-        // Total tokens: (100 + 50 + 40) + (30 + 0 + 20) = 240
-        assert_eq!(report.summary.total_tokens, 240);
+        // Total tokens: (100 + 50 + 40) + (60 + 10 + 15) + (30 + 0 + 20) = 325
+        assert_eq!(report.summary.total_tokens, 325);
         // Avg latency: (250 + 750 + 100 + 50) / 4 = 287.5 ms
         assert_eq!(report.summary.avg_latency_ms, 287.5);
 
@@ -1206,15 +1358,45 @@ mod tests {
         assert_eq!(correct_ep.status_4xx, 1);
         assert_eq!(correct_ep.status_5xx, 0);
 
-        // Tokens
-        let trans_tok = report
-            .token_usage_by_endpoint
+        // Time-series curves (1h -> 12 buckets; recent events land in last bucket)
+        let trans_series = report
+            .requests_over_time
             .iter()
-            .find(|t| t.endpoint == "/translate")
+            .find(|s| s.endpoint == "/translate")
+            .unwrap();
+        assert_eq!(trans_series.series.len(), 12);
+        let trans_2xx_sum: u64 = trans_series.series.iter().map(|p| p.status_2xx).sum();
+        let trans_5xx_sum: u64 = trans_series.series.iter().map(|p| p.status_5xx).sum();
+        assert_eq!(trans_2xx_sum, 1);
+        assert_eq!(trans_5xx_sum, 1);
+
+        // Tokens by prompt
+        let correct_tok = report
+            .token_usage_by_prompt
+            .iter()
+            .find(|t| t.prompt == "correct-transcript")
+            .unwrap();
+        assert_eq!(correct_tok.input_tokens, 30);
+        assert_eq!(correct_tok.reasoning_tokens, 0);
+        assert_eq!(correct_tok.response_tokens, 20);
+
+        let trans_tok = report
+            .token_usage_by_prompt
+            .iter()
+            .find(|t| t.prompt == "translate")
             .unwrap();
         assert_eq!(trans_tok.input_tokens, 100);
         assert_eq!(trans_tok.reasoning_tokens, 50);
         assert_eq!(trans_tok.response_tokens, 40);
+
+        let classify_tok = report
+            .token_usage_by_prompt
+            .iter()
+            .find(|t| t.prompt == "classify")
+            .unwrap();
+        assert_eq!(classify_tok.input_tokens, 60);
+        assert_eq!(classify_tok.reasoning_tokens, 10);
+        assert_eq!(classify_tok.response_tokens, 15);
 
         // Topics
         let med_topic = report
@@ -1287,6 +1469,8 @@ mod tests {
             .unwrap();
         assert_eq!(report.summary.total_requests, 0);
         assert_eq!(report.summary.total_tokens, 0);
+        assert_eq!(report.token_usage_by_prompt.len(), 3);
+        assert_eq!(report.requests_over_time.len(), 2);
     }
 
     #[tokio::test]

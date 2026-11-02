@@ -65,14 +65,25 @@
 
   <!-- Charts 2-Column Responsive Grid -->
   <section class="analytics-charts-grid" aria-label="Diagramme">
-    <!-- Chart 1: Requests & Status Codes -->
+    <!-- Chart 1a: API Anfragen (correct-transcript) -->
     <div class="chart-card">
       <div class="chart-card-header">
-        <h2 class="chart-title">HTTP-Anfragen &amp; Statuscodes</h2>
-        <p class="chart-desc">Erfolgreiche (2xx) und fehlerhafte (4xx, 5xx) Anfragen nach API-Endpunkt</p>
+        <h2 class="chart-title">API Anfragen: correct-transcript</h2>
+        <p class="chart-desc">Zeitlicher Verlauf erfolgreicher (2xx) und fehlerhafter (4xx, 5xx) Anfragen</p>
       </div>
       <div class="chart-container">
-        <canvas id="chart-requests-status"></canvas>
+        <canvas id="chart-requests-correct-transcript"></canvas>
+      </div>
+    </div>
+
+    <!-- Chart 1b: API Anfragen (translate) -->
+    <div class="chart-card">
+      <div class="chart-card-header">
+        <h2 class="chart-title">API Anfragen: translate</h2>
+        <p class="chart-desc">Zeitlicher Verlauf erfolgreicher (2xx) und fehlerhafter (4xx, 5xx) Anfragen</p>
+      </div>
+      <div class="chart-container">
+        <canvas id="chart-requests-translate"></canvas>
       </div>
     </div>
 
@@ -87,11 +98,11 @@
       </div>
     </div>
 
-    <!-- Chart 3: Token Usage by Endpoint & Kind -->
+    <!-- Chart 3: Token Usage by Prompt & Kind -->
     <div class="chart-card">
       <div class="chart-card-header">
         <h2 class="chart-title">Token-Verbrauch</h2>
-        <p class="chart-desc">GenAI-Token nach Endpunkt und Art (Eingabe, Reasoning, Ausgabe)</p>
+        <p class="chart-desc">GenAI-Token nach Prompt und Art (Eingabe, Reasoning, Ausgabe)</p>
       </div>
       <div class="chart-container">
         <canvas id="chart-tokens"></canvas>
@@ -132,7 +143,7 @@
     </div>
 
     <!-- Chart 7: History Length Distribution -->
-    <div class="chart-card chart-card-full">
+    <div class="chart-card">
       <div class="chart-card-header">
         <h2 class="chart-title">Verlaufslänge von Übersetzungsanfragen</h2>
         <p class="chart-desc">Anzahl übergebener vorheriger Dialog-Nachrichten je Anfrage</p>
@@ -169,6 +180,67 @@
     return new Intl.NumberFormat('de-DE').format(num || 0);
   }
 
+  function formatBucketTimestamp(epochSecs, range) {
+    const dt = new Date((epochSecs || 0) * 1000);
+    if (range === '7d' || range === '30d') {
+      return dt.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' });
+    }
+    return dt.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+  }
+
+  function createRequestCurveChart(ctx, theme) {
+    return new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: [],
+        datasets: [
+          {
+            label: '2xx (Erfolgreich)',
+            data: [],
+            borderColor: '#22c55e',
+            backgroundColor: 'rgba(34, 197, 94, 0.15)',
+            fill: true,
+            tension: 0.3,
+            pointRadius: 3,
+          },
+          {
+            label: '4xx (Clientfehler)',
+            data: [],
+            borderColor: '#f59e0b',
+            backgroundColor: 'rgba(245, 158, 11, 0.15)',
+            fill: true,
+            tension: 0.3,
+            pointRadius: 3,
+          },
+          {
+            label: '5xx (Serverfehler)',
+            data: [],
+            borderColor: '#ef4444',
+            backgroundColor: 'rgba(239, 68, 68, 0.15)',
+            fill: true,
+            tension: 0.3,
+            pointRadius: 3,
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: {
+          mode: 'index',
+          intersect: false,
+        },
+        scales: {
+          x: { grid: { color: theme.gridColor } },
+          y: { beginAtZero: true, grid: { color: theme.gridColor }, ticks: { precision: 0 } }
+        },
+        plugins: {
+          legend: { position: 'bottom' }
+        }
+      }
+    });
+  }
+
   function initCharts() {
     const theme = getThemeColors();
 
@@ -177,45 +249,12 @@
     Chart.defaults.font.family = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
     Chart.defaults.font.size = 12;
 
-    // 1. Requests & Status (Stacked Bar)
-    const ctxStatus = document.getElementById('chart-requests-status').getContext('2d');
-    charts.requestsStatus = new Chart(ctxStatus, {
-      type: 'bar',
-      data: {
-        labels: [],
-        datasets: [
-          {
-            label: '2xx (Erfolgreich)',
-            data: [],
-            backgroundColor: '#22c55e',
-            borderRadius: 4,
-          },
-          {
-            label: '4xx (Clientfehler)',
-            data: [],
-            backgroundColor: '#f59e0b',
-            borderRadius: 4,
-          },
-          {
-            label: '5xx (Serverfehler)',
-            data: [],
-            backgroundColor: '#ef4444',
-            borderRadius: 4,
-          }
-        ]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        scales: {
-          x: { stacked: true, grid: { color: theme.gridColor } },
-          y: { stacked: true, beginAtZero: true, grid: { color: theme.gridColor }, ticks: { precision: 0 } }
-        },
-        plugins: {
-          legend: { position: 'bottom' }
-        }
-      }
-    });
+    // 1a & 1b. API Anfragen over time (correct-transcript & translate)
+    const ctxReqCorrect = document.getElementById('chart-requests-correct-transcript').getContext('2d');
+    charts.requestsCorrectTranscript = createRequestCurveChart(ctxReqCorrect, theme);
+
+    const ctxReqTranslate = document.getElementById('chart-requests-translate').getContext('2d');
+    charts.requestsTranslate = createRequestCurveChart(ctxReqTranslate, theme);
 
     // 2. Latencies (Bar)
     const ctxLatencies = document.getElementById('chart-latencies').getContext('2d');
@@ -251,7 +290,7 @@
       }
     });
 
-    // 3. Tokens (Stacked Bar)
+    // 3. Tokens by Prompt (Stacked Bar)
     const ctxTokens = document.getElementById('chart-tokens').getContext('2d');
     charts.tokens = new Chart(ctxTokens, {
       type: 'bar',
@@ -338,7 +377,7 @@
       }
     });
 
-    // 6. Classification Types (Doughnut / Bar)
+    // 6. Classification Types (Doughnut)
     const ctxTypes = document.getElementById('chart-types').getContext('2d');
     charts.types = new Chart(ctxTypes, {
       type: 'doughnut',
@@ -397,7 +436,7 @@
         throw new Error(`HTTP ${resp.status}`);
       }
       const data = await resp.json();
-      updateDashboard(data);
+      updateDashboard(data, range);
     } catch (err) {
       console.error('Fehler beim Laden der Analytics-Daten:', err);
     } finally {
@@ -405,20 +444,28 @@
     }
   }
 
-  function updateDashboard(data) {
+  function updateEndpointCurveChart(chartInstance, endpointSeries, range) {
+    const pts = (endpointSeries && endpointSeries.series) || [];
+    chartInstance.data.labels = pts.map(p => formatBucketTimestamp(p.timestamp, range));
+    chartInstance.data.datasets[0].data = pts.map(p => p.status_2xx);
+    chartInstance.data.datasets[1].data = pts.map(p => p.status_4xx);
+    chartInstance.data.datasets[2].data = pts.map(p => p.status_5xx);
+    chartInstance.update();
+  }
+
+  function updateDashboard(data, range) {
     // 1. KPI Cards
     document.getElementById('kpi-total-requests').textContent = formatNumber(data.summary.total_requests);
     document.getElementById('kpi-error-rate').textContent = `${(data.summary.error_rate_percent || 0).toFixed(1)}%`;
     document.getElementById('kpi-avg-latency').textContent = `${(data.summary.avg_latency_ms || 0).toFixed(0)} ms`;
     document.getElementById('kpi-total-tokens').textContent = formatNumber(data.summary.total_tokens);
 
-    // 2. Chart: Requests & Status
-    const endpoints = data.requests_by_endpoint.map(e => e.endpoint);
-    charts.requestsStatus.data.labels = endpoints;
-    charts.requestsStatus.data.datasets[0].data = data.requests_by_endpoint.map(e => e.status_2xx);
-    charts.requestsStatus.data.datasets[1].data = data.requests_by_endpoint.map(e => e.status_4xx);
-    charts.requestsStatus.data.datasets[2].data = data.requests_by_endpoint.map(e => e.status_5xx);
-    charts.requestsStatus.update();
+    // 2. Charts: API Anfragen over time (correct-transcript & translate)
+    const overTime = data.requests_over_time || [];
+    const correctSeries = overTime.find(s => s.endpoint === '/correct-transcript');
+    const translateSeries = overTime.find(s => s.endpoint === '/translate');
+    updateEndpointCurveChart(charts.requestsCorrectTranscript, correctSeries, range);
+    updateEndpointCurveChart(charts.requestsTranslate, translateSeries, range);
 
     // 3. Chart: Latencies
     charts.latencies.data.labels = data.latencies_by_endpoint.map(l => l.endpoint);
@@ -426,11 +473,12 @@
     charts.latencies.data.datasets[1].data = data.latencies_by_endpoint.map(l => l.p95_ms);
     charts.latencies.update();
 
-    // 4. Chart: Tokens
-    charts.tokens.data.labels = data.token_usage_by_endpoint.map(t => t.endpoint);
-    charts.tokens.data.datasets[0].data = data.token_usage_by_endpoint.map(t => t.input_tokens);
-    charts.tokens.data.datasets[1].data = data.token_usage_by_endpoint.map(t => t.reasoning_tokens);
-    charts.tokens.data.datasets[2].data = data.token_usage_by_endpoint.map(t => t.response_tokens);
+    // 4. Chart: Tokens by Prompt
+    const promptTokens = data.token_usage_by_prompt || [];
+    charts.tokens.data.labels = promptTokens.map(t => t.prompt);
+    charts.tokens.data.datasets[0].data = promptTokens.map(t => t.input_tokens);
+    charts.tokens.data.datasets[1].data = promptTokens.map(t => t.reasoning_tokens);
+    charts.tokens.data.datasets[2].data = promptTokens.map(t => t.response_tokens);
     charts.tokens.update();
 
     // 5. Chart: Topics
