@@ -25,6 +25,7 @@ updates:
         # (otherwise their minor/patch updates will be grouped in isolation).
         patterns:
           - "*"
+          - "candle*"
           - "opentelemetry*"
           - "tracing-opentelemetry*"
           - "utoipa*"
@@ -34,6 +35,11 @@ updates:
         update-types:
           - "minor"
           - "patch"
+      candle:
+        patterns:
+          - "candle*"
+        update-types:
+          - "major"
       opentelemetry:
         patterns:
           - "opentelemetry*"
