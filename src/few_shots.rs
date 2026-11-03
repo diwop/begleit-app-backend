@@ -928,4 +928,94 @@ Wie geht es Ihnen?
         assert_eq!(loaded.total_entries(), index.total_entries());
         let _ = std::fs::remove_file(&tmp_path);
     }
+
+    /// Verifies `FewShotBucketIndex::get_closest_examples` boundary conditions: empty/whitespace
+    /// queries, `k = 0`, and out-of-range `bucket > 5` clamping to bucket `5`.
+    #[test]
+    fn test_bucket_index_empty_query_zero_k_and_bucket_clamping() {
+        let fixture_dir = Path::new("tests/fixtures/raw_dialogs");
+        let embedder = Arc::new(DeterministicHashEmbedder);
+        let index = FewShotBucketIndex::build_from_raw_dir(fixture_dir, embedder).unwrap();
+
+        // Empty or whitespace query -> empty result
+        assert!(index.get_closest_examples("", 0, 3).unwrap().is_empty());
+        assert!(index.get_closest_examples("   ", 2, 3).unwrap().is_empty());
+
+        // k = 0 -> empty result
+        assert!(index
+            .get_closest_examples("Guten Tag", 1, 0)
+            .unwrap()
+            .is_empty());
+
+        // bucket = 99 clamps to bucket 5 (`NUM_BUCKETS - 1`)
+        let clamped = index.get_closest_examples("Guten Tag", 99, 2).unwrap();
+        let expected_b5 = index.get_closest_examples("Guten Tag", 5, 2).unwrap();
+        assert_eq!(clamped.len(), 2);
+        assert_eq!(clamped[0].id, expected_b5[0].id);
+        assert_eq!(clamped[0].bucket, 5);
+
+        // Out-of-bounds `bucket_entries` clamps to bucket 5 (`NUM_BUCKETS - 1`)
+        assert_eq!(
+            index.bucket_entries(99).len(),
+            index.bucket_entries(5).len()
+        );
+    }
+
+    /// Verifies that `FewShotBucketIndex::load_from_file` and `CandleE5Embedder::load` return
+    /// descriptive errors on missing or corrupted files.
+    #[test]
+    fn test_load_from_file_missing_and_corrupt_gzip_errors() {
+        let embedder = Arc::new(DeterministicHashEmbedder);
+        let missing_path = std::env::temp_dir().join("nonexistent_few_shots_index_12345.json.gz");
+        let err_missing = FewShotBucketIndex::load_from_file(&missing_path, embedder.clone());
+        assert!(err_missing.is_err());
+
+        let corrupt_path =
+            std::env::temp_dir().join(format!("corrupt_few_shots_{}.json.gz", std::process::id()));
+        std::fs::write(&corrupt_path, b"not-valid-gzip-bytes").unwrap();
+        let err_corrupt = FewShotBucketIndex::load_from_file(&corrupt_path, embedder);
+        assert!(err_corrupt.is_err());
+        let _ = std::fs::remove_file(&corrupt_path);
+
+        let missing_model_dir = std::env::temp_dir().join("nonexistent_e5_model_dir_12345");
+        assert!(CandleE5Embedder::load(&missing_model_dir).is_err());
+    }
+
+    /// Verifies `parse_dialog_content` resilience against unclosed tags, consecutive `<partner>`
+    /// tags without `<partner simple ...>`, and unknown inner tags.
+    #[test]
+    fn test_parse_dialog_content_malformed_and_consecutive_partner_tags() {
+        let raw = r#"
+<user>
+Erste Frage mit <b>HTML</b> Tag.
+</user>
+<partner>
+Partner ohne Simple-Block (wird übersprungen).
+</partner>
+<partner>
+Partner mit Simple-Block.
+</partner>
+<partner simple translation>
+Einfache Antwort.
+</partner>
+<user>
+Unabgeschlossener Tag am Ende
+"#;
+        let turns = parse_dialog_content(raw);
+        assert_eq!(turns.len(), 2);
+        assert_eq!(
+            turns[0],
+            RawDialogTurn::User {
+                text: "Erste Frage mit <b>HTML</b> Tag.".to_string()
+            }
+        );
+        assert_eq!(
+            turns[1],
+            RawDialogTurn::Partner {
+                text: "Partner mit Simple-Block.".to_string(),
+                kind: "ÜBERSETZUNG".to_string(),
+                translation: "Einfache Antwort.".to_string(),
+            }
+        );
+    }
 }

@@ -1367,3 +1367,55 @@ async fn test_partner_numbers_and_partner_role_classification() {
         );
     }
 }
+
+/// Verifies that `POST /translate` falls back to the cleaned input message when the LLM outputs
+/// only a header line (`"ÜBERSETZUNG"`) with no body, and that `POST /correct-transcript` in simple
+/// mode returns `503 SERVICE_UNAVAILABLE` when the LLM returns malformed JSON.
+#[tokio::test]
+async fn test_translate_empty_body_fallback_and_simple_mode_invalid_json() {
+    let client = reqwest::Client::new();
+
+    // 1. `/translate` with header-only LLM output ("ÜBERSETZUNG") falls back to cleaned input message
+    let mock_header_only = MockPromptRunner::with_classification(
+        Ok("ÜBERSETZUNG".to_string()),
+        Ok(r#"{"type":"pass","category":"ok","topic":"social"}"#.to_string()),
+    );
+    let url_header_only = start_server_with_runner(mock_header_only).await;
+    let req_translate = TranslateRequest {
+        messages: vec![ConversationMessage {
+            role: Role::Partner,
+            message: "Originaler Eingabetext".to_string(),
+            partner_number: None,
+        }],
+    };
+    let res_translate = client
+        .post(format!("{}/translate", url_header_only))
+        .json(&req_translate)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res_translate.status(), reqwest::StatusCode::OK);
+    let body_translate: TranslationResponse = res_translate.json().await.unwrap();
+    assert_eq!(body_translate.content, "Originaler Eingabetext");
+    assert_eq!(body_translate.r#type, TranslationType::Translation);
+
+    // 2. `/correct-transcript` in simple mode (`history: None`) with malformed JSON LLM output -> 503
+    let mock_bad_simple = MockPromptRunner::new(Ok("{broken-json".to_string()));
+    let url_bad_simple = start_server_with_runner(mock_bad_simple).await;
+    let req_simple = CorrectTranscriptRequest {
+        role: Some(Role::Partner),
+        message: Some("hallo welt".to_string()),
+        partner_number: None,
+        history: None,
+    };
+    let res_bad_simple = client
+        .post(format!("{}/correct-transcript", url_bad_simple))
+        .json(&req_simple)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        res_bad_simple.status(),
+        reqwest::StatusCode::SERVICE_UNAVAILABLE
+    );
+}

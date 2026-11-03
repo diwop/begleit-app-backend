@@ -56,6 +56,34 @@ Configuration via environment variables:
 The _dev_ (debug) profile is intended for local development and uses human-readable colored logging (`diwop_begleitapp=debug,tower_http=debug` by default).
 It is ready to go for local development and testing. All environment variables (including `API_KEY`) are optional.
 
+## Testing Strategy
+
+The test suite is executed via `cargo nextest run` (and `cargo test --manifest-path crates/vad-diarization-wasm/Cargo.toml` for the WASM crate) and is organized into two main layers:
+
+### 1. Unit Tests (Inline in `src/` and `crates/vad-diarization-wasm/src/`)
+
+Unit tests live directly alongside the implementation inside `#[cfg(test)] mod tests` blocks in the backend (`src/analytics.rs`, `src/api.rs`, `src/auth.rs`, `src/few_shots.rs`, `src/lib.rs`, `src/metrics.rs`, `src/prompts.rs`, `src/web.rs`) and WASM diarization crate (`crates/vad-diarization-wasm/src/`). They verify isolated domain logic without external network dependencies, including:
+
+- Prompt rendering, output parsing, staging directive extraction, speaker-role normalization, and acoustic diarization guardrails (`src/prompts.rs`).
+- In-memory and CloudWatch analytics aggregation, time-window bucketing, and percentile calculations (`src/analytics.rs`).
+- Few-shot dialog parsing, history bucketing, and vector similarity lookup (`src/few_shots.rs`).
+- Authentication token validation, session cookies, ETag caching, startup warmup retry state machines, and OpenAPI schema generation (`src/auth.rs`, `src/web.rs`, `src/lib.rs`).
+- Online speaker clustering, sliding-window eviction, and retroactive cluster merging (`crates/vad-diarization-wasm/src/clustering.rs`).
+
+### 2. Integration & System Tests (`tests/`)
+
+Integration tests reside in the top-level [`tests/`](../tests) directory and exercise the assembled Axum router and HTTP stack:
+
+- **[`tests/api_test.rs`](../tests/api_test.rs)**: Exercises the `/correct-transcript`, `/translate`, `/healthz`, `/readyz`, and `/open-api` HTTP endpoints using a lightweight in-process `PromptRunner` test double (`MockPromptRunner` / `EchoPromptRunner`). Covers request validation, HTTP status codes, staging directives, disclaimer attachment, and admin `debugInfo` responses.
+- **[`tests/auth_api_test.rs`](../tests/auth_api_test.rs)**: Verifies Bearer `API_KEY` authentication enforcement across protected vs. public endpoints (`401 Unauthorized` on missing/invalid tokens, `200 OK` on valid tokens).
+- **[`tests/web_test.rs`](../tests/web_test.rs)**: Tests the server-rendered web administration UI (`/`, `/login`, `/logout`, `/dialog-translation`, `/vad-diarization`, `/analytics`), session cookie lifecycle, Cross-Origin Isolation headers (`COOP`/`COEP`), static asset allowlisting, and `ETag` / `If-None-Match` caching.
+- **[`tests/telemetry_test.rs`](../tests/telemetry_test.rs)**: Spawns a local mock OTLP gRPC collector (`TraceService` + `MetricsService`) and verifies that HTTP requests and LLM token usage emit OpenTelemetry spans and metric data points over gRPC.
+- **[`tests/system_test.rs`](../tests/system_test.rs) (End-to-End System Tests)**: Spawns a local HTTP mock Gemini server (`/v1beta/models/{*model_action}`) alongside the full Rust application wired with the production [`GeminiPromptRunner`](../src/prompts.rs) (`rig-core` HTTP client) and [`InMemoryMetricsStore`](../src/analytics.rs). It validates the complete end-to-end pipeline over real HTTP calls:
+  - **Happy-Path Multi-Turn Dialogs**: Exercises `/correct-transcript` (both simple legacy and contextual diarization modes) and `/translate` (`FORMATIERUNG` and `ÜBERSETZUNG`), verifying upstream Gemini request schemas and `thinkingLevel` configurations.
+  - **`info` / `warning` / `danger` Dialog Classifications**: Covers all disclaimer and blocking categories (`uncertain`, `medical`, `financial`, `juridical`, `authorities`, `safety`, `youth-protection`, `hate-speech`, `injection`), verifying `revealable` flags and content blocking.
+  - **Corner Cases & Guardrails**: Tests malformed/truncated LLM JSON, out-of-whitelist topics, malformed translation headers (`"FORMATIEREN"` vs `"FORMATIERUNG"`), Markdown code-fenced JSON, invalid `(type, category)` hierarchies, unknown JSON fields (`deny_unknown_fields`), empty-body fallbacks, placeholder/clamped `partnerRole` values, contradictory acoustic-lock merge vetoes, and upstream HTTP `500` model errors.
+  - **End-to-End Metrics Verification**: Asserts after every scenario that `IN_MEMORY_METRICS_STORE` and `GET /api/admin/analytics` accurately record all HTTP status classes (`2xx`/`4xx`/`5xx`), latencies, prompt token counters (`correct-transcript`, `translate`, `classify`), dialog topics, classification categories, translation types, and history-length buckets.
+
 ## Infrastructure & Deployment (OpenTofu & GitHub Actions)
 
 Infrastructure as Code is managed with **OpenTofu** under [`infrastructure/`](../infrastructure), sharing a common container contract between cloud targets:

@@ -1063,4 +1063,64 @@ mod tests {
         assert_eq!(t2.speaker_id, "Speaker 2");
         assert!(t2.user_likelihood.unwrap() < 0.10);
     }
+
+    /// Verifies that `AhcClusterer` evicts the oldest segments once `MAX_STORED_SEGMENTS` (256)
+    /// is exceeded so AHC clustering remains bounded in long sessions.
+    #[test]
+    fn test_max_stored_segments_sliding_window_eviction() {
+        let mut clusterer = AhcClusterer::default();
+        for i in 0..265 {
+            let start = (i as f64) * 2.0;
+            let end = start + 1.0;
+            clusterer.assign_speaker(&[1.0, 0.0, 0.0], start, end);
+        }
+
+        let summaries = clusterer.current_clusters();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].segment_count, MAX_STORED_SEGMENTS);
+        assert!((summaries[0].first_seen_time - 18.0).abs() < 1e-6);
+    }
+
+    /// Verifies that when a bridging utterance causes two previously distinct clusters (`cluster_0`
+    /// and `cluster_1`) to merge under AHC average linkage, a `ClusterRelabel` is emitted for the
+    /// absorbed cluster ID (`cluster_1`).
+    #[test]
+    fn test_cluster_merge_emits_retroactive_relabel_for_merged_cluster() {
+        // Use a 0.75 threshold so two vectors with cos_sim = 0.70 start in separate clusters,
+        // and a midpoint vector with cos_sim ~ 0.92 to both merges all three into cluster_0.
+        let mut clusterer = AhcClusterer::new(0.75);
+
+        // Segment 1: angle 0 deg -> [1.0, 0.0] (cluster_0)
+        let s1 = clusterer.assign_speaker_with_scores(&[1.0, 0.0], 0.0, 1.5);
+        assert_eq!(s1.cluster_id, "cluster_0");
+
+        // Segment 2: angle ~45.5 deg -> [0.70, 0.71414] (cos_sim = 0.70 < 0.75 -> cluster_1)
+        let s2 = clusterer.assign_speaker_with_scores(&[0.70, 0.71414284], 2.0, 3.5);
+        assert_eq!(s2.cluster_id, "cluster_1");
+        assert_eq!(clusterer.current_clusters().len(), 2);
+
+        // Segment 3: midpoint angle ~22.7 deg -> [0.922, 0.387] (cos_sim > 0.92 to both -> bridges cluster_0 and cluster_1)
+        let s3 = clusterer.assign_speaker_with_scores(&[0.922, 0.387], 4.0, 5.5);
+        assert_eq!(s3.cluster_id, "cluster_0");
+        assert_eq!(clusterer.current_clusters().len(), 1);
+
+        let merged_relabel = s3
+            .cluster_relabels
+            .iter()
+            .find(|r| r.cluster_id == "cluster_1")
+            .expect("Expected ClusterRelabel for absorbed cluster_1");
+        assert_eq!(merged_relabel.speaker_id, "Speaker 1");
+    }
+
+    /// Verifies that an empty `raw_embedding` slice is handled safely without panicking.
+    #[test]
+    fn test_assign_speaker_with_empty_embedding_fallback() {
+        let mut clusterer = AhcClusterer::default();
+        let res = clusterer.assign_speaker_with_scores(&[], 0.0, 1.0);
+        assert_eq!(res.cluster_id, "cluster_0");
+        assert_eq!(res.speaker_id, "Speaker 1");
+        assert!(res.user_similarity.is_none());
+        assert!(res.user_likelihood.is_none());
+        assert!(res.cluster_relabels.is_empty());
+    }
 }

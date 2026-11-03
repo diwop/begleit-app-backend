@@ -255,3 +255,146 @@ fn configure_swagger_ui(is_secured: bool) -> utoipa_swagger_ui::SwaggerUi {
 
     utoipa_swagger_ui::SwaggerUi::new("/open-api").url("/api-docs/openapi.json", openapi)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::atomic::AtomicUsize;
+    use tokio::net::TcpListener;
+
+    /// Mock prompt runner that fails for the first `fail_count` invocations and succeeds thereafter.
+    struct FlakyPromptRunner {
+        calls: AtomicUsize,
+        fail_count: usize,
+    }
+
+    impl PromptRunner for FlakyPromptRunner {
+        fn run_prompt<'a>(
+            &'a self,
+            _system_instruction: &'a str,
+            _user_prompt: &'a str,
+            _thinking_level: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<PromptOutput, PromptError>> + Send + 'a>> {
+            Box::pin(async move {
+                let call_idx = self.calls.fetch_add(1, Ordering::SeqCst);
+                if call_idx < self.fail_count {
+                    Err(PromptError("simulated transient LLM failure".to_string()))
+                } else {
+                    Ok(PromptOutput {
+                        text: "pong".to_string(),
+                        reasoning: None,
+                        usage: TokenUsage::default(),
+                    })
+                }
+            })
+        }
+    }
+
+    /// Spawns a router on an ephemeral local port and returns its base URL.
+    async fn spawn_test_router(app: Router) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{addr}")
+    }
+
+    /// Verifies that the startup warmup task retries on transient failure and marks `/readyz` as `200 OK`.
+    #[tokio::test]
+    async fn test_warmup_retries_and_becomes_ready_on_second_attempt() {
+        let runner = Arc::new(FlakyPromptRunner {
+            calls: AtomicUsize::new(0),
+            fail_count: 1,
+        });
+        let base_url = spawn_test_router(create_app_with_runner(runner.clone())).await;
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+        // Poll `/readyz` until the second attempt (after 500ms retry sleep) completes
+        let mut ready = false;
+        for _ in 0..30 {
+            let res = client
+                .get(format!("{base_url}/readyz"))
+                .send()
+                .await
+                .unwrap();
+            if res.status() == reqwest::StatusCode::OK {
+                ready = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+
+        assert!(ready, "Expected /readyz to become 200 OK on retry");
+        assert!(runner.calls.load(Ordering::SeqCst) >= 2);
+    }
+
+    /// Verifies that when all 3 startup warmup attempts fail, `/readyz` stays `503 Service Unavailable`
+    /// while `/healthz` continues returning `200 OK`.
+    #[tokio::test]
+    async fn test_warmup_persistent_failure_keeps_readyz_503() {
+        let runner = Arc::new(FlakyPromptRunner {
+            calls: AtomicUsize::new(0),
+            fail_count: 10,
+        });
+        let base_url = spawn_test_router(create_app_with_runner(runner.clone())).await;
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+        // Wait until all 3 attempts have executed
+        for _ in 0..40 {
+            if runner.calls.load(Ordering::SeqCst) >= 3 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert_eq!(runner.calls.load(Ordering::SeqCst), 3);
+
+        let ready_res = client
+            .get(format!("{base_url}/readyz"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(ready_res.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+
+        let health_res = client
+            .get(format!("{base_url}/healthz"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(health_res.status(), reqwest::StatusCode::OK);
+    }
+
+    /// Verifies that `configure_swagger_ui(true)` injects the `bearerAuth` HTTP security scheme
+    /// and global security requirement, whereas `configure_swagger_ui(false)` omits them.
+    #[tokio::test]
+    async fn test_configure_swagger_ui_secured_vs_unsecured() {
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+        let secured_url = spawn_test_router(Router::new().merge(configure_swagger_ui(true))).await;
+        let res = client
+            .get(format!("{secured_url}/api-docs/openapi.json"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), reqwest::StatusCode::OK);
+        let doc: serde_json::Value = res.json().await.unwrap();
+        assert_eq!(
+            doc["components"]["securitySchemes"]["bearerAuth"]["scheme"],
+            "bearer"
+        );
+        assert!(doc["security"][0]["bearerAuth"].is_array());
+
+        let unsecured_url =
+            spawn_test_router(Router::new().merge(configure_swagger_ui(false))).await;
+        let res_unsec = client
+            .get(format!("{unsecured_url}/api-docs/openapi.json"))
+            .send()
+            .await
+            .unwrap();
+        let doc_unsec: serde_json::Value = res_unsec.json().await.unwrap();
+        assert!(doc_unsec["components"]["securitySchemes"]["bearerAuth"].is_null());
+        assert!(doc_unsec["security"].is_null());
+    }
+}

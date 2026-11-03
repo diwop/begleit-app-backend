@@ -51,3 +51,83 @@ pub async fn validate_api_key(
     )
         .into_response()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{routing::get, Router};
+    use tokio::net::TcpListener;
+
+    /// Spawns a minimal router protected by `validate_api_key` with the given `api_key` and `admin_password`.
+    async fn spawn_protected_router(api_key: &str, admin_password: &str) -> String {
+        let state = AuthState {
+            api_key: Arc::new(api_key.to_string()),
+            admin_password: Arc::new(admin_password.to_string()),
+        };
+        let app = Router::new()
+            .route("/protected", get(|| async { StatusCode::OK }))
+            .route_layer(axum::middleware::from_fn_with_state(
+                state,
+                validate_api_key,
+            ));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{addr}")
+    }
+
+    /// Verifies that `validate_api_key` accepts `X-Admin-Password`, rejects non-Bearer schemes
+    /// and empty Bearer tokens, and refuses the unconfigured `"REPLACE_ME"` placeholder.
+    #[tokio::test]
+    async fn test_validate_api_key_edge_cases() {
+        let base_url = spawn_protected_router("api-secret", "custom-admin-pw").await;
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+        // 1. Non-Bearer scheme (`Basic ...`) -> 401
+        let res = client
+            .get(format!("{base_url}/protected"))
+            .header("Authorization", "Basic YWRtaW46YWRtaW4=")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+        // 2. Empty Bearer token (`Bearer `) -> 401
+        let res = client
+            .get(format!("{base_url}/protected"))
+            .header("Authorization", "Bearer ")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+        // 3. Valid `X-Admin-Password` header without `Authorization` -> 200 OK
+        let res = client
+            .get(format!("{base_url}/protected"))
+            .header("x-admin-password", "custom-admin-pw")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), reqwest::StatusCode::OK);
+
+        // 4. `ADMIN_PASSWORD="REPLACE_ME"` cannot bypass `validate_api_key`
+        let placeholder_url = spawn_protected_router("api-secret", "REPLACE_ME").await;
+        let res = client
+            .get(format!("{placeholder_url}/protected"))
+            .header("x-admin-password", "REPLACE_ME")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+        let res = client
+            .get(format!("{placeholder_url}/protected"))
+            .header("Authorization", "Bearer REPLACE_ME")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), reqwest::StatusCode::UNAUTHORIZED);
+    }
+}

@@ -380,6 +380,22 @@ impl InMemoryMetricsStore {
         Self::default()
     }
 
+    /// Clears all buffered HTTP, token, history, and classification events from the in-memory store.
+    pub fn clear(&self) {
+        if let Ok(mut events) = self.http_events.write() {
+            events.clear();
+        }
+        if let Ok(mut events) = self.token_events.write() {
+            events.clear();
+        }
+        if let Ok(mut events) = self.history_events.write() {
+            events.clear();
+        }
+        if let Ok(mut events) = self.classification_events.write() {
+            events.clear();
+        }
+    }
+
     /// Records an HTTP request execution.
     pub fn record_http_request(&self, endpoint: &str, status_code: u16, duration_secs: f64) {
         if let Ok(mut events) = self.http_events.write() {
@@ -450,9 +466,32 @@ impl InMemoryMetricsStore {
         }
     }
 
+    /// Records an HTTP request at an explicit `timestamp` for deterministic unit testing.
+    #[cfg(test)]
+    pub(crate) fn record_http_request_at(
+        &self,
+        timestamp: SystemTime,
+        endpoint: &str,
+        status_code: u16,
+        duration_secs: f64,
+    ) {
+        if let Ok(mut events) = self.http_events.write() {
+            events.push(HttpEvent {
+                timestamp,
+                endpoint: endpoint.to_string(),
+                status_code,
+                duration_secs,
+            });
+        }
+    }
+
     /// Generates an aggregated [`AnalyticsReport`] for events within `range`.
     pub fn generate_report(&self, range: TimeRange) -> AnalyticsReport {
-        let now = SystemTime::now();
+        self.generate_report_at(range, SystemTime::now())
+    }
+
+    /// Generates an aggregated [`AnalyticsReport`] for events within `range` relative to `now`.
+    pub fn generate_report_at(&self, range: TimeRange, now: SystemTime) -> AnalyticsReport {
         let cutoff = now.checked_sub(range.duration()).unwrap_or(now);
         let now_secs = now.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
         let (bucket_secs, num_buckets) = range.bucket_config();
@@ -802,6 +841,163 @@ impl CloudWatchMetricsProvider {
             })
             .await
     }
+
+    /// Aggregates raw CloudWatch `GetMetricData` results into an [`AnalyticsReport`] anchored at `now`.
+    pub(crate) fn build_report_from_results(
+        range: TimeRange,
+        now: SystemTime,
+        results: &[aws_sdk_cloudwatch::types::MetricDataResult],
+    ) -> AnalyticsReport {
+        let now_secs = now.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+        let (bucket_secs, num_buckets) = range.bucket_config();
+        let total_window = bucket_secs * (num_buckets as u64);
+        let start_secs = now_secs.saturating_sub(total_window);
+
+        let mut report = AnalyticsReport::empty_at(range, now);
+
+        for result in results {
+            let sum_val: f64 = result.values().iter().sum();
+            let id = result.id().unwrap_or_default();
+
+            if id == "total_req" {
+                report.summary.total_requests = sum_val as u64;
+            } else if let Some(stripped) = id.strip_prefix("req_") {
+                let parts: Vec<&str> = stripped.split('_').collect();
+                if parts.len() == 2 {
+                    if let Ok(ep_idx) = parts[0].parse::<usize>() {
+                        if let Some(ep) = report.requests_by_endpoint.get_mut(ep_idx) {
+                            match parts[1] {
+                                "2xx" => ep.status_2xx = sum_val as u64,
+                                "4xx" => ep.status_4xx = sum_val as u64,
+                                "5xx" => ep.status_5xx = sum_val as u64,
+                                _ => {}
+                            }
+                        }
+                        if let Some(ep_series) = report.requests_over_time.get_mut(ep_idx) {
+                            for (ts, val) in result.timestamps().iter().zip(result.values().iter())
+                            {
+                                let ts_secs = ts.secs().max(0) as u64;
+                                let bucket_idx =
+                                    ((ts_secs.saturating_sub(start_secs) / bucket_secs) as usize)
+                                        .min(num_buckets - 1);
+                                if let Some(pt) = ep_series.series.get_mut(bucket_idx) {
+                                    match parts[1] {
+                                        "2xx" => pt.status_2xx += *val as u64,
+                                        "4xx" => pt.status_4xx += *val as u64,
+                                        "5xx" => pt.status_5xx += *val as u64,
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if let Some(stripped) = id.strip_prefix("lat_avg_") {
+                if let Ok(ep_idx) = stripped.parse::<usize>() {
+                    if let Some(ep) = report.latencies_by_endpoint.get_mut(ep_idx) {
+                        let count = result.values().len().max(1) as f64;
+                        ep.avg_ms = ((sum_val / count) * 1000.0 * 10.0).round() / 10.0;
+                    }
+                }
+            } else if let Some(stripped) = id.strip_prefix("lat_p95_") {
+                if let Ok(ep_idx) = stripped.parse::<usize>() {
+                    if let Some(ep) = report.latencies_by_endpoint.get_mut(ep_idx) {
+                        let max_p95 = result.values().iter().copied().fold(0.0f64, f64::max);
+                        ep.p95_ms = (max_p95 * 1000.0 * 10.0).round() / 10.0;
+                    }
+                }
+            } else if let Some(stripped) = id.strip_prefix("tok_") {
+                let parts: Vec<&str> = stripped.split('_').collect();
+                if parts.len() == 2 {
+                    if let Ok(p_idx) = parts[0].parse::<usize>() {
+                        if let Some(pm) = report.token_usage_by_prompt.get_mut(p_idx) {
+                            match parts[1] {
+                                "input" => pm.input_tokens = sum_val as u64,
+                                "reasoning" => pm.reasoning_tokens = sum_val as u64,
+                                "output" => pm.response_tokens = sum_val as u64,
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            } else if let Some(stripped) = id.strip_prefix("topic_") {
+                if let Ok(t_idx) = stripped.parse::<usize>() {
+                    if let Some(t) = report.translation_by_topic.get_mut(t_idx) {
+                        t.count = sum_val as u64;
+                    }
+                }
+            } else if let Some(stripped) = id.strip_prefix("cat_") {
+                if let Ok(c_idx) = stripped.parse::<usize>() {
+                    if let Some(c) = report.translation_by_category.get_mut(c_idx) {
+                        c.count = sum_val as u64;
+                    }
+                }
+            } else if let Some(stripped) = id.strip_prefix("type_") {
+                if let Ok(ct_idx) = stripped.parse::<usize>() {
+                    if let Some(ct) = report.translation_by_type.get_mut(ct_idx) {
+                        ct.count = sum_val as u64;
+                    }
+                }
+            } else if let Some(stripped) = id.strip_prefix("hist_") {
+                if let Ok(h_idx) = stripped.parse::<usize>() {
+                    if let Some(h) = report.history_length_distribution.get_mut(h_idx) {
+                        h.count = sum_val as u64;
+                    }
+                }
+            }
+        }
+
+        // Compute summary totals from gathered endpoint metrics
+        let total_4xx: u64 = report
+            .requests_by_endpoint
+            .iter()
+            .map(|e| e.status_4xx)
+            .sum();
+        let total_5xx: u64 = report
+            .requests_by_endpoint
+            .iter()
+            .map(|e| e.status_5xx)
+            .sum();
+        let total_err = total_4xx + total_5xx;
+        let total_req = if report.summary.total_requests > 0 {
+            report.summary.total_requests
+        } else {
+            report
+                .requests_by_endpoint
+                .iter()
+                .map(|e| e.status_2xx + e.status_4xx + e.status_5xx)
+                .sum()
+        };
+        report.summary.total_requests = total_req;
+        report.summary.error_rate_percent = if total_req > 0 {
+            ((total_err as f64 / total_req as f64) * 1000.0).round() / 10.0
+        } else {
+            0.0
+        };
+
+        let total_tokens: u64 = report
+            .token_usage_by_prompt
+            .iter()
+            .map(|t| t.input_tokens + t.reasoning_tokens + t.response_tokens)
+            .sum();
+        report.summary.total_tokens = total_tokens;
+
+        let avg_lat: f64 = report
+            .latencies_by_endpoint
+            .iter()
+            .filter(|l| l.avg_ms > 0.0)
+            .map(|l| l.avg_ms)
+            .sum::<f64>()
+            / report
+                .latencies_by_endpoint
+                .iter()
+                .filter(|l| l.avg_ms > 0.0)
+                .count()
+                .max(1) as f64;
+        report.summary.avg_latency_ms = (avg_lat * 10.0).round() / 10.0;
+
+        report
+    }
 }
 
 #[async_trait]
@@ -812,10 +1008,7 @@ impl MetricsQueryService for CloudWatchMetricsProvider {
         let now = SystemTime::now();
         let start_time = now.checked_sub(range.duration()).unwrap_or(now);
 
-        let now_secs = now.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-        let (bucket_secs, num_buckets) = range.bucket_config();
-        let total_window = bucket_secs * (num_buckets as u64);
-        let start_secs = now_secs.saturating_sub(total_window);
+        let (bucket_secs, _num_buckets) = range.bucket_config();
 
         let start_dt = aws_sdk_cloudwatch::primitives::DateTime::from(start_time);
         let end_dt = aws_sdk_cloudwatch::primitives::DateTime::from(now);
@@ -1103,150 +1296,11 @@ impl MetricsQueryService for CloudWatchMetricsProvider {
             )
         })?;
 
-        let mut report = AnalyticsReport::empty_at(range, now);
-
-        for result in resp.metric_data_results() {
-            let sum_val: f64 = result.values().iter().sum();
-            let id = result.id().unwrap_or_default();
-
-            if id == "total_req" {
-                report.summary.total_requests = sum_val as u64;
-            } else if let Some(stripped) = id.strip_prefix("req_") {
-                let parts: Vec<&str> = stripped.split('_').collect();
-                if parts.len() == 2 {
-                    if let Ok(ep_idx) = parts[0].parse::<usize>() {
-                        if let Some(ep) = report.requests_by_endpoint.get_mut(ep_idx) {
-                            match parts[1] {
-                                "2xx" => ep.status_2xx = sum_val as u64,
-                                "4xx" => ep.status_4xx = sum_val as u64,
-                                "5xx" => ep.status_5xx = sum_val as u64,
-                                _ => {}
-                            }
-                        }
-                        if let Some(ep_series) = report.requests_over_time.get_mut(ep_idx) {
-                            for (ts, val) in result.timestamps().iter().zip(result.values().iter())
-                            {
-                                let ts_secs = ts.secs().max(0) as u64;
-                                let bucket_idx =
-                                    ((ts_secs.saturating_sub(start_secs) / bucket_secs) as usize)
-                                        .min(num_buckets - 1);
-                                if let Some(pt) = ep_series.series.get_mut(bucket_idx) {
-                                    match parts[1] {
-                                        "2xx" => pt.status_2xx += *val as u64,
-                                        "4xx" => pt.status_4xx += *val as u64,
-                                        "5xx" => pt.status_5xx += *val as u64,
-                                        _ => {}
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            } else if let Some(stripped) = id.strip_prefix("lat_avg_") {
-                if let Ok(ep_idx) = stripped.parse::<usize>() {
-                    if let Some(ep) = report.latencies_by_endpoint.get_mut(ep_idx) {
-                        let count = result.values().len().max(1) as f64;
-                        ep.avg_ms = ((sum_val / count) * 1000.0 * 10.0).round() / 10.0;
-                    }
-                }
-            } else if let Some(stripped) = id.strip_prefix("lat_p95_") {
-                if let Ok(ep_idx) = stripped.parse::<usize>() {
-                    if let Some(ep) = report.latencies_by_endpoint.get_mut(ep_idx) {
-                        let max_p95 = result.values().iter().copied().fold(0.0f64, f64::max);
-                        ep.p95_ms = (max_p95 * 1000.0 * 10.0).round() / 10.0;
-                    }
-                }
-            } else if let Some(stripped) = id.strip_prefix("tok_") {
-                let parts: Vec<&str> = stripped.split('_').collect();
-                if parts.len() == 2 {
-                    if let Ok(p_idx) = parts[0].parse::<usize>() {
-                        if let Some(pm) = report.token_usage_by_prompt.get_mut(p_idx) {
-                            match parts[1] {
-                                "input" => pm.input_tokens = sum_val as u64,
-                                "reasoning" => pm.reasoning_tokens = sum_val as u64,
-                                "output" => pm.response_tokens = sum_val as u64,
-                                _ => {}
-                            }
-                        }
-                    }
-                }
-            } else if let Some(stripped) = id.strip_prefix("topic_") {
-                if let Ok(t_idx) = stripped.parse::<usize>() {
-                    if let Some(t) = report.translation_by_topic.get_mut(t_idx) {
-                        t.count = sum_val as u64;
-                    }
-                }
-            } else if let Some(stripped) = id.strip_prefix("cat_") {
-                if let Ok(c_idx) = stripped.parse::<usize>() {
-                    if let Some(c) = report.translation_by_category.get_mut(c_idx) {
-                        c.count = sum_val as u64;
-                    }
-                }
-            } else if let Some(stripped) = id.strip_prefix("type_") {
-                if let Ok(ct_idx) = stripped.parse::<usize>() {
-                    if let Some(ct) = report.translation_by_type.get_mut(ct_idx) {
-                        ct.count = sum_val as u64;
-                    }
-                }
-            } else if let Some(stripped) = id.strip_prefix("hist_") {
-                if let Ok(h_idx) = stripped.parse::<usize>() {
-                    if let Some(h) = report.history_length_distribution.get_mut(h_idx) {
-                        h.count = sum_val as u64;
-                    }
-                }
-            }
-        }
-
-        // Compute summary totals from gathered endpoint metrics
-        let total_4xx: u64 = report
-            .requests_by_endpoint
-            .iter()
-            .map(|e| e.status_4xx)
-            .sum();
-        let total_5xx: u64 = report
-            .requests_by_endpoint
-            .iter()
-            .map(|e| e.status_5xx)
-            .sum();
-        let total_err = total_4xx + total_5xx;
-        let total_req = if report.summary.total_requests > 0 {
-            report.summary.total_requests
-        } else {
-            report
-                .requests_by_endpoint
-                .iter()
-                .map(|e| e.status_2xx + e.status_4xx + e.status_5xx)
-                .sum()
-        };
-        report.summary.total_requests = total_req;
-        report.summary.error_rate_percent = if total_req > 0 {
-            ((total_err as f64 / total_req as f64) * 1000.0).round() / 10.0
-        } else {
-            0.0
-        };
-
-        let total_tokens: u64 = report
-            .token_usage_by_prompt
-            .iter()
-            .map(|t| t.input_tokens + t.reasoning_tokens + t.response_tokens)
-            .sum();
-        report.summary.total_tokens = total_tokens;
-
-        let avg_lat: f64 = report
-            .latencies_by_endpoint
-            .iter()
-            .filter(|l| l.avg_ms > 0.0)
-            .map(|l| l.avg_ms)
-            .sum::<f64>()
-            / report
-                .latencies_by_endpoint
-                .iter()
-                .filter(|l| l.avg_ms > 0.0)
-                .count()
-                .max(1) as f64;
-        report.summary.avg_latency_ms = (avg_lat * 10.0).round() / 10.0;
-
-        Ok(report)
+        Ok(Self::build_report_from_results(
+            range,
+            now,
+            resp.metric_data_results(),
+        ))
     }
 }
 
@@ -1573,5 +1627,216 @@ mod tests {
 
         std::env::remove_var("METRICS_PROVIDER");
         std::env::remove_var("CLOUDWATCH_METRICS_NAMESPACE");
+    }
+
+    /// Verifies that `CloudWatchMetricsProvider::build_report_from_results` maps all metric IDs,
+    /// buckets timestamps into `requests_over_time`, aggregates `avg` and max `p95` latencies,
+    /// and computes error rate and token totals.
+    #[test]
+    fn test_cloudwatch_build_report_from_results_aggregates_and_buckets() {
+        use aws_sdk_cloudwatch::primitives::DateTime;
+        use aws_sdk_cloudwatch::types::MetricDataResult;
+
+        let now_secs = 1_700_003_600_u64;
+        let now = UNIX_EPOCH + Duration::from_secs(now_secs);
+        // 1h window -> start_secs = 1_700_000_000, 12 buckets of 300s each
+        let bucket_0_ts = DateTime::from_secs(1_700_000_100);
+        let bucket_11_ts = DateTime::from_secs(1_700_003_500);
+
+        let results = vec![
+            MetricDataResult::builder()
+                .id("total_req")
+                .values(5.0)
+                .values(5.0)
+                .build(),
+            // Endpoint 0 (/correct-transcript): 3x 2xx in bucket 0, 1x 4xx in bucket 11
+            MetricDataResult::builder()
+                .id("req_0_2xx")
+                .timestamps(bucket_0_ts)
+                .values(3.0)
+                .build(),
+            MetricDataResult::builder()
+                .id("req_0_4xx")
+                .timestamps(bucket_11_ts)
+                .values(1.0)
+                .build(),
+            // Endpoint 1 (/translate): 5x 2xx across bucket 0 and 11, 1x 5xx in bucket 11
+            MetricDataResult::builder()
+                .id("req_1_2xx")
+                .timestamps(bucket_0_ts)
+                .timestamps(bucket_11_ts)
+                .values(2.0)
+                .values(3.0)
+                .build(),
+            MetricDataResult::builder()
+                .id("req_1_5xx")
+                .timestamps(bucket_11_ts)
+                .values(1.0)
+                .build(),
+            // Latencies for endpoint 0 (in seconds): avg = (0.10 + 0.30) / 2 = 200ms, max p95 = 0.45s = 450ms
+            MetricDataResult::builder()
+                .id("lat_avg_0")
+                .values(0.10)
+                .values(0.30)
+                .build(),
+            MetricDataResult::builder()
+                .id("lat_p95_0")
+                .values(0.25)
+                .values(0.45)
+                .build(),
+            // Latencies for endpoint 1: avg = 0.40s = 400ms, p95 = 0.80s = 800ms
+            MetricDataResult::builder()
+                .id("lat_avg_1")
+                .values(0.40)
+                .build(),
+            MetricDataResult::builder()
+                .id("lat_p95_1")
+                .values(0.80)
+                .build(),
+            // Tokens: prompt 0 (correct-transcript), prompt 1 (translate), prompt 2 (classify)
+            MetricDataResult::builder()
+                .id("tok_0_input")
+                .values(120.0)
+                .build(),
+            MetricDataResult::builder()
+                .id("tok_0_output")
+                .values(30.0)
+                .build(),
+            MetricDataResult::builder()
+                .id("tok_1_input")
+                .values(200.0)
+                .build(),
+            MetricDataResult::builder()
+                .id("tok_1_reasoning")
+                .values(50.0)
+                .build(),
+            MetricDataResult::builder()
+                .id("tok_1_output")
+                .values(80.0)
+                .build(),
+            MetricDataResult::builder()
+                .id("tok_2_input")
+                .values(40.0)
+                .build(),
+            // Topic 0 (medical), Category 1 (uncertain -> info), Type 0 (translation), History 2 (3-5)
+            MetricDataResult::builder()
+                .id("topic_0")
+                .values(4.0)
+                .build(),
+            MetricDataResult::builder().id("cat_1").values(2.0).build(),
+            MetricDataResult::builder().id("type_0").values(6.0).build(),
+            MetricDataResult::builder().id("hist_2").values(3.0).build(),
+        ];
+
+        let report =
+            CloudWatchMetricsProvider::build_report_from_results(TimeRange::OneHour, now, &results);
+
+        assert_eq!(report.summary.total_requests, 10);
+        // 1 (4xx) + 1 (5xx) = 2 errors out of 10 = 20.0%
+        assert_eq!(report.summary.error_rate_percent, 20.0);
+        // Avg of endpoint averages: (200.0 + 400.0) / 2 = 300.0 ms
+        assert_eq!(report.summary.avg_latency_ms, 300.0);
+        // Total tokens: 120 + 30 + 200 + 50 + 80 + 40 = 520
+        assert_eq!(report.summary.total_tokens, 520);
+
+        // Check time-series bucketing
+        assert_eq!(report.requests_over_time[0].series[0].status_2xx, 3);
+        assert_eq!(report.requests_over_time[0].series[11].status_4xx, 1);
+        assert_eq!(report.requests_over_time[1].series[0].status_2xx, 2);
+        assert_eq!(report.requests_over_time[1].series[11].status_2xx, 3);
+        assert_eq!(report.requests_over_time[1].series[11].status_5xx, 1);
+
+        // Check latencies
+        assert_eq!(report.latencies_by_endpoint[0].avg_ms, 200.0);
+        assert_eq!(report.latencies_by_endpoint[0].p95_ms, 450.0);
+        assert_eq!(report.latencies_by_endpoint[1].avg_ms, 400.0);
+        assert_eq!(report.latencies_by_endpoint[1].p95_ms, 800.0);
+
+        // Check topic, category, type, and history
+        assert_eq!(report.translation_by_topic[0].topic, "medical");
+        assert_eq!(report.translation_by_topic[0].count, 4);
+        assert_eq!(report.translation_by_category[1].level, "info");
+        assert_eq!(report.translation_by_category[1].category, "uncertain");
+        assert_eq!(report.translation_by_category[1].count, 2);
+        assert_eq!(
+            report.translation_by_type[0].classification_type,
+            "translation"
+        );
+        assert_eq!(report.translation_by_type[0].count, 6);
+        assert_eq!(report.history_length_distribution[2].bucket, "3-5");
+        assert_eq!(report.history_length_distribution[2].count, 3);
+    }
+
+    /// Verifies that `CloudWatchMetricsProvider::build_report_from_results` falls back to summing
+    /// per-endpoint status counts when `total_req` is zero or omitted, and formats `AnalyticsError`.
+    #[test]
+    fn test_cloudwatch_build_report_fallback_total_requests_and_error_display() {
+        use aws_sdk_cloudwatch::types::MetricDataResult;
+
+        let now = UNIX_EPOCH + Duration::from_secs(1_700_003_600);
+        let results = vec![
+            MetricDataResult::builder()
+                .id("req_0_2xx")
+                .values(7.0)
+                .build(),
+            MetricDataResult::builder()
+                .id("req_1_4xx")
+                .values(1.0)
+                .build(),
+        ];
+
+        let report =
+            CloudWatchMetricsProvider::build_report_from_results(TimeRange::OneHour, now, &results);
+        assert_eq!(report.summary.total_requests, 8);
+        assert_eq!(report.summary.error_rate_percent, 12.5);
+
+        let cw_err = AnalyticsError::CloudWatchError("timeout".to_string());
+        let q_err = AnalyticsError::QueryError("bad range".to_string());
+        assert_eq!(cw_err.to_string(), "CloudWatch analytics error: timeout");
+        assert_eq!(q_err.to_string(), "Analytics query error: bad range");
+    }
+
+    /// Verifies that `InMemoryMetricsStore::generate_report_at` filters out events older than the
+    /// requested `TimeRange` cutoff, computes p95 across multiple samples, and supports custom endpoints/topics.
+    #[test]
+    fn test_in_memory_store_time_window_filtering_and_p95_distribution() {
+        let store = InMemoryMetricsStore::new();
+        let now = UNIX_EPOCH + Duration::from_secs(1_700_100_000);
+        let two_hours_ago = now - Duration::from_secs(7_200);
+        let ten_minutes_ago = now - Duration::from_secs(600);
+
+        // Expired for 1h window, included in 24h window
+        store.record_http_request_at(two_hours_ago, "/translate", 500, 0.900);
+
+        // 20 recent requests in 1h window with durations 10ms, 20ms, ..., 200ms (p95 = 19th sample = 190ms)
+        for i in 1..=20 {
+            store.record_http_request_at(ten_minutes_ago, "/translate", 200, (i as f64) * 0.010);
+        }
+
+        // Also record a custom non-default endpoint
+        store.record_http_request_at(ten_minutes_ago, "/custom-ep", 200, 0.050);
+
+        let report_1h = store.generate_report_at(TimeRange::OneHour, now);
+        assert_eq!(report_1h.summary.total_requests, 21);
+        assert_eq!(report_1h.summary.error_rate_percent, 0.0);
+
+        let translate_lat = report_1h
+            .latencies_by_endpoint
+            .iter()
+            .find(|l| l.endpoint == "/translate")
+            .unwrap();
+        assert_eq!(translate_lat.avg_ms, 105.0);
+        assert_eq!(translate_lat.p95_ms, 190.0);
+
+        // In 24h window, the 2-hour-old 500 error is included
+        let report_24h = store.generate_report_at(TimeRange::TwentyFourHours, now);
+        assert_eq!(report_24h.summary.total_requests, 22);
+        let translate_ep_24h = report_24h
+            .requests_by_endpoint
+            .iter()
+            .find(|e| e.endpoint == "/translate")
+            .unwrap();
+        assert_eq!(translate_ep_24h.status_2xx, 20);
+        assert_eq!(translate_ep_24h.status_5xx, 1);
     }
 }
