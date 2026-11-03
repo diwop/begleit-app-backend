@@ -15,7 +15,8 @@ The Docker image is built to run identically across AWS (ECS / App Runner / EKS)
 - **No Cloud SDKs in Binary**: All configuration and secrets are injected as environment variables by the orchestrator (e.g., via Terraform). No runtime lookups to AWS Parameter Store, Secrets Manager, or STACKIT APIs are performed by the application.
 - **Observability**:
   - **Logs**: Written to `stdout` (structured JSON in `--release`, human-readable in debug mode) for native ingestion by cloud log collectors, including extracted dialog `topic`, `classification_type`, and `classification_category` on `/translate`.
-  - **Traces & Metrics**: Exported via OTLP (gRPC) whenever `OTEL_EXPORTER_OTLP_ENDPOINT` is configured (HTTP request counts/durations, `gen_ai.client.token.usage` across `/correct-transcript`, `/translate`, and `/translate/classify`, `diwop.translate.history_length`, and `diwop.translate.classification.count`).
+  - **Traces & Metrics**: Exported via OTLP (gRPC) whenever `OTEL_EXPORTER_OTLP_ENDPOINT` is configured.
+  - **Dashboards**: Provides a built-in web usage overview (`/analytics`) for non-technical users alongside an OpenTofu-managed CloudWatch Operations Dashboard (`infrastructure/aws/dashboard.tf`) for backend operations (combining application telemetry, LLM usage, infrastructure health, and live log queries).
 - **Two-Stage Translation & EU AI Act / Safety Classification**:
   - `POST /correct-transcript` runs with `"minimal"` reasoning effort for low-latency transcript cleanup.
   - `POST /translate` runs the preparation prompt (`"medium"` reasoning) followed sequentially by the dialog classification prompt (`"low"` reasoning + JSON Schema `responseJsonSchema`) to extract the dialog topic, attach static *Leichte Sprache* disclaimers (`prompts/warnings/*.md`), or block unsafe content (`safety`, `youth-protection`). See [**Dialog Classification, EU AI Act Disclaimers & Topic Monitoring**](classification-and-disclaimers.md).
