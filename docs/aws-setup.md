@@ -131,7 +131,7 @@ aws ecs update-service \
   --force-new-deployment
 ```
 
-## 5. Verify the Deployment
+## 5. Verify the Deployment & Operations Dashboard
 
 Retrieve the public HTTPS URLs (`service_url` and `custom_domain_url`) and verify the liveness probe, readiness probe, and OpenAPI UI:
 
@@ -146,6 +146,16 @@ curl -i "$SERVICE_URL/readyz"
 
 # Swagger UI
 open "$SERVICE_URL/open-api"
+```
+
+### CloudWatch Operations Dashboard
+
+While the web administration interface provides a simplified usage overview (`/analytics`) for non-technical users, OpenTofu also provisions a dedicated **CloudWatch Operations Dashboard** (`infrastructure/aws/dashboard.tf`) for backend operations. It consolidates high-level API traffic and latency, LLM token telemetry, translation classification distributions, ECS/ALB infrastructure health, and recent application log queries in a single view.
+
+Open the dashboard in the AWS Console using the `cloudwatch_dashboard_url` output:
+
+```bash
+open "$(tofu -chdir=infrastructure/aws output -raw cloudwatch_dashboard_url)"
 ```
 
 ## 6. Automated GitHub Actions Deployment (`.github/workflows/deploy.yml`)
