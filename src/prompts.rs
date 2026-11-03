@@ -1016,19 +1016,74 @@ pub fn build_translate_prompt_with_few_shots_for_partner(
         .replace("%INPUT%", &sanitized_input)
 }
 
+/// Post-processes Markdown text by ensuring two trailing spaces (`  `) are appended to every
+/// non-empty line that is followed by another non-empty line (unless it is a Markdown heading
+/// or inside a fenced code block), so that standard Markdown renderers produce hard line breaks
+/// (`<br>`) as required by German Simple Language (Leichte Sprache).
+pub fn ensure_markdown_line_breaks(text: &str) -> String {
+    let normalized = text.replace("\r\n", "\n");
+    let lines: Vec<&str> = normalized.split('\n').collect();
+    if lines.is_empty() {
+        return String::new();
+    }
+
+    let mut result = Vec::with_capacity(lines.len());
+    let mut in_code_block = false;
+
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed_line = line.trim_end();
+        let trimmed_start = trimmed_line.trim_start();
+
+        if trimmed_start.starts_with("```") {
+            in_code_block = !in_code_block;
+            result.push(trimmed_line.to_string());
+            continue;
+        }
+
+        if in_code_block || trimmed_start.is_empty() {
+            result.push(trimmed_line.to_string());
+            continue;
+        }
+
+        let has_next_non_empty = lines.get(i + 1).is_some_and(|next| {
+            let next_trimmed = next.trim_start();
+            !next_trimmed.is_empty()
+                && !next_trimmed.starts_with('#')
+                && !next_trimmed.starts_with("```")
+        });
+
+        if trimmed_start.starts_with('#') {
+            result.push(trimmed_line.to_string());
+        } else if has_next_non_empty {
+            result.push(format!("{trimmed_line}  "));
+        } else {
+            result.push(trimmed_line.to_string());
+        }
+    }
+
+    result.join("\n")
+}
+
 /// Parses the raw output from the `/translate` model into a [`TranslationType`] and Markdown content.
 ///
 /// The model is instructed to output `ÜBERSETZUNG` or `FORMATIERUNG` on the first line,
-/// followed by the prepared Markdown content on subsequent lines.
+/// followed by the prepared Markdown content on subsequent lines, post-processed to ensure
+/// trailing double spaces for Markdown line breaks.
 pub fn parse_translate_output(raw: &str) -> (TranslationType, String) {
     let trimmed = raw.trim();
     if let Some((first_line, rest)) = trimmed.split_once('\n') {
         let header = first_line.trim();
         if header == "FORMATIERUNG" {
-            return (TranslationType::Formatting, rest.trim().to_string());
+            return (
+                TranslationType::Formatting,
+                ensure_markdown_line_breaks(rest.trim()),
+            );
         }
         if header == "ÜBERSETZUNG" {
-            return (TranslationType::Translation, rest.trim().to_string());
+            return (
+                TranslationType::Translation,
+                ensure_markdown_line_breaks(rest.trim()),
+            );
         }
     } else if trimmed == "FORMATIERUNG" {
         return (TranslationType::Formatting, String::new());
@@ -1036,7 +1091,10 @@ pub fn parse_translate_output(raw: &str) -> (TranslationType, String) {
         return (TranslationType::Translation, String::new());
     }
 
-    (TranslationType::Translation, trimmed.to_string())
+    (
+        TranslationType::Translation,
+        ensure_markdown_line_breaks(trimmed),
+    )
 }
 
 /// Renders the user prompt for the dialog classification step (`prompts/classify-dialog.md`)
@@ -1801,12 +1859,58 @@ mod tests {
         }
     }
 
-    /// Verifies that `parse_translate_output` extracts `TranslationType` from the first line (`ÜBERSETZUNG` vs `FORMATIERUNG`).
+    /// Verifies that `ensure_markdown_line_breaks` appends two trailing spaces (`  `) to non-empty
+    /// lines preceding another non-empty line, preserves blank lines, handles headings and code blocks,
+    /// and is idempotent.
+    #[test]
+    fn test_ensure_markdown_line_breaks() {
+        // 1. Single line: untouched
+        assert_eq!(ensure_markdown_line_breaks("Einzelsatz."), "Einzelsatz.");
+
+        // 2. Multiline simple language: each line except the last gets two trailing spaces
+        let input = "Sie müssen den Antrag abgeben.\nDas machen Sie bis zum Ende von nächster Woche.\nSonst bekommen Sie das Bürger-Geld erst im nächsten Monat.";
+        let expected = "Sie müssen den Antrag abgeben.  \nDas machen Sie bis zum Ende von nächster Woche.  \nSonst bekommen Sie das Bürger-Geld erst im nächsten Monat.";
+        assert_eq!(ensure_markdown_line_breaks(input), expected);
+
+        // 3. Idempotent: running on already formatted text produces the exact same output
+        assert_eq!(ensure_markdown_line_breaks(expected), expected);
+
+        // 4. Normalization of 1 trailing space or 3 trailing spaces to exactly 2
+        let single_space = "Zeile 1 \nZeile 2";
+        assert_eq!(
+            ensure_markdown_line_breaks(single_space),
+            "Zeile 1  \nZeile 2"
+        );
+        let triple_space = "Zeile 1   \nZeile 2";
+        assert_eq!(
+            ensure_markdown_line_breaks(triple_space),
+            "Zeile 1  \nZeile 2"
+        );
+
+        // 5. Multiple paragraphs separated by blank line: lines before blank line don't get trailing spaces
+        let paragraphs = "Absatz 1 Satz 1\nAbsatz 1 Satz 2\n\nAbsatz 2 Satz 1\nAbsatz 2 Satz 2";
+        let expected_para =
+            "Absatz 1 Satz 1  \nAbsatz 1 Satz 2\n\nAbsatz 2 Satz 1  \nAbsatz 2 Satz 2";
+        assert_eq!(ensure_markdown_line_breaks(paragraphs), expected_para);
+
+        // 6. Headings (#, ##) and code blocks are not modified with trailing spaces
+        let mixed =
+            "## Wichtige Information\nZeile 1\nZeile 2\n```\ncode 1\ncode 2\n```\nZeile 3\nZeile 4";
+        let expected_mixed = "## Wichtige Information\nZeile 1  \nZeile 2\n```\ncode 1\ncode 2\n```\nZeile 3  \nZeile 4";
+        assert_eq!(ensure_markdown_line_breaks(mixed), expected_mixed);
+
+        // 7. CRLF normalization
+        let crlf = "Zeile 1\r\nZeile 2";
+        assert_eq!(ensure_markdown_line_breaks(crlf), "Zeile 1  \nZeile 2");
+    }
+
+    /// Verifies that `parse_translate_output` extracts `TranslationType` from the first line (`ÜBERSETZUNG` vs `FORMATIERUNG`)
+    /// and post-processes the Markdown body to include line breaks with trailing double spaces.
     #[test]
     fn test_parse_translate_output() {
         let (t1, c1) = parse_translate_output("ÜBERSETZUNG\nEinfacher Satz 1.\nEinfacher Satz 2.");
         assert_eq!(t1, TranslationType::Translation);
-        assert_eq!(c1, "Einfacher Satz 1.\nEinfacher Satz 2.");
+        assert_eq!(c1, "Einfacher Satz 1.  \nEinfacher Satz 2.");
 
         let (t2, c2) = parse_translate_output("FORMATIERUNG\nOriginaler Satz.");
         assert_eq!(t2, TranslationType::Formatting);

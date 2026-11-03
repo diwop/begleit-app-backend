@@ -1157,7 +1157,7 @@ pub async fn translate(
 
     let (model_type, model_content) = parse_translate_output(&prompt_output.text);
     let translated_content = if model_content.is_empty() {
-        directives.cleaned_message.clone()
+        crate::prompts::ensure_markdown_line_breaks(&directives.cleaned_message)
     } else {
         model_content
     };

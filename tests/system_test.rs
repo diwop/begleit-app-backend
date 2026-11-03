@@ -441,7 +441,7 @@ async fn test_system_happy_path_multi_turn_dialog_and_metrics() {
     assert_eq!(translate_turn1.r#type, TranslationType::Formatting);
     assert_eq!(
         translate_turn1.content,
-        "Guten Tag!\nWie kann ich Ihnen heute helfen?"
+        "Guten Tag!  \nWie kann ich Ihnen heute helfen?"
     );
     assert!(translate_turn1.warning.is_none());
     assert_eq!(
@@ -549,7 +549,7 @@ async fn test_system_happy_path_multi_turn_dialog_and_metrics() {
     assert_eq!(translate_turn3.r#type, TranslationType::Translation);
     assert_eq!(
         translate_turn3.content,
-        "Bitte gehen Sie in den **1. Stock** zu **Zimmer 104**.\nHalten Sie Ihre **Wartenummer** bereit."
+        "Bitte gehen Sie in den **1. Stock** zu **Zimmer 104**.  \nHalten Sie Ihre **Wartenummer** bereit."
     );
     assert!(translate_turn3.warning.is_none());
 
@@ -1029,7 +1029,7 @@ async fn test_system_corner_cases_and_metrics() {
     assert_eq!(cc3_resp.status(), StatusCode::OK);
     let cc3_body: TranslationResponse = cc3_resp.json().await.unwrap();
     assert_eq!(cc3_body.r#type, TranslationType::Translation);
-    assert_eq!(cc3_body.content, "FORMATIEREN\nBitte nehmen Sie Platz.");
+    assert_eq!(cc3_body.content, "FORMATIEREN  \nBitte nehmen Sie Platz.");
 
     // -----------------------------------------------------------------------
     // Corner Case 4: Markdown code-fenced JSON (` ```json ... ``` `) in both endpoints
