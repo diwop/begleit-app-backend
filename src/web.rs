@@ -734,6 +734,17 @@ async fn serve_allowlisted_disk_asset(
         return (StatusCode::NOT_FOUND, "Not Found").into_response();
     };
 
+    serve_disk_asset_from_path(path, content_type, req_headers, cache_control).await
+}
+
+/// Serves a resolved disk file at `path` with `content_type`, caching its SHA-256 ETag in
+/// [`DISK_ASSET_CACHE`] keyed by `(modified, file_size)` and honoring `If-None-Match`.
+async fn serve_disk_asset_from_path(
+    path: PathBuf,
+    content_type: &'static str,
+    req_headers: &HeaderMap,
+    cache_control: &'static str,
+) -> Response {
     let metadata = match tokio::fs::metadata(&path).await {
         Ok(m) => m,
         Err(_) => return (StatusCode::NOT_FOUND, "Asset Not Found").into_response(),
@@ -1020,5 +1031,171 @@ mod tests {
             resolve_allowlisted_static_asset(StaticAssetCategory::Wasm, "unknown.wasm").is_none()
         );
         assert!(resolve_allowlisted_static_asset(StaticAssetCategory::Ort, "").is_none());
+    }
+
+    /// Verifies `matches_if_none_match` with weak ETags (`W/"..."`), comma-separated ETag lists,
+    /// wildcard `*`, and non-matching headers.
+    #[test]
+    fn test_matches_if_none_match_weak_wildcard_and_lists() {
+        let etag = "\"abc123def456\"";
+
+        // Missing header -> false
+        let empty = HeaderMap::new();
+        assert!(!matches_if_none_match(&empty, etag));
+
+        // Exact match -> true
+        let mut exact = HeaderMap::new();
+        exact.insert(header::IF_NONE_MATCH, HeaderValue::from_static(etag));
+        assert!(matches_if_none_match(&exact, etag));
+
+        // Weak ETag match (`W/"abc123def456"`) -> true
+        let mut weak = HeaderMap::new();
+        weak.insert(
+            header::IF_NONE_MATCH,
+            HeaderValue::from_static("W/\"abc123def456\""),
+        );
+        assert!(matches_if_none_match(&weak, etag));
+
+        // Comma-separated list containing a weak match -> true
+        let mut list = HeaderMap::new();
+        list.insert(
+            header::IF_NONE_MATCH,
+            HeaderValue::from_static("\"other-tag\", W/\"abc123def456\", \"third-tag\""),
+        );
+        assert!(matches_if_none_match(&list, etag));
+
+        // Wildcard `*` -> true
+        let mut wildcard = HeaderMap::new();
+        wildcard.insert(header::IF_NONE_MATCH, HeaderValue::from_static("*"));
+        assert!(matches_if_none_match(&wildcard, etag));
+
+        // Non-matching list -> false
+        let mut mismatch = HeaderMap::new();
+        mismatch.insert(
+            header::IF_NONE_MATCH,
+            HeaderValue::from_static("\"other-tag\", W/\"different\""),
+        );
+        assert!(!matches_if_none_match(&mismatch, etag));
+    }
+
+    /// Mock analytics service that always fails with a CloudWatch error.
+    struct FailingMetricsQueryService;
+
+    #[async_trait::async_trait]
+    impl crate::analytics::MetricsQueryService for FailingMetricsQueryService {
+        async fn query_analytics(
+            &self,
+            _range: crate::analytics::TimeRange,
+        ) -> Result<crate::analytics::AnalyticsReport, crate::analytics::AnalyticsError> {
+            Err(crate::analytics::AnalyticsError::CloudWatchError(
+                "simulated CloudWatch outage".to_string(),
+            ))
+        }
+    }
+
+    /// Verifies that `GET /api/admin/analytics` returns `500 Internal Server Error` when the
+    /// underlying `MetricsQueryService` returns an error.
+    #[tokio::test]
+    async fn test_get_analytics_data_returns_500_on_provider_error() {
+        let state = WebState {
+            admin_password: Arc::new("admin-secret".to_string()),
+            api_key: None,
+            analytics_service: Arc::new(FailingMetricsQueryService),
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer admin-secret"),
+        );
+
+        let res = get_analytics_data(
+            State(state),
+            headers,
+            Query(AnalyticsQuery {
+                range: Some("24h".to_string()),
+            }),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    /// Verifies `serve_disk_asset_from_path` caching, `304 Not Modified` on `If-None-Match`,
+    /// and cache invalidation when the underlying file size changes.
+    #[tokio::test]
+    async fn test_serve_disk_asset_from_path_etag_caching_and_invalidation() {
+        let tmp_path =
+            std::env::temp_dir().join(format!("diwop_test_disk_asset_{}.wasm", std::process::id()));
+        tokio::fs::write(&tmp_path, b"wasm-content-v1")
+            .await
+            .unwrap();
+
+        let empty_headers = HeaderMap::new();
+        let res1 = serve_disk_asset_from_path(
+            tmp_path.clone(),
+            "application/wasm",
+            &empty_headers,
+            "no-cache",
+        )
+        .await;
+        assert_eq!(res1.status(), StatusCode::OK);
+        let etag1 = res1
+            .headers()
+            .get(header::ETAG)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        // Request with matching If-None-Match -> 304 Not Modified (served from DISK_ASSET_CACHE without re-computing SHA-256)
+        let mut inm_headers = HeaderMap::new();
+        inm_headers.insert(
+            header::IF_NONE_MATCH,
+            HeaderValue::from_str(&etag1).unwrap(),
+        );
+        let res_304 = serve_disk_asset_from_path(
+            tmp_path.clone(),
+            "application/wasm",
+            &inm_headers,
+            "no-cache",
+        )
+        .await;
+        assert_eq!(res_304.status(), StatusCode::NOT_MODIFIED);
+
+        // Request without If-None-Match when ETag is cached -> still returns 200 OK with body read from disk
+        let res_cached_200 = serve_disk_asset_from_path(
+            tmp_path.clone(),
+            "application/wasm",
+            &empty_headers,
+            "no-cache",
+        )
+        .await;
+        assert_eq!(res_cached_200.status(), StatusCode::OK);
+        let body_bytes = axum::body::to_bytes(res_cached_200.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        assert_eq!(&body_bytes[..], b"wasm-content-v1");
+
+        // Update file with different size -> invalidates cache and produces new ETag
+        tokio::fs::write(&tmp_path, b"wasm-content-v2-updated")
+            .await
+            .unwrap();
+        let res_updated = serve_disk_asset_from_path(
+            tmp_path.clone(),
+            "application/wasm",
+            &inm_headers,
+            "no-cache",
+        )
+        .await;
+        assert_eq!(res_updated.status(), StatusCode::OK);
+        let etag2 = res_updated
+            .headers()
+            .get(header::ETAG)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert_ne!(etag1, etag2);
+
+        let _ = tokio::fs::remove_file(&tmp_path).await;
     }
 }

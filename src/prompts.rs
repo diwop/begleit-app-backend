@@ -362,13 +362,27 @@ pub trait PromptRunner: Send + Sync {
 /// Production [`PromptRunner`] that sends requests to Google's Gemini API (`gemini-3.5-flash-lite`) using `rig`.
 pub struct GeminiPromptRunner {
     api_key: String,
+    base_url: Option<String>,
 }
 
 impl GeminiPromptRunner {
     /// Creates a new [`GeminiPromptRunner`] authenticated with the provided Gemini API key.
+    /// Reads `GEMINI_API_BASE_URL` if set so tests and local overrides can redirect Gemini HTTP requests.
     pub fn new(api_key: impl Into<String>) -> Self {
+        let base_url = std::env::var("GEMINI_API_BASE_URL")
+            .ok()
+            .filter(|v| !v.trim().is_empty());
         Self {
             api_key: api_key.into(),
+            base_url,
+        }
+    }
+
+    /// Creates a new [`GeminiPromptRunner`] pointing to a custom Gemini API base URL (e.g. a local mock server).
+    pub fn with_base_url(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
+        Self {
+            api_key: api_key.into(),
+            base_url: Some(base_url.into()),
         }
     }
 
@@ -389,8 +403,11 @@ impl GeminiPromptRunner {
                 "Sending prompt to LLM API"
             );
 
-            let client = gemini::Client::builder()
-                .api_key(&self.api_key)
+            let mut client_builder = gemini::Client::builder().api_key(&self.api_key);
+            if let Some(base_url) = &self.base_url {
+                client_builder = client_builder.base_url(base_url);
+            }
+            let client = client_builder
                 .build()
                 .map_err(|e| PromptError(e.to_string()))?;
             let model = client.completion_model("gemini-3.5-flash-lite");
@@ -2183,5 +2200,139 @@ mod tests {
         assert_eq!(parsed.r#type, ClassificationLevel::Pass);
         assert_eq!(parsed.category, ClassificationCategory::Ok);
         assert_eq!(parsed.topic, DialogTopic::Other);
+    }
+
+    /// Verifies `DialogClassification::normalized_partner_role` edge cases: >40 character rejection,
+    /// `NaN`/`INFINITY`/negative confidence rejection, `> 1.0` clamping, and blocked placeholder strings.
+    #[test]
+    fn test_normalized_partner_role_edge_cases() {
+        let make_cls = |role_type: &str, confidence: f64| DialogClassification {
+            r#type: ClassificationLevel::Pass,
+            category: ClassificationCategory::Ok,
+            topic: DialogTopic::Medical,
+            partner_role: Some(ModelPartnerRole {
+                role_type: Some(role_type.to_string()),
+                confidence,
+            }),
+        };
+
+        // > 40 chars rejected
+        let long_role = "A".repeat(41);
+        assert!(make_cls(&long_role, 0.90)
+            .normalized_partner_role()
+            .is_none());
+
+        // NaN, infinite, and negative confidence rejected
+        assert!(make_cls("Ärztin", f64::NAN)
+            .normalized_partner_role()
+            .is_none());
+        assert!(make_cls("Ärztin", f64::INFINITY)
+            .normalized_partner_role()
+            .is_none());
+        assert!(make_cls("Ärztin", -0.1).normalized_partner_role().is_none());
+
+        // Confidence > 1.0 clamped to 1.0
+        let clamped = make_cls("Ärztin", 1.35).normalized_partner_role().unwrap();
+        assert_eq!(clamped.role_type, "Ärztin");
+        assert_eq!(clamped.confidence, 1.0);
+
+        // Blocked placeholder role strings rejected
+        for placeholder in [
+            "gesprächspartnerin",
+            "gesprächspartner",
+            "partner",
+            "person",
+            "unbekannt",
+            "other",
+            "null",
+        ] {
+            assert!(
+                make_cls(placeholder, 0.95)
+                    .normalized_partner_role()
+                    .is_none(),
+                "Expected placeholder '{placeholder}' to be rejected"
+            );
+        }
+    }
+
+    /// Verifies `enforce_correct_transcript_guardrails` edge cases: empty output fallback,
+    /// `prev_p <= 0.10` locking merged turn to `Role::Partner`, and `PartnerSimple`-only prior turns vetoing merge.
+    #[test]
+    fn test_enforce_guardrails_empty_message_fallback_and_partner_simple_only_prior() {
+        let target = CorrectTranscriptHistoryItem {
+            role: Role::Partner,
+            message: "Ursprünglicher Text".to_string(),
+            partner_number: None,
+            cluster_id: Some("cluster_0".to_string()),
+            user_likelihood: Some(0.45),
+            pause_ms: Some(300),
+        };
+
+        // 1. Empty model message falls back to `target.message`, and `PartnerSimple`-only prior items veto merge
+        let prior_simple_only = vec![CorrectTranscriptHistoryItem {
+            role: Role::PartnerSimple,
+            message: "Einfache Sprache".to_string(),
+            partner_number: None,
+            cluster_id: None,
+            user_likelihood: None,
+            pause_ms: None,
+        }];
+        let raw_empty = CorrectTranscriptModelOutput {
+            message: "   ".to_string(),
+            resolved_role: ResolvedSpeakerRole::User,
+            merge_with_previous: true,
+        };
+        let (msg, role, merge) =
+            enforce_correct_transcript_guardrails(raw_empty, &prior_simple_only, &target);
+        assert_eq!(msg, "Ursprünglicher Text");
+        assert_eq!(role, Role::User);
+        assert!(
+            !merge,
+            "Merge must be vetoed when no spoken prior turn exists"
+        );
+
+        // 2. When merging with a prior spoken turn that has `user_likelihood <= 0.10`, role locks to `Role::Partner`
+        let prior_locked_partner = vec![CorrectTranscriptHistoryItem {
+            role: Role::Partner,
+            message: "Erster Halbsatz".to_string(),
+            partner_number: None,
+            cluster_id: Some("cluster_0".to_string()),
+            user_likelihood: Some(0.05),
+            pause_ms: None,
+        }];
+        let raw_merge_user = CorrectTranscriptModelOutput {
+            message: "Erster Halbsatz und zweiter Halbsatz.".to_string(),
+            resolved_role: ResolvedSpeakerRole::User,
+            merge_with_previous: true,
+        };
+        let (_, merged_role, merged_flag) =
+            enforce_correct_transcript_guardrails(raw_merge_user, &prior_locked_partner, &target);
+        assert!(merged_flag);
+        assert_eq!(merged_role, Role::Partner);
+    }
+
+    /// Verifies `extract_staging_directives` explicit boolean flags (`%warning.revealable=false%` / `true`)
+    /// and fallback to the original string when input consists solely of directives.
+    #[test]
+    fn test_extract_staging_directives_revealable_flags_and_directives_only_fallback() {
+        let msg_false = "Hallo %type=formatting% %warning.type=danger% %warning.revealable=false%";
+        let extracted_false = extract_staging_directives(msg_false, true);
+        assert_eq!(extracted_false.r#type, Some(TranslationType::Formatting));
+        assert_eq!(extracted_false.cleaned_message, "Hallo");
+        let w_false = extracted_false.warning.unwrap();
+        assert_eq!(w_false.r#type, WarningType::Danger);
+        assert!(!w_false.revealable);
+
+        let msg_true = "Hallo %warning.type=info% %warning.revealable=true%";
+        let extracted_true = extract_staging_directives(msg_true, true);
+        let w_true = extracted_true.warning.unwrap();
+        assert_eq!(w_true.r#type, WarningType::Info);
+        assert!(w_true.revealable);
+
+        // Directives-only input preserves original message as `cleaned_message`
+        let only_directives = "%type=translation% %warning.type=warning%";
+        let extracted_only = extract_staging_directives(only_directives, true);
+        assert_eq!(extracted_only.r#type, Some(TranslationType::Translation));
+        assert_eq!(extracted_only.cleaned_message, only_directives);
     }
 }
