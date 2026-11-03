@@ -589,6 +589,37 @@ async fn test_prompt_runner_integration_and_error_handling() {
     assert_eq!(err.error.code, "SERVICE_UNAVAILABLE");
 }
 
+/// Verifies that `POST /translate` post-processes multi-line translation outputs by ensuring
+/// two trailing spaces are appended to lines before newlines to support Markdown line breaks.
+#[tokio::test]
+async fn test_translate_multiline_markdown_line_breaks() {
+    let mock_runner = MockPromptRunner::new(Ok(
+        "ÜBERSETZUNG\nSie müssen den Antrag abgeben.\nDas machen Sie bis zum Ende von nächster Woche.\nSonst bekommen Sie das Bürger-Geld erst im nächsten Monat.".to_string(),
+    ));
+    let base_url = start_server_with_runner(mock_runner).await;
+    let client = reqwest::Client::new();
+
+    let res = client
+        .post(format!("{}/translate", base_url))
+        .json(&TranslateRequest {
+            messages: vec![ConversationMessage {
+                role: Role::Partner,
+                message: "sie müssen den antrag abgeben".to_string(),
+                partner_number: None,
+            }],
+        })
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), reqwest::StatusCode::OK);
+    let body: TranslationResponse = res.json().await.unwrap();
+    assert_eq!(
+        body.content,
+        "Sie müssen den Antrag abgeben.  \nDas machen Sie bis zum Ende von nächster Woche.  \nSonst bekommen Sie das Bürger-Geld erst im nächsten Monat."
+    );
+}
+
 /// Verifies `POST /translate` warning boxes, `revealable` gating, empty-answer blocking for
 /// `safety` and `youth-protection`, and fail-closed `503 SERVICE_UNAVAILABLE` when classification fails.
 #[tokio::test]

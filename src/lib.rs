@@ -14,9 +14,10 @@ pub use api::{
 };
 pub use few_shots::{FewShotBucketIndex, FewShotEntry};
 pub use prompts::{
-    ClassificationCategory, ClassificationLevel, CorrectTranscriptModelOutput,
-    DialogClassification, DialogTopic, EchoPromptRunner, GeminiPromptRunner, ModelPartnerRole,
-    PromptError, PromptOutput, PromptRunner, ResolvedSpeakerRole, TokenUsage,
+    ensure_markdown_line_breaks, ClassificationCategory, ClassificationLevel,
+    CorrectTranscriptModelOutput, DialogClassification, DialogTopic, EchoPromptRunner,
+    GeminiPromptRunner, ModelPartnerRole, PromptError, PromptOutput, PromptRunner,
+    ResolvedSpeakerRole, TokenUsage,
 };
 
 use axum::{http::StatusCode, routing::get, Router};
