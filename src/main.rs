@@ -5,13 +5,16 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 
 /// Main entry point for the application:
 ///
-/// - Initializes OpenTelemetry (via `OTEL_EXPORTER_OTLP_ENDPOINT`) and structured logging,
+/// - Loads optional `.env` file for local development (e.g. worktree `PORT`),
+/// - initializes OpenTelemetry (via `OTEL_EXPORTER_OTLP_ENDPOINT`) and structured logging,
 /// - handles the build-time `--prepare-few-shots` subcommand when passed, or
 /// - configures the application router,
 /// - starts the server with graceful `SIGTERM`/`SIGINT` shutdown, and
 /// - flushes OpenTelemetry trace and metric providers on exit.
 #[tokio::main]
 async fn main() {
+    dotenvy::dotenv().ok();
+
     let (tracer_provider, meter_provider) = init_tracing();
 
     if std::env::args().any(|arg| arg == "--prepare-few-shots") {
@@ -21,10 +24,7 @@ async fn main() {
         return;
     }
 
-    let port: u16 = std::env::var("PORT")
-        .unwrap_or_else(|_| "3000".to_string())
-        .parse()
-        .unwrap_or(3000);
+    let port = resolve_port();
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
 
@@ -166,4 +166,37 @@ fn init_tracing() -> (Option<SdkTracerProvider>, Option<SdkMeterProvider>) {
     }
 
     (otel_tracer_provider, otel_meter_provider)
+}
+
+/// Resolves the server port from the `PORT` environment variable, defaulting to `3000`
+/// if unset, empty, or unparseable.
+fn resolve_port() -> u16 {
+    std::env::var("PORT")
+        .ok()
+        .and_then(|val| val.trim().parse::<u16>().ok())
+        .unwrap_or(3000)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verifies that `resolve_port` defaults to 3000 when `PORT` is unset, empty, or unparseable,
+    /// and parses valid port numbers correctly.
+    #[test]
+    fn test_resolve_port() {
+        std::env::remove_var("PORT");
+        assert_eq!(resolve_port(), 3000);
+
+        std::env::set_var("PORT", "3001");
+        assert_eq!(resolve_port(), 3001);
+
+        std::env::set_var("PORT", "invalid");
+        assert_eq!(resolve_port(), 3000);
+
+        std::env::set_var("PORT", "  3002  ");
+        assert_eq!(resolve_port(), 3002);
+
+        std::env::remove_var("PORT");
+    }
 }
