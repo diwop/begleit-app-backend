@@ -32,3 +32,8 @@ output "api_key_ssm_parameter_name" {
   description = "SSM Parameter Store name for the Bearer API key."
   value       = aws_ssm_parameter.api_key.name
 }
+
+output "cloudwatch_dashboard_url" {
+  description = "AWS Console URL for the CloudWatch Operations Dashboard."
+  value       = "https://${var.aws_region}.console.aws.amazon.com/cloudwatch/home?region=${var.aws_region}#dashboards/dashboard/${aws_cloudwatch_dashboard.operations.dashboard_name}"
+}
