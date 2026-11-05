@@ -63,3 +63,9 @@ variable "github_repository" {
   type        = string
   default     = "diwop/begleit-app"
 }
+
+variable "llm_provider" {
+  description = "LLM Model Gateway provider strategy (gemini or melious)."
+  type        = string
+  default     = "melious"
+}

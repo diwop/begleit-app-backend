@@ -6,10 +6,11 @@ use crate::prompts::{
     determine_history_bucket, enforce_correct_transcript_guardrails, extract_staging_directives,
     parse_classify_dialog_output, parse_correct_transcript_output,
     parse_correct_transcript_simple_output, parse_translate_output, ClassificationCategory,
-    ClassificationLevel, DialogTopic, PromptRunner, CLASSIFY_DIALOG_RESPONSE_SCHEMA,
-    CLASSIFY_DIALOG_SYSTEM_PROMPT, CORRECT_TRANSCRIPT_RESPONSE_SCHEMA,
-    CORRECT_TRANSCRIPT_SIMPLE_RESPONSE_SCHEMA, CORRECT_TRANSCRIPT_SIMPLE_SYSTEM_PROMPT,
-    CORRECT_TRANSCRIPT_SYSTEM_PROMPT, TRANSLATE_SYSTEM_PROMPT,
+    ClassificationLevel, DialogTopic, ModelGateway, ModelTier, PromptRunner, ReasoningLevel,
+    CLASSIFY_DIALOG_RESPONSE_SCHEMA, CLASSIFY_DIALOG_SYSTEM_PROMPT,
+    CORRECT_TRANSCRIPT_RESPONSE_SCHEMA, CORRECT_TRANSCRIPT_SIMPLE_RESPONSE_SCHEMA,
+    CORRECT_TRANSCRIPT_SIMPLE_SYSTEM_PROMPT, CORRECT_TRANSCRIPT_SYSTEM_PROMPT,
+    TRANSLATE_SYSTEM_PROMPT,
 };
 use axum::{
     extract::{rejection::JsonRejection, FromRequest, Request, State},
@@ -105,6 +106,15 @@ pub struct ClassificationDebugInfo {
     pub reasoning: Option<String>,
     /// Raw JSON output returned by the classification model.
     pub raw_response: String,
+    /// Model identifier used for the classification step.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Calculated monetary cost for the classification step.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost: Option<f64>,
+    /// Currency of the classification step cost (`USD` or `EUR`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub currency: Option<crate::prompts::Currency>,
 }
 
 /// Optional diagnostic information returned when a request carries a valid admin password or session token.
@@ -136,6 +146,18 @@ pub struct DebugInfo {
     /// Diagnostic details for the post-translation dialog classification step; omitted on `/correct-transcript`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub classification: Option<ClassificationDebugInfo>,
+    /// Model identifier used for this primary step.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Model provider used for this request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_provider: Option<String>,
+    /// Calculated monetary cost for this primary step.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost: Option<f64>,
+    /// Currency of the cost (`USD` or `EUR`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub currency: Option<crate::prompts::Currency>,
 }
 
 /// Single chronological entry in [`CorrectTranscriptRequest::history`].
@@ -196,6 +218,10 @@ pub struct CorrectTranscriptRequest {
     /// Takes precedence over `role` and `message` when present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history: Option<Vec<CorrectTranscriptHistoryItem>>,
+    /// Optional model provider override (only available with admin authentication; ignored for non-admin callers).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    pub model_provider: Option<String>,
 }
 
 impl CorrectTranscriptRequest {
@@ -317,6 +343,7 @@ pub struct CorrectTranscriptResponse {
 
 /// Request payload for `/translate` containing the chronological conversation history.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 #[schema(example = json!({
     "messages": [
         {
@@ -333,6 +360,10 @@ pub struct TranslateRequest {
     /// Chronological conversation history; the last role must be "partner".
     #[schema(min_items = 1)]
     pub messages: Vec<ConversationMessage>,
+    /// Optional model provider override (only available with admin authentication; ignored for non-admin callers).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    pub model_provider: Option<String>,
 }
 
 /// Type of preparation returned by `/translate`.
@@ -492,25 +523,25 @@ where
 /// Shared application state for the conversation API endpoints.
 #[derive(Clone)]
 pub struct ApiState {
-    /// Language model prompt runner used by `/correct-transcript` and `/translate`.
-    pub runner: Arc<dyn PromptRunner>,
+    /// Language model gateway orchestrating model provider runners.
+    pub gateway: Arc<ModelGateway>,
     /// Embedded 6-bucket semantic few-shot index used by `/translate`.
     pub few_shots: Arc<FewShotBucketIndex>,
-    /// Configured admin password used to authorize optional `debugInfo` responses.
+    /// Configured admin password used to authorize optional `debugInfo` responses and model provider overrides.
     pub admin_password: Arc<String>,
+}
+
+impl ApiState {
+    /// Returns the default prompt runner from the gateway.
+    pub fn runner(&self) -> Arc<dyn PromptRunner> {
+        self.gateway.default_runner()
+    }
 }
 
 /// Creates and returns the router for the conversation API endpoints using the provided [`PromptRunner`]
 /// and the process-wide default [`FewShotBucketIndex`].
 pub fn router(runner: Arc<dyn PromptRunner>) -> Router {
-    let few_shots = FewShotBucketIndex::default_shared().unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "Failed to load default few-shot bucket index; using empty index");
-        Arc::new(FewShotBucketIndex::new(
-            Default::default(),
-            Arc::new(crate::few_shots::DeterministicHashEmbedder),
-        ))
-    });
-    router_with_few_shots(runner, few_shots)
+    router_with_gateway(Arc::new(ModelGateway::single(runner)))
 }
 
 /// Creates and returns the router for the conversation API endpoints using the provided [`PromptRunner`]
@@ -519,11 +550,7 @@ pub fn router_with_few_shots(
     runner: Arc<dyn PromptRunner>,
     few_shots: Arc<FewShotBucketIndex>,
 ) -> Router {
-    let admin_password = match std::env::var("ADMIN_PASSWORD") {
-        Ok(pw) if !pw.trim().is_empty() => Arc::new(pw),
-        _ => Arc::new("admin".to_string()),
-    };
-    router_with_state(runner, few_shots, admin_password)
+    router_with_gateway_and_few_shots(Arc::new(ModelGateway::single(runner)), few_shots)
 }
 
 /// Creates and returns the router for the conversation API endpoints using the provided [`PromptRunner`],
@@ -533,11 +560,51 @@ pub fn router_with_state(
     few_shots: Arc<FewShotBucketIndex>,
     admin_password: Arc<String>,
 ) -> Router {
+    router_with_gateway_state(
+        Arc::new(ModelGateway::single(runner)),
+        few_shots,
+        admin_password,
+    )
+}
+
+/// Creates and returns the router for the conversation API endpoints using the provided [`ModelGateway`]
+/// and the process-wide default [`FewShotBucketIndex`].
+pub fn router_with_gateway(gateway: Arc<ModelGateway>) -> Router {
+    let few_shots = FewShotBucketIndex::default_shared().unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "Failed to load default few-shot bucket index; using empty index");
+        Arc::new(FewShotBucketIndex::new(
+            Default::default(),
+            Arc::new(crate::few_shots::DeterministicHashEmbedder),
+        ))
+    });
+    router_with_gateway_and_few_shots(gateway, few_shots)
+}
+
+/// Creates and returns the router for the conversation API endpoints using the provided [`ModelGateway`]
+/// and [`FewShotBucketIndex`], reading `ADMIN_PASSWORD` from the environment (or `"admin"` in debug builds).
+pub fn router_with_gateway_and_few_shots(
+    gateway: Arc<ModelGateway>,
+    few_shots: Arc<FewShotBucketIndex>,
+) -> Router {
+    let admin_password = match std::env::var("ADMIN_PASSWORD") {
+        Ok(pw) if !pw.trim().is_empty() => Arc::new(pw),
+        _ => Arc::new("admin".to_string()),
+    };
+    router_with_gateway_state(gateway, few_shots, admin_password)
+}
+
+/// Creates and returns the router for the conversation API endpoints using the provided [`ModelGateway`],
+/// [`FewShotBucketIndex`], and `admin_password`.
+pub fn router_with_gateway_state(
+    gateway: Arc<ModelGateway>,
+    few_shots: Arc<FewShotBucketIndex>,
+    admin_password: Arc<String>,
+) -> Router {
     Router::new()
         .route("/correct-transcript", post(correct_transcript))
         .route("/translate", post(translate))
         .with_state(ApiState {
-            runner,
+            gateway,
             few_shots,
             admin_password,
         })
@@ -674,23 +741,42 @@ pub async fn correct_transcript(
             )
         })?;
 
+    let is_admin = crate::web::is_admin_authenticated(&headers, &state.admin_password);
+    let runner = state
+        .gateway
+        .resolve_runner(request.model_provider.as_deref(), is_admin)
+        .map_err(|reason| {
+            tracing::warn!(
+                endpoint = "/correct-transcript",
+                error = "VALIDATION_ERROR",
+                reason = %reason,
+                "Validation rejected modelProvider"
+            );
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(ErrorResponse::new("VALIDATION_ERROR", reason)),
+            )
+        })?;
+
     tracing::debug!(
         endpoint = "/correct-transcript",
         role = ?target_turn.role,
         history_len = prior_history.len(),
         is_contextual_history,
+        model_provider = ?request.model_provider,
+        is_admin,
         "Handling correct-transcript request"
     );
 
     let (message, resolved_role, merge_with_previous, prompt, system_prompt_str, prompt_output) =
         if is_contextual_history {
             let prompt = build_correct_transcript_contextual_prompt(&prior_history, &target_turn);
-            let prompt_output = state
-                .runner
+            let prompt_output = runner
                 .run_prompt_with_schema(
                     CORRECT_TRANSCRIPT_SYSTEM_PROMPT,
                     &prompt,
-                    "minimal",
+                    ModelTier::Fast,
+                    ReasoningLevel::Minimal,
                     &CORRECT_TRANSCRIPT_RESPONSE_SCHEMA,
                 )
                 .await
@@ -747,12 +833,12 @@ pub async fn correct_transcript(
         } else {
             let prompt =
                 build_correct_transcript_simple_prompt(target_turn.role, &target_turn.message);
-            let prompt_output = state
-                .runner
+            let prompt_output = runner
                 .run_prompt_with_schema(
                     CORRECT_TRANSCRIPT_SIMPLE_SYSTEM_PROMPT,
                     &prompt,
-                    "minimal",
+                    ModelTier::Fast,
+                    ReasoningLevel::Minimal,
                     &CORRECT_TRANSCRIPT_SIMPLE_RESPONSE_SCHEMA,
                 )
                 .await
@@ -824,6 +910,11 @@ pub async fn correct_transcript(
             } else {
                 crate::prompts::count_gemma_tokens(&prompt)
             };
+            let pricing = runner.pricing(ModelTier::Fast);
+            let cost = pricing.calculate_cost(
+                prompt_output.usage.input_tokens,
+                prompt_output.usage.reasoning_tokens + prompt_output.usage.output_tokens,
+            );
             DebugInfo {
                 system_prompt: system_prompt_str.to_string(),
                 prompt,
@@ -835,6 +926,10 @@ pub async fn correct_transcript(
                 reasoning: prompt_output.reasoning,
                 examples: None,
                 classification: None,
+                model: Some(runner.model_name(ModelTier::Fast).to_string()),
+                model_provider: Some(runner.provider().as_str().to_string()),
+                cost: Some(cost),
+                currency: Some(pricing.currency),
             }
         });
 
@@ -1093,6 +1188,23 @@ pub async fn translate(
         }
     }
 
+    let is_admin = crate::web::is_admin_authenticated(&headers, &state.admin_password);
+    let runner = state
+        .gateway
+        .resolve_runner(request.model_provider.as_deref(), is_admin)
+        .map_err(|reason| {
+            tracing::warn!(
+                endpoint = "/translate",
+                error = "VALIDATION_ERROR",
+                reason = %reason,
+                "Validation rejected modelProvider"
+            );
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(ErrorResponse::new("VALIDATION_ERROR", reason)),
+            )
+        })?;
+
     let history_len = count_history_turns(history);
     let bucket = determine_history_bucket(history);
     crate::metrics::record_translate_history_length(history_len);
@@ -1102,6 +1214,8 @@ pub async fn translate(
         history_length = history_len,
         bucket = bucket,
         partner_number = ?last_message.partner_number,
+        model_provider = ?request.model_provider,
+        is_admin,
         "Handling translate request"
     );
 
@@ -1128,9 +1242,13 @@ pub async fn translate(
         &examples,
     );
 
-    let prompt_output = state
-        .runner
-        .run_prompt(TRANSLATE_SYSTEM_PROMPT, &prompt, "medium")
+    let prompt_output = runner
+        .run_prompt(
+            TRANSLATE_SYSTEM_PROMPT,
+            &prompt,
+            ModelTier::Large,
+            ReasoningLevel::Medium,
+        )
         .await
         .map_err(|e| {
             tracing::error!(
@@ -1168,12 +1286,12 @@ pub async fn translate(
         &translated_content,
         last_message.partner_number,
     );
-    let classify_output = state
-        .runner
+    let classify_output = runner
         .run_prompt_with_schema(
             &CLASSIFY_DIALOG_SYSTEM_PROMPT,
             &classify_prompt,
-            "low",
+            ModelTier::Fast,
+            ReasoningLevel::Low,
             &CLASSIFY_DIALOG_RESPONSE_SCHEMA,
         )
         .await
@@ -1267,6 +1385,18 @@ pub async fn translate(
                     crate::prompts::count_gemma_tokens(&classify_prompt)
                 };
 
+            let large_pricing = runner.pricing(ModelTier::Large);
+            let large_cost = large_pricing.calculate_cost(
+                prompt_output.usage.input_tokens,
+                prompt_output.usage.reasoning_tokens + prompt_output.usage.output_tokens,
+            );
+
+            let fast_pricing = runner.pricing(ModelTier::Fast);
+            let fast_cost = fast_pricing.calculate_cost(
+                classify_output.usage.input_tokens,
+                classify_output.usage.reasoning_tokens + classify_output.usage.output_tokens,
+            );
+
             DebugInfo {
                 system_prompt: TRANSLATE_SYSTEM_PROMPT.to_string(),
                 prompt,
@@ -1291,7 +1421,14 @@ pub async fn translate(
                     response_tokens: classify_output.usage.output_tokens,
                     reasoning: classify_output.reasoning,
                     raw_response: classify_output.text,
+                    model: Some(runner.model_name(ModelTier::Fast).to_string()),
+                    cost: Some(fast_cost),
+                    currency: Some(fast_pricing.currency),
                 }),
+                model: Some(runner.model_name(ModelTier::Large).to_string()),
+                model_provider: Some(runner.provider().as_str().to_string()),
+                cost: Some(large_cost),
+                currency: Some(large_pricing.currency),
             }
         });
 
@@ -1405,6 +1542,7 @@ mod tests {
             partner_number: Some(2),
             message: Some("hallo welt".to_string()),
             history: None,
+            model_provider: None,
         };
         let (prior, target, is_ctx) = legacy.resolve_turns().unwrap();
         assert!(prior.is_empty());
@@ -1445,6 +1583,7 @@ mod tests {
                     pause_ms: Some(540),
                 },
             ]),
+            model_provider: None,
         };
         let (prior_ctx, target_ctx, is_ctx_flag) = contextual.resolve_turns().unwrap();
         assert_eq!(prior_ctx.len(), 2);
@@ -1462,6 +1601,7 @@ mod tests {
             partner_number: None,
             message: None,
             history: Some(vec![]),
+            model_provider: None,
         }
         .resolve_turns()
         .is_err());
@@ -1471,6 +1611,7 @@ mod tests {
             partner_number: None,
             message: Some("hallo".to_string()),
             history: None,
+            model_provider: None,
         }
         .resolve_turns()
         .is_err());
@@ -1480,6 +1621,7 @@ mod tests {
             partner_number: Some(0),
             message: Some("hallo".to_string()),
             history: None,
+            model_provider: None,
         }
         .resolve_turns()
         .is_err());
@@ -1489,6 +1631,7 @@ mod tests {
             partner_number: Some(1),
             message: Some("hallo".to_string()),
             history: None,
+            model_provider: None,
         }
         .resolve_turns()
         .is_err());
@@ -1505,6 +1648,7 @@ mod tests {
                 user_likelihood: None,
                 pause_ms: None,
             }]),
+            model_provider: None,
         }
         .resolve_turns()
         .is_err());
@@ -1521,6 +1665,7 @@ mod tests {
                 user_likelihood: Some(1.2),
                 pause_ms: None,
             }]),
+            model_provider: None,
         }
         .resolve_turns()
         .is_err());

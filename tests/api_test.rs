@@ -1,10 +1,12 @@
 use diwop_begleitapp::{
-    create_app, create_app_with_runner_and_readiness, ClassificationCategory, ClassificationLevel,
-    ConversationMessage, CorrectTranscriptHistoryItem, CorrectTranscriptRequest,
-    CorrectTranscriptResponse, DialogTopic, EchoPromptRunner, ErrorResponse, PartnerRole,
-    PromptError, PromptOutput, PromptRunner, Role, TokenUsage, TranslateRequest,
+    create_app, create_app_with_gateway_and_readiness, create_app_with_runner_and_readiness,
+    ClassificationCategory, ClassificationLevel, ConversationMessage, CorrectTranscriptHistoryItem,
+    CorrectTranscriptRequest, CorrectTranscriptResponse, Currency, DialogTopic, EchoPromptRunner,
+    ErrorResponse, LlmProvider, ModelGateway, ModelPricing, ModelTier, PartnerRole, PromptError,
+    PromptOutput, PromptRunner, ReasoningLevel, Role, TokenUsage, TranslateRequest,
     TranslationResponse, TranslationType, Warning, WarningType,
 };
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::AtomicBool;
@@ -16,12 +18,14 @@ use tokio::net::TcpListener;
 struct RecordedCall {
     system_prompt: String,
     prompt: String,
-    thinking_level: String,
+    model_tier: ModelTier,
+    reasoning_level: ReasoningLevel,
     has_json_schema: bool,
 }
 
 /// Configurable mock [`PromptRunner`] that records calls and returns canned responses for primary and classification prompts.
 struct MockPromptRunner {
+    provider: LlmProvider,
     calls: Mutex<Vec<RecordedCall>>,
     response: Result<String, String>,
     classify_response: Result<String, String>,
@@ -43,7 +47,17 @@ impl MockPromptRunner {
         response: Result<String, String>,
         classify_response: Result<String, String>,
     ) -> Arc<Self> {
+        Self::with_provider(LlmProvider::Gemini, response, classify_response)
+    }
+
+    /// Creates a new [`MockPromptRunner`] for an explicit [`LlmProvider`].
+    fn with_provider(
+        provider: LlmProvider,
+        response: Result<String, String>,
+        classify_response: Result<String, String>,
+    ) -> Arc<Self> {
         Arc::new(Self {
+            provider,
             calls: Mutex::new(Vec::new()),
             response,
             classify_response,
@@ -60,13 +74,15 @@ impl MockPromptRunner {
         &self,
         system_prompt: &str,
         prompt: &str,
-        thinking_level: &str,
+        model_tier: ModelTier,
+        reasoning_level: ReasoningLevel,
         has_json_schema: bool,
     ) -> Result<PromptOutput, PromptError> {
         self.calls.lock().unwrap().push(RecordedCall {
             system_prompt: system_prompt.to_string(),
             prompt: prompt.to_string(),
-            thinking_level: thinking_level.to_string(),
+            model_tier,
+            reasoning_level,
             has_json_schema,
         });
 
@@ -125,13 +141,26 @@ impl MockPromptRunner {
 }
 
 impl PromptRunner for MockPromptRunner {
+    fn provider(&self) -> LlmProvider {
+        self.provider
+    }
+
+    fn model_name(&self, tier: ModelTier) -> &str {
+        self.provider.default_model_name(tier)
+    }
+
+    fn pricing(&self, tier: ModelTier) -> ModelPricing {
+        self.provider.pricing(tier)
+    }
+
     fn run_prompt<'a>(
         &'a self,
         system_prompt: &'a str,
         prompt: &'a str,
-        thinking_level: &'a str,
+        model_tier: ModelTier,
+        reasoning_level: ReasoningLevel,
     ) -> Pin<Box<dyn Future<Output = Result<PromptOutput, PromptError>> + Send + 'a>> {
-        let res = self.handle_call(system_prompt, prompt, thinking_level, false);
+        let res = self.handle_call(system_prompt, prompt, model_tier, reasoning_level, false);
         Box::pin(async move { res })
     }
 
@@ -139,10 +168,11 @@ impl PromptRunner for MockPromptRunner {
         &'a self,
         system_prompt: &'a str,
         prompt: &'a str,
-        thinking_level: &'a str,
+        model_tier: ModelTier,
+        reasoning_level: ReasoningLevel,
         _json_schema: &'a serde_json::Value,
     ) -> Pin<Box<dyn Future<Output = Result<PromptOutput, PromptError>> + Send + 'a>> {
-        let res = self.handle_call(system_prompt, prompt, thinking_level, true);
+        let res = self.handle_call(system_prompt, prompt, model_tier, reasoning_level, true);
         Box::pin(async move { res })
     }
 }
@@ -150,6 +180,7 @@ impl PromptRunner for MockPromptRunner {
 /// Starts an ephemeral test server running the application router with [`EchoPromptRunner`] and returns its base URL.
 async fn start_server() -> String {
     std::env::remove_var("GEMINI_API_KEY");
+    std::env::remove_var("MELIOUS_API_KEY");
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let url = format!("http://{}", addr);
@@ -170,6 +201,21 @@ async fn start_server_with_runner(runner: Arc<dyn PromptRunner>) -> String {
     let url = format!("http://{}", addr);
 
     let app = create_app_with_runner_and_readiness(runner, Arc::new(AtomicBool::new(true)));
+
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    url
+}
+
+/// Starts an ephemeral test server with a custom [`ModelGateway`] and returns its base URL.
+async fn start_server_with_gateway(gateway: Arc<ModelGateway>) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let url = format!("http://{}", addr);
+
+    let app = create_app_with_gateway_and_readiness(gateway, Arc::new(AtomicBool::new(true)));
 
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
@@ -291,6 +337,7 @@ async fn test_translate_echoes_last_partner_message() {
                     partner_number: None,
                 },
             ],
+            model_provider: None,
         })
         .send()
         .await
@@ -325,7 +372,10 @@ async fn test_translate_validation_errors() {
     // Empty message list -> 422 VALIDATION_ERROR
     let res = client
         .post(format!("{}/translate", base_url))
-        .json(&TranslateRequest { messages: vec![] })
+        .json(&TranslateRequest {
+            messages: vec![],
+            model_provider: None,
+        })
         .send()
         .await
         .unwrap();
@@ -342,6 +392,7 @@ async fn test_translate_validation_errors() {
                 message: "  ".to_string(),
                 partner_number: None,
             }],
+            model_provider: None,
         })
         .send()
         .await
@@ -366,6 +417,7 @@ async fn test_translate_validation_errors() {
                     partner_number: None,
                 },
             ],
+            model_provider: None,
         })
         .send()
         .await
@@ -393,6 +445,7 @@ async fn test_translate_directives_for_type_and_warning() {
                 message: msg.to_string(),
                 partner_number: None,
             }],
+            model_provider: None,
         })
         .send()
         .await
@@ -421,6 +474,7 @@ async fn test_translate_directives_for_type_and_warning() {
                 message: msg.to_string(),
                 partner_number: None,
             }],
+            model_provider: None,
         })
         .send()
         .await
@@ -477,7 +531,8 @@ async fn test_prompt_runner_integration_and_error_handling() {
 
     let calls = mock_correct.recorded_calls();
     assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].thinking_level, "minimal");
+    assert_eq!(calls[0].model_tier, ModelTier::Fast);
+    assert_eq!(calls[0].reasoning_level, ReasoningLevel::Minimal);
     assert!(calls[0].has_json_schema);
     assert_eq!(
         calls[0].system_prompt,
@@ -509,6 +564,7 @@ async fn test_prompt_runner_integration_and_error_handling() {
                     partner_number: None,
                 },
             ],
+            model_provider: None,
         })
         .send()
         .await
@@ -528,8 +584,9 @@ async fn test_prompt_runner_integration_and_error_handling() {
 
     let calls = mock_translate.recorded_calls();
     assert_eq!(calls.len(), 2);
-    // Step 1: translate ("medium", free-text header + markdown)
-    assert_eq!(calls[0].thinking_level, "medium");
+    // Step 1: translate (Large model tier, Medium reasoning, free-text header + markdown)
+    assert_eq!(calls[0].model_tier, ModelTier::Large);
+    assert_eq!(calls[0].reasoning_level, ReasoningLevel::Medium);
     assert!(!calls[0].has_json_schema);
     assert!(calls[0]
         .prompt
@@ -541,8 +598,9 @@ async fn test_prompt_runner_integration_and_error_handling() {
         .prompt
         .contains("sie müssen den antrag bis ende nächste woche abgeben"));
 
-    // Step 2: classify-dialog ("low", structured JSON schema)
-    assert_eq!(calls[1].thinking_level, "low");
+    // Step 2: classify-dialog (Fast model tier, Low reasoning, structured JSON schema)
+    assert_eq!(calls[1].model_tier, ModelTier::Fast);
+    assert_eq!(calls[1].reasoning_level, ReasoningLevel::Low);
     assert!(calls[1].has_json_schema);
     assert!(calls[1]
         .prompt
@@ -580,6 +638,7 @@ async fn test_prompt_runner_integration_and_error_handling() {
                 message: "Hallo".to_string(),
                 partner_number: None,
             }],
+            model_provider: None,
         })
         .send()
         .await
@@ -607,6 +666,7 @@ async fn test_translate_multiline_markdown_line_breaks() {
                 message: "sie müssen den antrag abgeben".to_string(),
                 partner_number: None,
             }],
+            model_provider: None,
         })
         .send()
         .await
@@ -632,6 +692,7 @@ async fn test_translate_classification_categories_and_fail_closed() {
             message: "Beispielaussage des Gesprächspartners.".to_string(),
             partner_number: None,
         }],
+        model_provider: None,
     };
 
     // 1. info / uncertain -> revealable: false, content preserved
@@ -853,6 +914,7 @@ async fn test_correct_transcript_contextual_history_and_guardrails() {
                 pause_ms: Some(520),
             },
         ]),
+        model_provider: None,
     };
 
     let res = client
@@ -869,6 +931,8 @@ async fn test_correct_transcript_contextual_history_and_guardrails() {
 
     let calls = mock_flip.recorded_calls();
     assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].model_tier, ModelTier::Fast);
+    assert_eq!(calls[0].reasoning_level, ReasoningLevel::Minimal);
     assert!(calls[0].has_json_schema);
     assert_eq!(
         calls[0].system_prompt,
@@ -899,6 +963,7 @@ async fn test_correct_transcript_contextual_history_and_guardrails() {
                 user_likelihood: Some(0.04),
                 pause_ms: None,
             }]),
+            model_provider: None,
         })
         .send()
         .await
@@ -938,6 +1003,7 @@ async fn test_correct_transcript_contextual_history_and_guardrails() {
                     pause_ms: Some(410),
                 },
             ]),
+            model_provider: None,
         })
         .send()
         .await
@@ -1213,6 +1279,7 @@ async fn test_debug_info_populated_only_with_valid_admin_token() {
                 message: "Bitte bringen Sie Ihren Ausweis mit.".to_string(),
                 partner_number: None,
             }],
+            model_provider: None,
         })
         .send()
         .await
@@ -1418,6 +1485,7 @@ async fn test_translate_empty_body_fallback_and_simple_mode_invalid_json() {
             message: "Originaler Eingabetext".to_string(),
             partner_number: None,
         }],
+        model_provider: None,
     };
     let res_translate = client
         .post(format!("{}/translate", url_header_only))
@@ -1438,6 +1506,7 @@ async fn test_translate_empty_body_fallback_and_simple_mode_invalid_json() {
         message: Some("hallo welt".to_string()),
         partner_number: None,
         history: None,
+        model_provider: None,
     };
     let res_bad_simple = client
         .post(format!("{}/correct-transcript", url_bad_simple))
@@ -1449,4 +1518,202 @@ async fn test_translate_empty_body_fallback_and_simple_mode_invalid_json() {
         res_bad_simple.status(),
         reqwest::StatusCode::SERVICE_UNAVAILABLE
     );
+}
+
+/// Verifies `modelProvider` selection rules:
+/// - Sticky to default `LLM_PROVIDER` for non-admin callers (overrides ignored).
+/// - Default to `LLM_PROVIDER` for admin callers when omitted.
+/// - Dynamic routing to requested provider for admin callers when configured.
+/// - 422 VALIDATION_ERROR for admin callers requesting an unconfigured or unknown provider.
+/// - OpenAPI schema documents `modelProvider` as a string without disclosing provider names.
+#[tokio::test]
+async fn test_model_provider_selection_admin_vs_non_admin_and_openapi_schema() {
+    let client = reqwest::Client::new();
+
+    let gemini_mock = MockPromptRunner::with_classification(
+        Ok("ÜBERSETZUNG\nAntwort von Gemini.".to_string()),
+        Ok(r#"{"type":"pass","category":"ok","topic":"social"}"#.to_string()),
+    );
+    let melious_mock = MockPromptRunner::with_provider(
+        LlmProvider::Melious,
+        Ok("ÜBERSETZUNG\nAntwort von Melious.".to_string()),
+        Ok(r#"{"type":"pass","category":"ok","topic":"authorities"}"#.to_string()),
+    );
+
+    let mut runners: HashMap<LlmProvider, Arc<dyn PromptRunner>> = HashMap::new();
+    runners.insert(LlmProvider::Gemini, gemini_mock.clone());
+    runners.insert(LlmProvider::Melious, melious_mock.clone());
+
+    let gateway = Arc::new(ModelGateway::new(
+        LlmProvider::Gemini,
+        runners,
+        vec![LlmProvider::Gemini, LlmProvider::Melious],
+    ));
+    let base_url = start_server_with_gateway(gateway).await;
+
+    let sample_translate = TranslateRequest {
+        messages: vec![ConversationMessage {
+            role: Role::Partner,
+            message: "Guten Tag.".to_string(),
+            partner_number: None,
+        }],
+        model_provider: None,
+    };
+
+    // 1. Non-admin with modelProvider: "melious" -> sticky to default "gemini"
+    let res_non_admin = client
+        .post(format!("{base_url}/translate"))
+        .json(&serde_json::json!({
+            "messages": [{ "role": "partner", "message": "Guten Tag." }],
+            "modelProvider": "melious"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res_non_admin.status(), reqwest::StatusCode::OK);
+    let body_non_admin: TranslationResponse = res_non_admin.json().await.unwrap();
+    assert_eq!(body_non_admin.content, "Antwort von Gemini.");
+
+    // 2. Admin with modelProvider: "melious" -> routes to Melious
+    let res_admin_melious = client
+        .post(format!("{base_url}/translate"))
+        .header("Authorization", "Bearer admin")
+        .json(&serde_json::json!({
+            "messages": [{ "role": "partner", "message": "Guten Tag." }],
+            "modelProvider": "melious"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res_admin_melious.status(), reqwest::StatusCode::OK);
+    let body_admin_melious: TranslationResponse = res_admin_melious.json().await.unwrap();
+    assert_eq!(body_admin_melious.content, "Antwort von Melious.");
+    let dbg_melious = body_admin_melious
+        .debug_info
+        .expect("admin translate should return debugInfo");
+    assert_eq!(dbg_melious.model_provider.as_deref(), Some("melious"));
+    assert_eq!(dbg_melious.model.as_deref(), Some("gemma-4-31b"));
+    assert_eq!(dbg_melious.currency, Some(Currency::EUR));
+    assert!(dbg_melious.cost.is_some());
+    let cls_melious = dbg_melious
+        .classification
+        .expect("translate should return classification debugInfo");
+    assert_eq!(cls_melious.model.as_deref(), Some("gemma-4-26b-a4b"));
+    assert_eq!(cls_melious.currency, Some(Currency::EUR));
+    assert!(cls_melious.cost.is_some());
+
+    // 3. Admin with modelProvider: "gemini" -> routes to Gemini
+    let res_admin_gemini = client
+        .post(format!("{base_url}/translate"))
+        .header("Authorization", "Bearer admin")
+        .json(&serde_json::json!({
+            "messages": [{ "role": "partner", "message": "Guten Tag." }],
+            "modelProvider": "gemini"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res_admin_gemini.status(), reqwest::StatusCode::OK);
+    let body_admin_gemini: TranslationResponse = res_admin_gemini.json().await.unwrap();
+    assert_eq!(body_admin_gemini.content, "Antwort von Gemini.");
+    let dbg_gemini = body_admin_gemini
+        .debug_info
+        .expect("admin translate should return debugInfo");
+    assert_eq!(dbg_gemini.model_provider.as_deref(), Some("gemini"));
+    assert_eq!(dbg_gemini.model.as_deref(), Some("gemini-3.5-flash-lite"));
+    assert_eq!(dbg_gemini.currency, Some(Currency::USD));
+    assert!(dbg_gemini.cost.is_some());
+    let cls_gemini = dbg_gemini
+        .classification
+        .expect("translate should return classification debugInfo");
+    assert_eq!(cls_gemini.model.as_deref(), Some("gemini-3.5-flash-lite"));
+    assert_eq!(cls_gemini.currency, Some(Currency::USD));
+    assert!(cls_gemini.cost.is_some());
+
+    // 4. Admin with modelProvider: None / omitted -> routes to default Gemini
+    let res_admin_default = client
+        .post(format!("{base_url}/translate"))
+        .header("Authorization", "Bearer admin")
+        .json(&sample_translate)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res_admin_default.status(), reqwest::StatusCode::OK);
+    let body_admin_default: TranslationResponse = res_admin_default.json().await.unwrap();
+    assert_eq!(body_admin_default.content, "Antwort von Gemini.");
+
+    // 5. Admin with unknown modelProvider -> 422 VALIDATION_ERROR
+    let res_unknown = client
+        .post(format!("{base_url}/translate"))
+        .header("Authorization", "Bearer admin")
+        .json(&serde_json::json!({
+            "messages": [{ "role": "partner", "message": "Guten Tag." }],
+            "modelProvider": "anthropic"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        res_unknown.status(),
+        reqwest::StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let err_unknown: ErrorResponse = res_unknown.json().await.unwrap();
+    assert_eq!(err_unknown.error.code, "VALIDATION_ERROR");
+
+    // 6. Admin with unconfigured modelProvider -> 422 VALIDATION_ERROR
+    let gateway_single = Arc::new(ModelGateway::single(
+        gemini_mock.clone() as Arc<dyn PromptRunner>
+    ));
+    let base_url_single = start_server_with_gateway(gateway_single).await;
+
+    let res_unconfigured = client
+        .post(format!("{base_url_single}/translate"))
+        .header("Authorization", "Bearer admin")
+        .json(&serde_json::json!({
+            "messages": [{ "role": "partner", "message": "Guten Tag." }],
+            "modelProvider": "melious"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        res_unconfigured.status(),
+        reqwest::StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let err_unconfigured: ErrorResponse = res_unconfigured.json().await.unwrap();
+    assert_eq!(err_unconfigured.error.code, "VALIDATION_ERROR");
+    assert!(err_unconfigured
+        .error
+        .message
+        .contains("not configured with an API key"));
+
+    // 7. Verify OpenAPI schema: modelProvider is type: string without disclosing provider names
+    let openapi_res = client
+        .get(format!("{base_url}/api-docs/openapi.json"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(openapi_res.status(), reqwest::StatusCode::OK);
+    let doc: serde_json::Value = openapi_res.json().await.unwrap();
+
+    let check_string_type = |prop: &serde_json::Value| {
+        if let Some(arr) = prop["type"].as_array() {
+            assert!(arr.iter().any(|v| v == "string"));
+        } else {
+            assert_eq!(prop["type"], "string");
+        }
+        assert!(prop.get("enum").is_none());
+    };
+
+    let ct_prop =
+        &doc["components"]["schemas"]["CorrectTranscriptRequest"]["properties"]["modelProvider"];
+    check_string_type(ct_prop);
+
+    let tr_prop = &doc["components"]["schemas"]["TranslateRequest"]["properties"]["modelProvider"];
+    check_string_type(tr_prop);
+
+    let doc_str = doc.to_string();
+    // Ensure provider enum values are not leaked into the schema definitions
+    assert!(!doc_str.contains("\"enum\":[\"gemini\""));
+    assert!(!doc_str.contains("\"enum\":[\"melious\""));
 }

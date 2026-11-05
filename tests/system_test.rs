@@ -1,6 +1,6 @@
 use axum::{
-    extract::State,
-    http::StatusCode,
+    extract::{Path, State},
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::post,
     Json, Router,
@@ -10,11 +10,12 @@ use diwop_begleitapp::{
     create_app_with_runner_and_readiness,
     prompts::{
         CLASSIFY_DIALOG_SYSTEM_PROMPT, CORRECT_TRANSCRIPT_SIMPLE_SYSTEM_PROMPT,
-        CORRECT_TRANSCRIPT_SYSTEM_PROMPT, TRANSLATE_SYSTEM_PROMPT,
+        CORRECT_TRANSCRIPT_SYSTEM_PROMPT, DEFAULT_GEMINI_FAST_MODEL, DEFAULT_GEMINI_LARGE_MODEL,
+        DEFAULT_MELIOUS_FAST_MODEL, DEFAULT_MELIOUS_LARGE_MODEL, TRANSLATE_SYSTEM_PROMPT,
     },
     ConversationMessage, CorrectTranscriptHistoryItem, CorrectTranscriptRequest,
-    CorrectTranscriptResponse, ErrorResponse, GeminiPromptRunner, PartnerRole, Role,
-    TranslateRequest, TranslationResponse, TranslationType, WarningType,
+    CorrectTranscriptResponse, ErrorResponse, GeminiPromptRunner, MeliousPromptRunner, PartnerRole,
+    Role, TranslateRequest, TranslationResponse, TranslationType, WarningType,
 };
 use std::collections::VecDeque;
 use std::sync::{atomic::AtomicBool, Arc, LazyLock, Mutex};
@@ -54,6 +55,7 @@ impl PromptKind {
 /// Captured HTTP request received by [`MockGeminiServer`].
 #[derive(Debug, Clone)]
 struct RecordedGeminiRequest {
+    model: String,
     prompt_kind: PromptKind,
     user_prompt: String,
     thinking_level: Option<String>,
@@ -180,8 +182,15 @@ impl MockGeminiServer {
     /// and returns a `GenerateContentResponse` JSON payload compatible with `rig-core`.
     async fn handle_generate_content(
         State(state): State<Arc<MockGeminiState>>,
+        Path(model_action): Path<String>,
         Json(payload): Json<serde_json::Value>,
     ) -> Response {
+        let model = model_action
+            .trim_start_matches('/')
+            .strip_suffix(":generateContent")
+            .unwrap_or(&model_action)
+            .to_string();
+
         let system_prompt = payload
             .pointer("/systemInstruction/parts/0/text")
             .and_then(|v| v.as_str())
@@ -206,6 +215,7 @@ impl MockGeminiServer {
         let prompt_kind = PromptKind::from_system_prompt(&system_prompt);
 
         state.recorded.lock().unwrap().push(RecordedGeminiRequest {
+            model: model.clone(),
             prompt_kind,
             user_prompt,
             thinking_level,
@@ -411,6 +421,7 @@ async fn test_system_happy_path_multi_turn_dialog_and_metrics() {
             partner_number: None,
             message: Some("guten tag wie kann ich ihnen heute helfen".to_string()),
             history: None,
+            model_provider: None,
         })
         .send()
         .await
@@ -432,6 +443,7 @@ async fn test_system_happy_path_multi_turn_dialog_and_metrics() {
                 message: correct_turn1.message.clone(),
                 partner_number: None,
             }],
+            model_provider: None,
         })
         .send()
         .await
@@ -486,6 +498,7 @@ async fn test_system_happy_path_multi_turn_dialog_and_metrics() {
                     pause_ms: Some(450),
                 },
             ]),
+            model_provider: None,
         })
         .send()
         .await
@@ -540,6 +553,7 @@ async fn test_system_happy_path_multi_turn_dialog_and_metrics() {
                     partner_number: None,
                 },
             ],
+                    model_provider: None,
         })
         .send()
         .await
@@ -562,17 +576,21 @@ async fn test_system_happy_path_multi_turn_dialog_and_metrics() {
             || r.prompt_kind == PromptKind::CorrectTranscript
             || r.prompt_kind == PromptKind::CorrectTranscriptSimple)
         .all(|r| r.has_response_schema));
-    // Verify thinking levels match API specification (`minimal` for correct-transcript, `medium` for translate, `low` for classify)
+    // Verify model tiers (`gemini-3.5-flash-lite` for Fast and Large)
+    // and thinking levels (`minimal` for correct-transcript, `medium` for translate, `low` for classify)
     for req in &recorded {
         match req.prompt_kind {
             PromptKind::CorrectTranscript | PromptKind::CorrectTranscriptSimple => {
+                assert_eq!(req.model, DEFAULT_GEMINI_FAST_MODEL);
                 assert_eq!(req.thinking_level.as_deref(), Some("minimal"));
             }
             PromptKind::Translate => {
+                assert_eq!(req.model, DEFAULT_GEMINI_LARGE_MODEL);
                 assert_eq!(req.thinking_level.as_deref(), Some("medium"));
                 assert!(!req.user_prompt.is_empty());
             }
             PromptKind::ClassifyDialog => {
+                assert_eq!(req.model, DEFAULT_GEMINI_FAST_MODEL);
                 assert_eq!(req.thinking_level.as_deref(), Some("low"));
                 assert!(!req.user_prompt.is_empty());
             }
@@ -813,6 +831,7 @@ async fn test_system_info_warning_and_danger_dialogs_and_metrics() {
                     message: case.statement.to_string(),
                     partner_number: None,
                 }],
+                model_provider: None,
             })
             .send()
             .await
@@ -926,6 +945,7 @@ async fn test_system_corner_cases_and_metrics() {
                 message: "Der Termin findet morgen statt.".to_string(),
                 partner_number: None,
             }],
+            model_provider: None,
         })
         .send()
         .await
@@ -956,6 +976,7 @@ async fn test_system_corner_cases_and_metrics() {
                 user_likelihood: Some(0.10),
                 pause_ms: None,
             }]),
+            model_provider: None,
         })
         .send()
         .await
@@ -988,6 +1009,7 @@ async fn test_system_corner_cases_and_metrics() {
                 message: "Im Bundestag wird heute über den Gesetzentwurf abgestimmt.".to_string(),
                 partner_number: None,
             }],
+            model_provider: None,
         })
         .send()
         .await
@@ -1022,6 +1044,7 @@ async fn test_system_corner_cases_and_metrics() {
                 message: "Bitte nehmen Sie Platz.".to_string(),
                 partner_number: None,
             }],
+            model_provider: None,
         })
         .send()
         .await
@@ -1058,6 +1081,7 @@ async fn test_system_corner_cases_and_metrics() {
                 message: "Ihr Zug fährt von Gleis 4.".to_string(),
                 partner_number: None,
             }],
+            model_provider: None,
         })
         .send()
         .await
@@ -1103,6 +1127,7 @@ async fn test_system_corner_cases_and_metrics() {
                 message: "Trinken Sie ausreichend Wasser.".to_string(),
                 partner_number: None,
             }],
+            model_provider: None,
         })
         .send()
         .await
@@ -1135,6 +1160,7 @@ async fn test_system_corner_cases_and_metrics() {
                 message: "Die Schule beginnt um 8 Uhr.".to_string(),
                 partner_number: None,
             }],
+            model_provider: None,
         })
         .send()
         .await
@@ -1162,6 +1188,7 @@ async fn test_system_corner_cases_and_metrics() {
                 message: "Das Brot kostet 3 Euro.".to_string(),
                 partner_number: None,
             }],
+            model_provider: None,
         })
         .send()
         .await
@@ -1198,6 +1225,7 @@ async fn test_system_corner_cases_and_metrics() {
                 message: "Hier ist die Quittung.".to_string(),
                 partner_number: None,
             }],
+            model_provider: None,
         })
         .send()
         .await
@@ -1228,6 +1256,7 @@ async fn test_system_corner_cases_and_metrics() {
                 message: "Hier ist Ihr Kassenbon.".to_string(),
                 partner_number: None,
             }],
+            model_provider: None,
         })
         .send()
         .await
@@ -1280,6 +1309,7 @@ async fn test_system_corner_cases_and_metrics() {
                     pause_ms: Some(120),
                 },
             ]),
+            model_provider: None,
         })
         .send()
         .await
@@ -1306,6 +1336,7 @@ async fn test_system_corner_cases_and_metrics() {
                 message: "Test bei Serverfehler".to_string(),
                 partner_number: None,
             }],
+            model_provider: None,
         })
         .send()
         .await
@@ -1339,4 +1370,442 @@ async fn test_system_corner_cases_and_metrics() {
     // - cc3 ("FORMATIEREN"), cc8a, cc8b were `translation` (3)
     assert_eq!(translation_type_count(&report, "formatting"), 2);
     assert_eq!(translation_type_count(&report, "translation"), 3);
+}
+
+/// Captured OpenAI-compatible `/v1/chat/completions` request received by [`MockMeliousServer`].
+#[derive(Debug, Clone)]
+struct RecordedMeliousRequest {
+    auth_header: Option<String>,
+    model: String,
+    prompt_kind: PromptKind,
+    user_prompt: String,
+    reasoning_effort: Option<String>,
+    response_format_type: Option<String>,
+    schema_name: Option<String>,
+}
+
+/// Shared state for the local Axum [`MockMeliousServer`].
+#[derive(Default)]
+struct MockMeliousState {
+    recorded: Mutex<Vec<RecordedMeliousRequest>>,
+    translate_queue: Mutex<VecDeque<MockGeminiReply>>,
+    classify_queue: Mutex<VecDeque<MockGeminiReply>>,
+    correct_queue: Mutex<VecDeque<MockGeminiReply>>,
+    correct_simple_queue: Mutex<VecDeque<MockGeminiReply>>,
+}
+
+/// Local HTTP mock server emulating melious.ai's OpenAI-compatible `POST /v1/chat/completions` endpoint.
+struct MockMeliousServer {
+    base_url: String,
+    state: Arc<MockMeliousState>,
+}
+
+impl MockMeliousServer {
+    /// Spawns a new [`MockMeliousServer`] bound to an ephemeral localhost TCP port.
+    async fn spawn() -> Self {
+        let state = Arc::new(MockMeliousState::default());
+        let state_clone = Arc::clone(&state);
+
+        let router = Router::new()
+            .route("/v1/chat/completions", post(Self::handle_chat_completions))
+            .with_state(state_clone);
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("Failed to bind MockMeliousServer TCP listener");
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+
+        Self {
+            base_url: format!("http://{addr}"),
+            state,
+        }
+    }
+
+    /// Queues a scripted reply for `translate` (`TRANSLATE_SYSTEM_PROMPT`).
+    fn push_translate(&self, reply: MockGeminiReply) {
+        self.state.translate_queue.lock().unwrap().push_back(reply);
+    }
+
+    /// Queues a scripted reply for `classify` (`CLASSIFY_DIALOG_SYSTEM_PROMPT`).
+    fn push_classify(&self, reply: MockGeminiReply) {
+        self.state.classify_queue.lock().unwrap().push_back(reply);
+    }
+
+    /// Queues a scripted reply for contextual `correct-transcript` (`CORRECT_TRANSCRIPT_SYSTEM_PROMPT`).
+    fn push_correct(&self, reply: MockGeminiReply) {
+        self.state.correct_queue.lock().unwrap().push_back(reply);
+    }
+
+    /// Queues a scripted reply for simple `correct-transcript` (`CORRECT_TRANSCRIPT_SIMPLE_SYSTEM_PROMPT`).
+    fn push_correct_simple(&self, reply: MockGeminiReply) {
+        self.state
+            .correct_simple_queue
+            .lock()
+            .unwrap()
+            .push_back(reply);
+    }
+
+    /// Returns a snapshot of all `/v1/chat/completions` requests captured so far.
+    fn recorded_requests(&self) -> Vec<RecordedMeliousRequest> {
+        self.state.recorded.lock().unwrap().clone()
+    }
+
+    /// Axum handler for `POST /v1/chat/completions` returning an OpenAI-compatible chat completion response.
+    async fn handle_chat_completions(
+        State(state): State<Arc<MockMeliousState>>,
+        headers: HeaderMap,
+        Json(payload): Json<serde_json::Value>,
+    ) -> Response {
+        let auth_header = headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+
+        let model = payload
+            .get("model")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+
+        let system_prompt = payload
+            .pointer("/messages/0/content")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+
+        let user_prompt = payload
+            .pointer("/messages/1/content")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+
+        let reasoning_effort = payload
+            .get("reasoning_effort")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+
+        let response_format_type = payload
+            .pointer("/response_format/type")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+
+        let schema_name = payload
+            .pointer("/response_format/json_schema/name")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+
+        let prompt_kind = PromptKind::from_system_prompt(&system_prompt);
+
+        state.recorded.lock().unwrap().push(RecordedMeliousRequest {
+            auth_header,
+            model: model.clone(),
+            prompt_kind,
+            user_prompt,
+            reasoning_effort,
+            response_format_type,
+            schema_name,
+        });
+
+        let next_reply = match prompt_kind {
+            PromptKind::Translate => state.translate_queue.lock().unwrap().pop_front(),
+            PromptKind::ClassifyDialog => state.classify_queue.lock().unwrap().pop_front(),
+            PromptKind::CorrectTranscript => state.correct_queue.lock().unwrap().pop_front(),
+            PromptKind::CorrectTranscriptSimple => {
+                state.correct_simple_queue.lock().unwrap().pop_front()
+            }
+            PromptKind::Unknown => None,
+        }
+        .unwrap_or_else(|| {
+            panic!("No queued MockMeliousReply available for prompt kind: {prompt_kind:?}")
+        });
+
+        if next_reply.status != StatusCode::OK {
+            return (
+                next_reply.status,
+                Json(serde_json::json!({
+                    "error": {
+                        "message": next_reply.text,
+                        "type": "server_error"
+                    }
+                })),
+            )
+                .into_response();
+        }
+
+        let total_tokens =
+            next_reply.input_tokens + next_reply.reasoning_tokens + next_reply.output_tokens;
+
+        let body = serde_json::json!({
+            "id": "chatcmpl-melious-mock-1",
+            "object": "chat.completion",
+            "model": model,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": next_reply.text,
+                        "reasoning_content": next_reply.thought
+                    },
+                    "finish_reason": "stop"
+                }
+            ],
+            "usage": {
+                "prompt_tokens": next_reply.input_tokens,
+                "completion_tokens": next_reply.output_tokens,
+                "total_tokens": total_tokens,
+                "completion_tokens_details": {
+                    "reasoning_tokens": next_reply.reasoning_tokens
+                }
+            }
+        });
+
+        (StatusCode::OK, Json(body)).into_response()
+    }
+}
+
+/// End-to-end system test verifying the `MeliousPromptRunner` strategy (`/v1/chat/completions`)
+/// across `/correct-transcript` (`gemma-4-26b-a4b`, `reasoning_effort: "none"`) and `/translate`
+/// (`gemma-4-31b` with `reasoning_effort: "medium"` + `gemma-4-26b-a4b` with `reasoning_effort: "low"`),
+/// including `debugInfo` reasoning & token extraction and `IN_MEMORY_METRICS_STORE` verification.
+#[tokio::test]
+async fn test_system_melious_provider_end_to_end_and_metrics() {
+    let _guard = METRICS_TEST_LOCK.lock().await;
+    IN_MEMORY_METRICS_STORE.clear();
+
+    let mock_melious = MockMeliousServer::spawn().await;
+    std::env::set_var("ADMIN_PASSWORD", "system-test-admin-pw");
+
+    let runner = Arc::new(MeliousPromptRunner::with_base_url(
+        "test-melious-api-key",
+        &mock_melious.base_url,
+    ));
+    let readiness = Arc::new(AtomicBool::new(true));
+    let app = create_app_with_runner_and_readiness(runner, readiness);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let app_url = format!("http://{addr}");
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+    // 1. Simple `/correct-transcript` (`Fast` -> `gemma-4-26b-a4b`, `Minimal` -> `reasoning_effort: "none"`)
+    mock_melious.push_correct_simple(MockGeminiReply::ok(
+        r#"{"message":"Bitte unterschreiben Sie hier unten rechts."}"#,
+        None,
+        40,
+        0,
+        10,
+    ));
+
+    let ct_simple_resp = client
+        .post(format!("{app_url}/correct-transcript"))
+        .json(&CorrectTranscriptRequest {
+            role: Some(Role::Partner),
+            partner_number: None,
+            message: Some("bitte unterschreiben sie hier unten rechts".to_string()),
+            history: None,
+            model_provider: None,
+        })
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(ct_simple_resp.status(), StatusCode::OK);
+    let ct_simple_body: CorrectTranscriptResponse = ct_simple_resp.json().await.unwrap();
+    assert_eq!(
+        ct_simple_body.message,
+        "Bitte unterschreiben Sie hier unten rechts."
+    );
+
+    // 2. Contextual `/correct-transcript` (`Fast` -> `gemma-4-26b-a4b`, `Minimal` -> `reasoning_effort: "none"`)
+    mock_melious.push_correct(MockGeminiReply::ok(
+        r#"{"resolvedRole":"user","mergeWithPrevious":false,"message":"Brauche ich dafür einen Kugelschreiber?"}"#,
+        None,
+        60,
+        0,
+        14,
+    ));
+
+    let ct_ctx_resp = client
+        .post(format!("{app_url}/correct-transcript"))
+        .json(&CorrectTranscriptRequest {
+            role: None,
+            partner_number: None,
+            message: None,
+            history: Some(vec![
+                CorrectTranscriptHistoryItem {
+                    role: Role::Partner,
+                    message: ct_simple_body.message.clone(),
+                    partner_number: None,
+                    cluster_id: Some("cluster_0".to_string()),
+                    user_likelihood: Some(0.05),
+                    pause_ms: None,
+                },
+                CorrectTranscriptHistoryItem {
+                    role: Role::User,
+                    message: "brauche ich dafür einen kugelschreiber".to_string(),
+                    partner_number: None,
+                    cluster_id: Some("cluster_1".to_string()),
+                    user_likelihood: Some(0.92),
+                    pause_ms: Some(300),
+                },
+            ]),
+            model_provider: None,
+        })
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(ct_ctx_resp.status(), StatusCode::OK);
+    let ct_ctx_body: CorrectTranscriptResponse = ct_ctx_resp.json().await.unwrap();
+    assert_eq!(ct_ctx_body.resolved_role, Some(Role::User));
+    assert_eq!(
+        ct_ctx_body.message,
+        "Brauche ich dafür einen Kugelschreiber?"
+    );
+
+    // 3. `/translate` with admin header (`Large` -> `gemma-4-31b` + `Medium` -> `"medium"`, then `Fast` -> `gemma-4-26b-a4b` + `Low` -> `"low"`)
+    mock_melious.push_translate(MockGeminiReply::ok(
+        "ÜBERSETZUNG\nUnterschreiben Sie bitte **unten rechts** auf dem Blatt.\nSie können meinen **Stift** benutzen.",
+        Some("Melious Gemma 4 31B translation reasoning"),
+        120,
+        30,
+        25,
+    ));
+    mock_melious.push_classify(MockGeminiReply::ok(
+        r#"{"type":"warning","category":"authorities","topic":"authorities","partnerRole":{"roleType":"SachbearbeiterIn","confidence":0.91}}"#,
+        Some("Melious Gemma 4 26B A4B classification reasoning"),
+        90,
+        12,
+        20,
+    ));
+
+    let tr_resp = client
+        .post(format!("{app_url}/translate"))
+        .header("Authorization", "Bearer system-test-admin-pw")
+        .json(&TranslateRequest {
+            messages: vec![
+                ConversationMessage {
+                    role: Role::Partner,
+                    message: ct_simple_body.message.clone(),
+                    partner_number: None,
+                },
+                ConversationMessage {
+                    role: Role::User,
+                    message: ct_ctx_body.message.clone(),
+                    partner_number: None,
+                },
+                ConversationMessage {
+                    role: Role::Partner,
+                    message: "Bitte leisten Sie Ihre Unterschrift im vorgesehenen Feld unten rechts; Sie können gern meinen Stift verwenden.".to_string(),
+                    partner_number: None,
+                },
+            ],
+                    model_provider: None,
+        })
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(tr_resp.status(), StatusCode::OK);
+    let tr_body: TranslationResponse = tr_resp.json().await.unwrap();
+    assert_eq!(tr_body.r#type, TranslationType::Translation);
+    assert_eq!(
+        tr_body.content,
+        "Unterschreiben Sie bitte **unten rechts** auf dem Blatt.  \nSie können meinen **Stift** benutzen."
+    );
+    let dbg = tr_body
+        .debug_info
+        .expect("Expected debugInfo on admin /translate");
+    assert_eq!(
+        dbg.reasoning.as_deref(),
+        Some("Melious Gemma 4 31B translation reasoning")
+    );
+    assert_eq!(dbg.input_tokens, 120);
+    assert_eq!(dbg.reasoning_tokens, 30);
+    assert_eq!(dbg.response_tokens, 25);
+    let cls_dbg = dbg
+        .classification
+        .expect("Expected classification debugInfo");
+    assert_eq!(
+        cls_dbg.reasoning.as_deref(),
+        Some("Melious Gemma 4 26B A4B classification reasoning")
+    );
+    assert_eq!(cls_dbg.input_tokens, 90);
+    assert_eq!(cls_dbg.reasoning_tokens, 12);
+    assert_eq!(cls_dbg.response_tokens, 20);
+
+    // 4. Verify captured requests on MockMeliousServer
+    let recorded = mock_melious.recorded_requests();
+    assert_eq!(recorded.len(), 4);
+    for req in &recorded {
+        assert_eq!(
+            req.auth_header.as_deref(),
+            Some("Bearer test-melious-api-key")
+        );
+        assert!(!req.user_prompt.is_empty());
+    }
+    // Request 0: simple correct-transcript
+    assert_eq!(recorded[0].prompt_kind, PromptKind::CorrectTranscriptSimple);
+    assert_eq!(recorded[0].model, DEFAULT_MELIOUS_FAST_MODEL);
+    assert_eq!(recorded[0].reasoning_effort.as_deref(), Some("none"));
+    assert_eq!(
+        recorded[0].response_format_type.as_deref(),
+        Some("json_schema")
+    );
+    assert_eq!(
+        recorded[0].schema_name.as_deref(),
+        Some("CorrectTranscriptSimpleOutput")
+    );
+
+    // Request 1: contextual correct-transcript
+    assert_eq!(recorded[1].prompt_kind, PromptKind::CorrectTranscript);
+    assert_eq!(recorded[1].model, DEFAULT_MELIOUS_FAST_MODEL);
+    assert_eq!(recorded[1].reasoning_effort.as_deref(), Some("none"));
+    assert_eq!(
+        recorded[1].response_format_type.as_deref(),
+        Some("json_schema")
+    );
+    assert_eq!(
+        recorded[1].schema_name.as_deref(),
+        Some("CorrectTranscriptOutput")
+    );
+
+    // Request 2: translate (step 1)
+    assert_eq!(recorded[2].prompt_kind, PromptKind::Translate);
+    assert_eq!(recorded[2].model, DEFAULT_MELIOUS_LARGE_MODEL);
+    assert_eq!(recorded[2].reasoning_effort.as_deref(), Some("medium"));
+    assert!(recorded[2].response_format_type.is_none());
+
+    // Request 3: classify-dialog (step 2)
+    assert_eq!(recorded[3].prompt_kind, PromptKind::ClassifyDialog);
+    assert_eq!(recorded[3].model, DEFAULT_MELIOUS_FAST_MODEL);
+    assert_eq!(recorded[3].reasoning_effort.as_deref(), Some("low"));
+    assert_eq!(
+        recorded[3].response_format_type.as_deref(),
+        Some("json_schema")
+    );
+    assert_eq!(
+        recorded[3].schema_name.as_deref(),
+        Some("DialogClassification")
+    );
+
+    // 5. Verify InMemoryMetricsStore
+    let report = IN_MEMORY_METRICS_STORE.generate_report(TimeRange::OneHour);
+    assert_eq!(report.summary.total_requests, 3);
+    assert_eq!(endpoint_counts(&report, "/correct-transcript"), (2, 0, 0));
+    assert_eq!(endpoint_counts(&report, "/translate"), (1, 0, 0));
+    assert_eq!(
+        prompt_tokens(&report, "correct-transcript"),
+        (40 + 60, 0, 10 + 14)
+    );
+    assert_eq!(prompt_tokens(&report, "translate"), (120, 30, 25));
+    assert_eq!(prompt_tokens(&report, "classify"), (90, 12, 20));
+    assert_eq!(topic_count(&report, "authorities"), 1);
+    assert_eq!(category_count(&report, "warning", "authorities"), 1);
+    assert_eq!(translation_type_count(&report, "translation"), 1);
 }

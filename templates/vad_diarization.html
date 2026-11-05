@@ -27,11 +27,21 @@
       <div id="dialog-header-stats" class="dialog-header-stats" style="display: none;" aria-label="Token-Statistiken">
         <span class="stats-badge" id="stats-input-badge">0 Eingabetoken</span>
         <span class="stats-badge" id="stats-output-badge">0 Ausgabetoken</span>
-        <span class="stats-badge stats-badge-cost" id="stats-cost-badge">0,00 €</span>
+        <span class="stats-badge stats-badge-cost" id="stats-cost-badge">{% if default_provider == "melious" %}0,00 €{% else %}$0.00{% endif %}</span>
       </div>
     </div>
 
     <div class="dialog-header-right">
+      {% if !available_providers.is_empty() %}
+      <div class="model-provider-selector" title="Modell-Anbieter auswählen">
+        <label for="model-provider-select" class="sr-only">Modell-Anbieter</label>
+        <select id="model-provider-select" class="provider-select" aria-label="Modell-Anbieter auswählen">
+          {% for provider in available_providers %}
+          <option value="{{ provider }}"{% if provider == &default_provider %} selected{% endif %}>{{ provider }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      {% endif %}
       <button
         type="button"
         id="toggle-debug-btn"
@@ -641,25 +651,44 @@
     return num.toLocaleString('de-DE');
   }
 
+  const MODEL_PRICING = {
+    gemini: {
+      currency: 'USD',
+      symbol: '$',
+      fast: { name: 'Gemini 3.5 Flash Lite', inPrice: 0.30, outPrice: 2.50 },
+      large: { name: 'Gemini 3.5 Flash Lite', inPrice: 0.30, outPrice: 2.50 },
+    },
+    melious: {
+      currency: 'EUR',
+      symbol: '€',
+      fast: { name: 'Gemma 4 26B A4B', inPrice: 0.25, outPrice: 0.50 },
+      large: { name: 'Gemma 4 31B', inPrice: 0.10, outPrice: 0.30 },
+    },
+  };
+
+  let cumulativeCostEUR = 0;
+  let cumulativeCostUSD = 0;
+
   /**
-   * Formats a monetary cost in Euros (`EUR`) with German locale formatting.
+   * Formats a monetary cost in the specified currency (EUR or USD) with localized formatting.
    */
-  function formatPrice(cost) {
+  function formatPrice(cost, currency) {
     if (cost === null || cost === undefined || !Number.isFinite(cost) || cost < 0) {
       return null;
     }
+    const isUsd = (currency || '').toUpperCase() === 'USD';
     if (cost > 0 && cost < 0.00005) {
-      return '< 0,0001 €';
+      return isUsd ? '< $0.0001' : '< 0,0001 €';
     }
     try {
-      return new Intl.NumberFormat('de-DE', {
+      return new Intl.NumberFormat(isUsd ? 'en-US' : 'de-DE', {
         style: 'currency',
-        currency: 'EUR',
+        currency: isUsd ? 'USD' : 'EUR',
         minimumFractionDigits: cost < 0.01 ? (cost === 0 ? 2 : 4) : 2,
         maximumFractionDigits: 4,
       }).format(cost);
     } catch (_err) {
-      return `${cost.toFixed(4)} €`;
+      return isUsd ? `$${cost.toFixed(4)}` : `${cost.toFixed(4)} €`;
     }
   }
 
@@ -683,8 +712,21 @@
     inputEl.textContent = `${formatTokens(cumulativeInputTokens)} Eingabetoken`;
     outputEl.textContent = `${formatTokens(cumulativeOutputTokens)} Ausgabetoken`;
 
-    const totalCost = (cumulativeInputTokens * 0.1 + cumulativeOutputTokens * 0.3) / 1_000_000;
-    costEl.textContent = formatPrice(totalCost);
+    if (cumulativeCostEUR > 0 && cumulativeCostUSD > 0) {
+      costEl.textContent = `${formatPrice(cumulativeCostEUR, 'EUR')} + ${formatPrice(cumulativeCostUSD, 'USD')}`;
+      costEl.title = `Kumulierte Kosten: ${formatPrice(cumulativeCostEUR, 'EUR')} (Melious) + ${formatPrice(cumulativeCostUSD, 'USD')} (Gemini)`;
+    } else if (cumulativeCostUSD > 0) {
+      costEl.textContent = formatPrice(cumulativeCostUSD, 'USD');
+      costEl.title = `Kumulierte Kosten: ${formatPrice(cumulativeCostUSD, 'USD')} (Gemini)`;
+    } else if (cumulativeCostEUR > 0) {
+      costEl.textContent = formatPrice(cumulativeCostEUR, 'EUR');
+      costEl.title = `Kumulierte Kosten: ${formatPrice(cumulativeCostEUR, 'EUR')} (Melious)`;
+    } else {
+      const activeProvider = (getSelectedModelProvider() || '{{ default_provider }}' || 'gemini').toLowerCase();
+      const activeCurr = activeProvider === 'melious' ? 'EUR' : 'USD';
+      costEl.textContent = formatPrice(0, activeCurr);
+      costEl.title = `Kosten: ${formatPrice(0, activeCurr)}`;
+    }
   }
 
   /**
@@ -695,12 +737,39 @@
     const inTokens = typeof debugInfo.inputTokens === 'number' ? debugInfo.inputTokens : 0;
     const reasTokens = typeof debugInfo.reasoningTokens === 'number' ? debugInfo.reasoningTokens : 0;
     const respTokens = typeof debugInfo.responseTokens === 'number' ? debugInfo.responseTokens : 0;
+    const outTokens = reasTokens + respTokens;
+
     const cls = debugInfo.classification || null;
     const clsInTokens = cls && typeof cls.inputTokens === 'number' ? cls.inputTokens : 0;
     const clsReasTokens = cls && typeof cls.reasoningTokens === 'number' ? cls.reasoningTokens : 0;
     const clsRespTokens = cls && typeof cls.responseTokens === 'number' ? cls.responseTokens : 0;
+    const clsOutTokens = clsReasTokens + clsRespTokens;
+
     cumulativeInputTokens += inTokens + clsInTokens;
-    cumulativeOutputTokens += reasTokens + respTokens + clsReasTokens + clsRespTokens;
+    cumulativeOutputTokens += outTokens + clsOutTokens;
+
+    const provider = (debugInfo.modelProvider || getSelectedModelProvider() || '{{ default_provider }}' || 'gemini').toLowerCase();
+    const pricing = MODEL_PRICING[provider] || MODEL_PRICING.gemini;
+    const cardCurrency = (debugInfo.currency || (cls && cls.currency) || pricing.currency).toUpperCase();
+
+    const tier = cls ? pricing.large : pricing.fast;
+    const step1Cost = typeof debugInfo.cost === 'number'
+      ? debugInfo.cost
+      : (inTokens * tier.inPrice + outTokens * tier.outPrice) / 1_000_000;
+
+    const step2Cost = cls
+      ? (typeof cls.cost === 'number'
+          ? cls.cost
+          : (clsInTokens * pricing.fast.inPrice + clsOutTokens * pricing.fast.outPrice) / 1_000_000)
+      : 0;
+
+    const callCost = step1Cost + step2Cost;
+    if (cardCurrency === 'USD') {
+      cumulativeCostUSD += callCost;
+    } else {
+      cumulativeCostEUR += callCost;
+    }
+
     updateHeaderStats();
   }
 
@@ -797,8 +866,23 @@
     const totalInTokens = inTokens + clsInTokens;
     const totalOutTokens = outTokens + clsOutTokens;
 
-    const cardCost = (totalInTokens * 0.1 + totalOutTokens * 0.3) / 1_000_000;
-    const formattedCost = formatPrice(cardCost);
+    const provider = (debugInfo.modelProvider || getSelectedModelProvider() || '{{ default_provider }}' || 'gemini').toLowerCase();
+    const pricing = MODEL_PRICING[provider] || MODEL_PRICING.gemini;
+    const cardCurrency = (debugInfo.currency || (cls && cls.currency) || pricing.currency).toUpperCase();
+
+    const tier = cls ? pricing.large : pricing.fast;
+    const step1Cost = typeof debugInfo.cost === 'number'
+      ? debugInfo.cost
+      : (inTokens * tier.inPrice + outTokens * tier.outPrice) / 1_000_000;
+
+    const step2Cost = cls
+      ? (typeof cls.cost === 'number'
+          ? cls.cost
+          : (clsInTokens * pricing.fast.inPrice + clsOutTokens * pricing.fast.outPrice) / 1_000_000)
+      : 0;
+
+    const cardCost = step1Cost + step2Cost;
+    const formattedCost = formatPrice(cardCost, cardCurrency);
 
     if (headerRowEl) {
       let badgesContainer = headerRowEl.querySelector('.card-header-badges');
@@ -812,6 +896,14 @@
         const costBadge = document.createElement('span');
         costBadge.className = 'debug-pill-badge card-cost-badge';
         costBadge.textContent = formattedCost;
+        if (cls) {
+          const step1Model = debugInfo.model || pricing.large.name;
+          const step2Model = cls.model || pricing.fast.name;
+          costBadge.title = `${step1Model}: ${formatTokens(inTokens)} In x ${pricing.large.inPrice.toFixed(2)} ${pricing.symbol}/M + ${formatTokens(outTokens)} Out x ${pricing.large.outPrice.toFixed(2)} ${pricing.symbol}/M (${formatPrice(step1Cost, cardCurrency)})\n+ ${step2Model}: ${formatTokens(clsInTokens)} In x ${pricing.fast.inPrice.toFixed(2)} ${pricing.symbol}/M + ${formatTokens(clsOutTokens)} Out x ${pricing.fast.outPrice.toFixed(2)} ${pricing.symbol}/M (${formatPrice(step2Cost, cardCurrency)})\nGesamt: ${formattedCost}`;
+        } else {
+          const stepModel = debugInfo.model || pricing.fast.name;
+          costBadge.title = `${stepModel}: ${formatTokens(inTokens)} In x ${pricing.fast.inPrice.toFixed(2)} ${pricing.symbol}/M + ${formatTokens(outTokens)} Out x ${pricing.fast.outPrice.toFixed(2)} ${pricing.symbol}/M = ${formattedCost}`;
+        }
         badgesContainer.appendChild(costBadge);
       }
 
@@ -1107,6 +1199,11 @@
    * - Once settled (`'done'` or `'failed'`), if the turn has already reached Stage 2 (`locked === true`),
    *   immediately triggers `commitStage2ForLockedTurn`.
    */
+  function getSelectedModelProvider() {
+    const select = document.getElementById('model-provider-select');
+    return select && select.value ? select.value : undefined;
+  }
+
   async function correctTranscriptForTurn(uiTurn, turnSnapshot, requestedRaw, reqSeq) {
     if (uiTurn.correctionAbortController) {
       try {
@@ -1140,10 +1237,16 @@
     });
 
     try {
+      const payload = { history: historyPayload };
+      const provider = getSelectedModelProvider();
+      if (provider) {
+        payload.modelProvider = provider;
+      }
       const res = await fetch('/correct-transcript', {
         method: 'POST',
+        credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ history: historyPayload }),
+        body: JSON.stringify(payload),
         signal: abortCtrl.signal,
       });
 
@@ -1414,10 +1517,16 @@
 
       try {
         const messagesPayload = buildTranslateHistoryMessages(conversationTurns, turnId);
+        const payload = { messages: messagesPayload };
+        const provider = getSelectedModelProvider();
+        if (provider) {
+          payload.modelProvider = provider;
+        }
         const res = await fetch('/translate', {
           method: 'POST',
+          credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ messages: messagesPayload }),
+          body: JSON.stringify(payload),
         });
 
         if (!res.ok) {
@@ -1626,6 +1735,8 @@
     roleTracker.reset();
     cumulativeInputTokens = 0;
     cumulativeOutputTokens = 0;
+    cumulativeCostEUR = 0;
+    cumulativeCostUSD = 0;
     updateHeaderStats();
     if (emptyStateEl) {
       emptyStateEl.style.display = 'block';
@@ -2364,6 +2475,15 @@
         await stopCalibration(false, true);
       }
       switchView('diarization');
+    });
+  }
+
+  const providerSelectEl = document.getElementById('model-provider-select');
+  if (providerSelectEl) {
+    providerSelectEl.addEventListener('change', () => {
+      if (cumulativeInputTokens === 0 && cumulativeOutputTokens === 0) {
+        updateHeaderStats();
+      }
     });
   }
 

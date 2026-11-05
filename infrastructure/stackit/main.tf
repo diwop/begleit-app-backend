@@ -7,6 +7,7 @@ module "app_config" {
   source = "../modules/app-config"
 
   environment                 = var.environment
+  llm_provider                = var.llm_provider
   otel_exporter_otlp_endpoint = var.otel_exporter_otlp_endpoint
   otel_resource_attributes    = "deployment.environment=${var.environment}"
 }
