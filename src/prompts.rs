@@ -8,9 +8,10 @@ use rig::client::CompletionClient;
 use rig::completion::CompletionRequestBuilder;
 use rig::providers::gemini;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use utoipa::ToSchema;
 
 /// System prompt for `/correct-transcript` in contextual diarization mode (`prompts/correct-transcript-system.md`).
@@ -337,14 +338,240 @@ impl std::fmt::Display for PromptError {
 
 impl std::error::Error for PromptError {}
 
-/// Trait abstracting prompt execution so production uses Gemini via `rig` and tests can inject mocks.
+/// Default fast model identifier for Google Gemini (`ModelTier::Fast`).
+pub const DEFAULT_GEMINI_FAST_MODEL: &str = "gemini-3.5-flash-lite";
+
+/// Default large model identifier for Google Gemini (`ModelTier::Large`).
+pub const DEFAULT_GEMINI_LARGE_MODEL: &str = "gemini-3.5-flash-lite";
+
+/// Default base URL for the melious.ai OpenAI-compatible API (`/v1`).
+pub const DEFAULT_MELIOUS_BASE_URL: &str = "https://api.melious.ai/v1";
+
+/// Default fast model identifier for melious.ai (`ModelTier::Fast`).
+pub const DEFAULT_MELIOUS_FAST_MODEL: &str = "gemma-4-26b-a4b";
+
+/// Default large model identifier for melious.ai (`ModelTier::Large`).
+pub const DEFAULT_MELIOUS_LARGE_MODEL: &str = "gemma-4-31b";
+
+/// Gateway-level model capacity tier mapped to concrete model identifiers by each [`PromptRunner`] implementation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelTier {
+    /// Latency-optimized tier used for `/correct-transcript`, dialog classification (`classify`), and readiness warmup.
+    Fast,
+    /// High-capability tier used for `/translate` Leichte Sprache preparation.
+    Large,
+}
+
+impl ModelTier {
+    /// Returns the canonical lowercase string label (`"fast"` or `"large"`).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Fast => "fast",
+            Self::Large => "large",
+        }
+    }
+}
+
+/// Gateway-level reasoning effort tier mapped to provider-specific thinking/reasoning parameters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningLevel {
+    /// Disables internal reasoning/thinking (`thinkingBudget: 0` on Gemini; `reasoning_effort: "none"` on melious.ai).
+    Off,
+    /// Minimal reasoning effort (`thinkingLevel: "minimal"` on Gemini; mapped to `reasoning_effort: "none"` on melious.ai).
+    Minimal,
+    /// Low reasoning effort (`thinkingLevel: "low"` on Gemini; `reasoning_effort: "low"` on melious.ai).
+    Low,
+    /// Medium reasoning effort (`thinkingLevel: "medium"` on Gemini; `reasoning_effort: "medium"` on melious.ai).
+    Medium,
+    /// High reasoning effort (`thinkingLevel: "high"` on Gemini; `reasoning_effort: "high"` on melious.ai).
+    High,
+}
+
+impl ReasoningLevel {
+    /// Returns the canonical lowercase string label (`"off"`, `"minimal"`, `"low"`, `"medium"`, or `"high"`).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Minimal => "minimal",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
+    }
+}
+
+/// Supported currency for model pricing tracking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum Currency {
+    /// United States Dollar ($).
+    USD,
+    /// Euro (€).
+    EUR,
+}
+
+impl Currency {
+    /// Returns the uppercase ISO code (`"USD"` or `"EUR"`).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::USD => "USD",
+            Self::EUR => "EUR",
+        }
+    }
+
+    /// Returns the standard currency symbol (`"$"` or `"€"`).
+    pub fn symbol(&self) -> &'static str {
+        match self {
+            Self::USD => "$",
+            Self::EUR => "€",
+        }
+    }
+}
+
+impl std::fmt::Display for Currency {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+/// Pricing configuration per 1 million tokens for a model tier and provider.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelPricing {
+    /// Price in currency per 1 million input tokens.
+    pub input_per_million: f64,
+    /// Price in currency per 1 million output tokens (including reasoning tokens).
+    pub output_per_million: f64,
+    /// Currency of the pricing.
+    pub currency: Currency,
+}
+
+impl ModelPricing {
+    /// Creates a new `ModelPricing` specification.
+    pub const fn new(input_per_million: f64, output_per_million: f64, currency: Currency) -> Self {
+        Self {
+            input_per_million,
+            output_per_million,
+            currency,
+        }
+    }
+
+    /// Computes the monetary cost for given input and output token counts.
+    pub fn calculate_cost(&self, input_tokens: u64, output_tokens: u64) -> f64 {
+        (input_tokens as f64 * self.input_per_million
+            + output_tokens as f64 * self.output_per_million)
+            / 1_000_000.0
+    }
+}
+
+/// Supported upstream LLM gateway providers configured via `LLM_PROVIDER`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum LlmProvider {
+    /// Google Gemini API (`gemini-3.5-flash-lite`).
+    Gemini,
+    /// melious.ai OpenAI-compatible `/v1/chat/completions` API (`gemma-4-26b-a4b` / `gemma-4-31b`).
+    #[default]
+    Melious,
+}
+
+impl LlmProvider {
+    /// Returns the canonical lowercase provider identifier (`"gemini"` or `"melious"`).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Gemini => "gemini",
+            Self::Melious => "melious",
+        }
+    }
+
+    /// Returns the environment variable name holding this provider's API key.
+    pub fn env_key_name(&self) -> &'static str {
+        match self {
+            Self::Gemini => "GEMINI_API_KEY",
+            Self::Melious => "MELIOUS_API_KEY",
+        }
+    }
+
+    /// Returns the default model identifier for the specified tier.
+    pub fn default_model_name(&self, tier: ModelTier) -> &'static str {
+        match (self, tier) {
+            (Self::Gemini, ModelTier::Fast) => DEFAULT_GEMINI_FAST_MODEL,
+            (Self::Gemini, ModelTier::Large) => DEFAULT_GEMINI_LARGE_MODEL,
+            (Self::Melious, ModelTier::Fast) => DEFAULT_MELIOUS_FAST_MODEL,
+            (Self::Melious, ModelTier::Large) => DEFAULT_MELIOUS_LARGE_MODEL,
+        }
+    }
+
+    /// Returns the standard pricing configuration for the specified model tier.
+    ///
+    /// - Gemini:
+    ///   - Fast (`gemini-3.5-flash-lite`): $0.30 input / $2.50 output per 1M tokens (USD)
+    ///   - Large (`gemini-3.5-flash-lite`): $0.30 input / $2.50 output per 1M tokens (USD)
+    /// - Melious:
+    ///   - Fast (`gemma-4-26b-a4b`): €0.25 input / €0.50 output per 1M tokens (EUR)
+    ///   - Large (`gemma-4-31b`): €0.10 input / €0.30 output per 1M tokens (EUR)
+    pub fn pricing(&self, tier: ModelTier) -> ModelPricing {
+        match (self, tier) {
+            (Self::Gemini, ModelTier::Fast) => ModelPricing::new(0.30, 2.50, Currency::USD),
+            (Self::Gemini, ModelTier::Large) => ModelPricing::new(0.30, 2.50, Currency::USD),
+            (Self::Melious, ModelTier::Fast) => ModelPricing::new(0.25, 0.50, Currency::EUR),
+            (Self::Melious, ModelTier::Large) => ModelPricing::new(0.10, 0.30, Currency::EUR),
+        }
+    }
+
+    /// Parses a provider string (`"gemini"` or `"melious"`, case-insensitive), returning `Default` when empty.
+    pub fn parse_str(raw: &str) -> Result<Self, String> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "" | "gemini" => Ok(Self::Gemini),
+            "melious" | "melious.ai" => Ok(Self::Melious),
+            other => Err(format!(
+                "Unsupported LLM_PROVIDER '{other}'. Expected 'gemini' or 'melious'."
+            )),
+        }
+    }
+
+    /// Reads `LLM_PROVIDER` from the environment, defaulting to [`LlmProvider::Gemini`] when unset or blank.
+    pub fn from_env() -> Result<Self, String> {
+        match std::env::var("LLM_PROVIDER") {
+            Ok(val) => Self::parse_str(&val),
+            Err(_) => Ok(Self::Gemini),
+        }
+    }
+}
+
+impl std::str::FromStr for LlmProvider {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse_str(s)
+    }
+}
+
+/// Trait abstracting prompt execution across LLM providers (Gemini, melious.ai, and test mocks).
 pub trait PromptRunner: Send + Sync {
-    /// Executes a prompt with the given system preamble and thinking level (e.g. `"minimal"`, `"low"`, or `"medium"`).
+    /// Returns the provider identifier of this runner.
+    fn provider(&self) -> LlmProvider {
+        LlmProvider::Gemini
+    }
+
+    /// Returns the active model identifier for the given tier.
+    fn model_name(&self, tier: ModelTier) -> &str {
+        self.provider().default_model_name(tier)
+    }
+
+    /// Returns the model pricing for the given tier.
+    fn pricing(&self, tier: ModelTier) -> ModelPricing {
+        self.provider().pricing(tier)
+    }
+
+    /// Executes a prompt with the given system preamble, gateway [`ModelTier`], and gateway [`ReasoningLevel`].
     fn run_prompt<'a>(
         &'a self,
         system_prompt: &'a str,
         prompt: &'a str,
-        thinking_level: &'a str,
+        model_tier: ModelTier,
+        reasoning_level: ReasoningLevel,
     ) -> Pin<Box<dyn Future<Output = Result<PromptOutput, PromptError>> + Send + 'a>>;
 
     /// Executes a prompt requesting structured JSON output conforming to `json_schema` when supported by the provider.
@@ -352,37 +579,321 @@ pub trait PromptRunner: Send + Sync {
         &'a self,
         system_prompt: &'a str,
         prompt: &'a str,
-        thinking_level: &'a str,
+        model_tier: ModelTier,
+        reasoning_level: ReasoningLevel,
         _json_schema: &'a serde_json::Value,
     ) -> Pin<Box<dyn Future<Output = Result<PromptOutput, PromptError>> + Send + 'a>> {
-        self.run_prompt(system_prompt, prompt, thinking_level)
+        self.run_prompt(system_prompt, prompt, model_tier, reasoning_level)
     }
 }
 
-/// Production [`PromptRunner`] that sends requests to Google's Gemini API (`gemini-3.5-flash-lite`) using `rig`.
+/// Reads the first non-empty environment variable from `keys`.
+fn first_non_empty_env(keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Ok(val) = std::env::var(key) {
+            let trimmed = val.trim();
+            if !trimmed.is_empty() && trimmed != "REPLACE_ME" {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Resolves the configured API key for `provider` from its provider-specific environment variable
+/// (`GEMINI_API_KEY` for [`LlmProvider::Gemini`], `MELIOUS_API_KEY` for [`LlmProvider::Melious`]).
+pub fn resolve_provider_api_key(provider: LlmProvider) -> Option<String> {
+    match provider {
+        LlmProvider::Gemini => first_non_empty_env(&["GEMINI_API_KEY"]),
+        LlmProvider::Melious => first_non_empty_env(&["MELIOUS_API_KEY"]),
+    }
+}
+
+/// Multi-provider LLM gateway implementing the strategy pattern across [`PromptRunner`] implementations.
+///
+/// Holds configured runners for each supported [`LlmProvider`] and routes requests:
+/// - Non-admin requests are always bound (sticky) to the default [`LlmProvider`].
+/// - Authenticated admin requests can optionally specify `modelProvider` to select an alternate
+///   configured provider, defaulting to the default [`LlmProvider`] when omitted.
+#[derive(Clone)]
+pub struct ModelGateway {
+    default_provider: LlmProvider,
+    default_runner: Arc<dyn PromptRunner>,
+    runners: HashMap<LlmProvider, Arc<dyn PromptRunner>>,
+    configured_providers: Vec<LlmProvider>,
+}
+
+impl ModelGateway {
+    /// Creates a new `ModelGateway` with explicit default provider, runners, and configured providers.
+    pub fn new(
+        default_provider: LlmProvider,
+        runners: HashMap<LlmProvider, Arc<dyn PromptRunner>>,
+        configured_providers: Vec<LlmProvider>,
+    ) -> Self {
+        let default_runner = runners
+            .get(&default_provider)
+            .cloned()
+            .unwrap_or_else(|| Arc::new(EchoPromptRunner));
+        Self {
+            default_provider,
+            default_runner,
+            runners,
+            configured_providers,
+        }
+    }
+
+    /// Wraps a single [`PromptRunner`] into a gateway where `gemini` is the default provider.
+    pub fn single(runner: Arc<dyn PromptRunner>) -> Self {
+        let default_provider = LlmProvider::Gemini;
+        let mut runners = HashMap::new();
+        runners.insert(default_provider, Arc::clone(&runner));
+        Self {
+            default_provider,
+            default_runner: runner,
+            runners,
+            configured_providers: vec![default_provider],
+        }
+    }
+
+    /// Instantiates the `ModelGateway` from environment variables:
+    /// - `LLM_PROVIDER`: default provider (`gemini` or `melious`).
+    /// - `GEMINI_API_KEY`: initializes `GeminiPromptRunner` if present.
+    /// - `MELIOUS_API_KEY`: initializes `MeliousPromptRunner` if present.
+    pub fn from_env() -> Self {
+        let default_provider = match LlmProvider::from_env() {
+            Ok(p) => p,
+            Err(err) => {
+                #[cfg(not(debug_assertions))]
+                panic!("{err}");
+
+                #[cfg(debug_assertions)]
+                {
+                    tracing::error!(error = %err, "Invalid LLM_PROVIDER in debug mode; defaulting to gemini");
+                    LlmProvider::Gemini
+                }
+            }
+        };
+
+        let mut runners = HashMap::new();
+        let mut configured_providers = Vec::new();
+
+        if let Some(key) = resolve_provider_api_key(LlmProvider::Gemini) {
+            runners.insert(
+                LlmProvider::Gemini,
+                Arc::new(GeminiPromptRunner::new(key)) as Arc<dyn PromptRunner>,
+            );
+            configured_providers.push(LlmProvider::Gemini);
+        }
+
+        if let Some(key) = resolve_provider_api_key(LlmProvider::Melious) {
+            runners.insert(
+                LlmProvider::Melious,
+                Arc::new(MeliousPromptRunner::new(key)) as Arc<dyn PromptRunner>,
+            );
+            configured_providers.push(LlmProvider::Melious);
+        }
+
+        #[cfg(not(debug_assertions))]
+        if !runners.contains_key(&default_provider) {
+            panic!(
+                "{} environment variable is crucially required in release profile when LLM_PROVIDER is {}!",
+                default_provider.env_key_name(),
+                default_provider.as_str()
+            );
+        }
+
+        #[cfg(debug_assertions)]
+        if runners.is_empty() {
+            tracing::info!(
+                "No LLM API keys configured in debug mode; registering EchoPromptRunner fallback"
+            );
+            runners.insert(
+                LlmProvider::Gemini,
+                Arc::new(EchoPromptRunner) as Arc<dyn PromptRunner>,
+            );
+            runners.insert(
+                LlmProvider::Melious,
+                Arc::new(EchoPromptRunner) as Arc<dyn PromptRunner>,
+            );
+            configured_providers.push(LlmProvider::Gemini);
+            configured_providers.push(LlmProvider::Melious);
+        }
+
+        let default_runner = runners
+            .get(&default_provider)
+            .cloned()
+            .unwrap_or_else(|| Arc::new(EchoPromptRunner));
+
+        Self {
+            default_provider,
+            default_runner,
+            runners,
+            configured_providers,
+        }
+    }
+
+    /// Returns the default [`LlmProvider`].
+    pub fn default_provider(&self) -> LlmProvider {
+        self.default_provider
+    }
+
+    /// Returns the default [`PromptRunner`].
+    pub fn default_runner(&self) -> Arc<dyn PromptRunner> {
+        Arc::clone(&self.default_runner)
+    }
+
+    /// Returns the list of providers that have a configured API key.
+    pub fn configured_providers(&self) -> &[LlmProvider] {
+        &self.configured_providers
+    }
+
+    /// Resolves the [`PromptRunner`] for an incoming request.
+    ///
+    /// - If `!is_admin`, always returns the default runner (sticky to `LLM_PROVIDER`).
+    /// - If `is_admin`, parses `requested_provider` if present, returning the matching runner if configured,
+    ///   falling back to default if omitted/empty, or returning an error string if unknown or unconfigured.
+    pub fn resolve_runner(
+        &self,
+        requested_provider: Option<&str>,
+        is_admin: bool,
+    ) -> Result<Arc<dyn PromptRunner>, String> {
+        if !is_admin {
+            return Ok(self.default_runner());
+        }
+
+        let Some(provider_str) = requested_provider.map(str::trim).filter(|s| !s.is_empty()) else {
+            return Ok(self.default_runner());
+        };
+
+        let provider = provider_str
+            .parse::<LlmProvider>()
+            .map_err(|_| format!("Unknown modelProvider '{provider_str}'."))?;
+
+        self.runners.get(&provider).cloned().ok_or_else(|| {
+            format!(
+                "Model provider '{}' is not configured with an API key.",
+                provider.as_str()
+            )
+        })
+    }
+}
+
+impl PromptRunner for ModelGateway {
+    fn provider(&self) -> LlmProvider {
+        self.default_provider
+    }
+
+    fn model_name(&self, tier: ModelTier) -> &str {
+        self.default_runner.model_name(tier)
+    }
+
+    fn pricing(&self, tier: ModelTier) -> ModelPricing {
+        self.default_runner.pricing(tier)
+    }
+
+    fn run_prompt<'a>(
+        &'a self,
+        system_instruction: &'a str,
+        user_prompt: &'a str,
+        model_tier: ModelTier,
+        reasoning_level: ReasoningLevel,
+    ) -> Pin<Box<dyn Future<Output = Result<PromptOutput, PromptError>> + Send + 'a>> {
+        self.default_runner
+            .run_prompt(system_instruction, user_prompt, model_tier, reasoning_level)
+    }
+
+    fn run_prompt_with_schema<'a>(
+        &'a self,
+        system_instruction: &'a str,
+        user_prompt: &'a str,
+        model_tier: ModelTier,
+        reasoning_level: ReasoningLevel,
+        json_schema: &'a serde_json::Value,
+    ) -> Pin<Box<dyn Future<Output = Result<PromptOutput, PromptError>> + Send + 'a>> {
+        self.default_runner.run_prompt_with_schema(
+            system_instruction,
+            user_prompt,
+            model_tier,
+            reasoning_level,
+            json_schema,
+        )
+    }
+}
+
+/// Production [`PromptRunner`] strategy that sends requests to Google's Gemini API using `rig`.
+///
+/// Maps [`ModelTier::Fast`] to `gemini-3.5-flash-lite` and [`ModelTier::Large`] to `gemini-3.8-flash`
+/// (overridable via `LLM_MODEL_FAST` and `LLM_MODEL_LARGE`).
 pub struct GeminiPromptRunner {
     api_key: String,
     base_url: Option<String>,
+    fast_model: String,
+    large_model: String,
 }
 
 impl GeminiPromptRunner {
     /// Creates a new [`GeminiPromptRunner`] authenticated with the provided Gemini API key.
-    /// Reads `GEMINI_API_BASE_URL` if set so tests and local overrides can redirect Gemini HTTP requests.
+    /// Reads `LLM_BASE_URL` (falling back to `GEMINI_API_BASE_URL`), `LLM_MODEL_FAST`, and `LLM_MODEL_LARGE` if set.
     pub fn new(api_key: impl Into<String>) -> Self {
-        let base_url = std::env::var("GEMINI_API_BASE_URL")
-            .ok()
-            .filter(|v| !v.trim().is_empty());
+        let base_url = first_non_empty_env(&["LLM_BASE_URL", "GEMINI_API_BASE_URL"]);
+        let fast_model = first_non_empty_env(&["LLM_MODEL_FAST"])
+            .unwrap_or_else(|| DEFAULT_GEMINI_FAST_MODEL.to_string());
+        let large_model = first_non_empty_env(&["LLM_MODEL_LARGE"])
+            .unwrap_or_else(|| DEFAULT_GEMINI_LARGE_MODEL.to_string());
         Self {
             api_key: api_key.into(),
             base_url,
+            fast_model,
+            large_model,
         }
     }
 
     /// Creates a new [`GeminiPromptRunner`] pointing to a custom Gemini API base URL (e.g. a local mock server).
     pub fn with_base_url(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
+        let fast_model = first_non_empty_env(&["LLM_MODEL_FAST"])
+            .unwrap_or_else(|| DEFAULT_GEMINI_FAST_MODEL.to_string());
+        let large_model = first_non_empty_env(&["LLM_MODEL_LARGE"])
+            .unwrap_or_else(|| DEFAULT_GEMINI_LARGE_MODEL.to_string());
         Self {
             api_key: api_key.into(),
             base_url: Some(base_url.into()),
+            fast_model,
+            large_model,
+        }
+    }
+
+    /// Overrides the concrete model identifiers mapped to [`ModelTier::Fast`] and [`ModelTier::Large`].
+    pub fn with_models(
+        mut self,
+        fast_model: impl Into<String>,
+        large_model: impl Into<String>,
+    ) -> Self {
+        self.fast_model = fast_model.into();
+        self.large_model = large_model.into();
+        self
+    }
+
+    /// Resolves the concrete Gemini model identifier for the requested [`ModelTier`].
+    pub fn resolve_model(&self, model_tier: ModelTier) -> &str {
+        match model_tier {
+            ModelTier::Fast => &self.fast_model,
+            ModelTier::Large => &self.large_model,
+        }
+    }
+
+    /// Builds the Gemini `generationConfig.thinkingConfig` JSON object for the requested [`ReasoningLevel`]:
+    /// - [`ReasoningLevel::Off`] -> `{"thinkingBudget": 0, "includeThoughts": false}`
+    /// - [`ReasoningLevel::Minimal`]..=[`ReasoningLevel::High`] -> `{"thinkingLevel": "<level>", "includeThoughts": true}`
+    pub fn build_thinking_config(reasoning_level: ReasoningLevel) -> serde_json::Value {
+        match reasoning_level {
+            ReasoningLevel::Off => serde_json::json!({
+                "thinkingBudget": 0,
+                "includeThoughts": false
+            }),
+            level => serde_json::json!({
+                "thinkingLevel": level.as_str(),
+                "includeThoughts": true
+            }),
         }
     }
 
@@ -391,16 +902,21 @@ impl GeminiPromptRunner {
         &'a self,
         system_prompt: &'a str,
         prompt: &'a str,
-        thinking_level: &'a str,
+        model_tier: ModelTier,
+        reasoning_level: ReasoningLevel,
         json_schema: Option<&'a serde_json::Value>,
     ) -> Pin<Box<dyn Future<Output = Result<PromptOutput, PromptError>> + Send + 'a>> {
         Box::pin(async move {
+            let model_name = self.resolve_model(model_tier);
             tracing::debug!(
-                thinking_level,
+                provider = "gemini",
+                model = %model_name,
+                model_tier = model_tier.as_str(),
+                reasoning_level = reasoning_level.as_str(),
                 structured_json = json_schema.is_some(),
                 system_prompt = %system_prompt,
                 prompt = %prompt,
-                "Sending prompt to LLM API"
+                "Sending prompt to Gemini LLM API"
             );
 
             let mut client_builder = gemini::Client::builder().api_key(&self.api_key);
@@ -410,24 +926,16 @@ impl GeminiPromptRunner {
             let client = client_builder
                 .build()
                 .map_err(|e| PromptError(e.to_string()))?;
-            let model = client.completion_model("gemini-3.5-flash-lite");
+            let model = client.completion_model(model_name);
 
             let mut builder = CompletionRequestBuilder::new(model, prompt.to_string())
                 .preamble(system_prompt.to_string());
 
             let mut generation_config = serde_json::Map::new();
             generation_config.insert("temperature".to_string(), serde_json::json!(0.0));
-
-            let mut thinking_config = serde_json::Map::new();
-            thinking_config.insert(
-                "thinkingLevel".to_string(),
-                serde_json::json!(thinking_level),
-            );
-            thinking_config.insert("includeThoughts".to_string(), serde_json::json!(true));
-
             generation_config.insert(
                 "thinkingConfig".to_string(),
-                serde_json::Value::Object(thinking_config),
+                Self::build_thinking_config(reasoning_level),
             );
 
             if let Some(schema) = json_schema {
@@ -502,23 +1010,360 @@ impl GeminiPromptRunner {
 }
 
 impl PromptRunner for GeminiPromptRunner {
+    fn provider(&self) -> LlmProvider {
+        LlmProvider::Gemini
+    }
+
+    fn model_name(&self, tier: ModelTier) -> &str {
+        match tier {
+            ModelTier::Fast => &self.fast_model,
+            ModelTier::Large => &self.large_model,
+        }
+    }
+
     fn run_prompt<'a>(
         &'a self,
         system_prompt: &'a str,
         prompt: &'a str,
-        thinking_level: &'a str,
+        model_tier: ModelTier,
+        reasoning_level: ReasoningLevel,
     ) -> Pin<Box<dyn Future<Output = Result<PromptOutput, PromptError>> + Send + 'a>> {
-        self.execute_prompt(system_prompt, prompt, thinking_level, None)
+        self.execute_prompt(system_prompt, prompt, model_tier, reasoning_level, None)
     }
 
     fn run_prompt_with_schema<'a>(
         &'a self,
         system_prompt: &'a str,
         prompt: &'a str,
-        thinking_level: &'a str,
+        model_tier: ModelTier,
+        reasoning_level: ReasoningLevel,
         json_schema: &'a serde_json::Value,
     ) -> Pin<Box<dyn Future<Output = Result<PromptOutput, PromptError>> + Send + 'a>> {
-        self.execute_prompt(system_prompt, prompt, thinking_level, Some(json_schema))
+        self.execute_prompt(
+            system_prompt,
+            prompt,
+            model_tier,
+            reasoning_level,
+            Some(json_schema),
+        )
+    }
+}
+
+/// Response message payload returned inside `choices[i].message` from an OpenAI-compatible `/v1/chat/completions` endpoint.
+#[derive(Debug, Deserialize)]
+struct OpenAiChatMessageResponse {
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    reasoning_content: Option<String>,
+    #[serde(default)]
+    reasoning: Option<String>,
+}
+
+/// Choice entry inside `choices` from an OpenAI-compatible `/v1/chat/completions` response.
+#[derive(Debug, Deserialize)]
+struct OpenAiChatChoice {
+    message: OpenAiChatMessageResponse,
+}
+
+/// Detailed completion token breakdown (`completion_tokens_details`) from an OpenAI-compatible `/v1/chat/completions` response.
+#[derive(Debug, Default, Deserialize)]
+struct OpenAiCompletionTokensDetails {
+    #[serde(default)]
+    reasoning_tokens: Option<u64>,
+}
+
+/// Token usage metadata (`usage`) from an OpenAI-compatible `/v1/chat/completions` response.
+#[derive(Debug, Default, Deserialize)]
+struct OpenAiUsage {
+    #[serde(default)]
+    prompt_tokens: u64,
+    #[serde(default)]
+    completion_tokens: u64,
+    #[serde(default)]
+    reasoning_tokens: Option<u64>,
+    #[serde(default)]
+    completion_tokens_details: Option<OpenAiCompletionTokensDetails>,
+}
+
+/// Top-level JSON response returned by an OpenAI-compatible `/v1/chat/completions` endpoint.
+#[derive(Debug, Deserialize)]
+struct OpenAiChatCompletionResponse {
+    #[serde(default)]
+    choices: Vec<OpenAiChatChoice>,
+    #[serde(default)]
+    usage: Option<OpenAiUsage>,
+}
+
+/// Production [`PromptRunner`] strategy that sends requests to the melious.ai OpenAI-compatible
+/// `/v1/chat/completions` API.
+///
+/// Maps [`ModelTier::Fast`] to `gemma-4-26b-a4b` and [`ModelTier::Large`] to `gemma-4-31b`
+/// (overridable via `LLM_MODEL_FAST` and `LLM_MODEL_LARGE`), and maps [`ReasoningLevel`] to
+/// OpenAI `reasoning_effort` (`"none"`, `"low"`, `"medium"`, `"high"`).
+pub struct MeliousPromptRunner {
+    client: reqwest::Client,
+    api_key: String,
+    base_url: String,
+    fast_model: String,
+    large_model: String,
+}
+
+impl MeliousPromptRunner {
+    /// Creates a new [`MeliousPromptRunner`] authenticated with the provided API key.
+    /// Reads `LLM_BASE_URL` (falling back to `MELIOUS_BASE_URL`, then [`DEFAULT_MELIOUS_BASE_URL`]),
+    /// `LLM_MODEL_FAST`, and `LLM_MODEL_LARGE`.
+    pub fn new(api_key: impl Into<String>) -> Self {
+        let raw_base = first_non_empty_env(&["LLM_BASE_URL", "MELIOUS_BASE_URL"])
+            .unwrap_or_else(|| DEFAULT_MELIOUS_BASE_URL.to_string());
+        let fast_model = first_non_empty_env(&["LLM_MODEL_FAST"])
+            .unwrap_or_else(|| DEFAULT_MELIOUS_FAST_MODEL.to_string());
+        let large_model = first_non_empty_env(&["LLM_MODEL_LARGE"])
+            .unwrap_or_else(|| DEFAULT_MELIOUS_LARGE_MODEL.to_string());
+        Self {
+            client: reqwest::Client::new(),
+            api_key: api_key.into(),
+            base_url: Self::normalize_base_url(&raw_base),
+            fast_model,
+            large_model,
+        }
+    }
+
+    /// Creates a new [`MeliousPromptRunner`] pointing to a custom base URL (e.g. a local mock server).
+    pub fn with_base_url(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
+        let raw_base = base_url.into();
+        let fast_model = first_non_empty_env(&["LLM_MODEL_FAST"])
+            .unwrap_or_else(|| DEFAULT_MELIOUS_FAST_MODEL.to_string());
+        let large_model = first_non_empty_env(&["LLM_MODEL_LARGE"])
+            .unwrap_or_else(|| DEFAULT_MELIOUS_LARGE_MODEL.to_string());
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap_or_default();
+        Self {
+            client,
+            api_key: api_key.into(),
+            base_url: Self::normalize_base_url(&raw_base),
+            fast_model,
+            large_model,
+        }
+    }
+
+    /// Overrides the concrete model identifiers mapped to [`ModelTier::Fast`] and [`ModelTier::Large`].
+    pub fn with_models(
+        mut self,
+        fast_model: impl Into<String>,
+        large_model: impl Into<String>,
+    ) -> Self {
+        self.fast_model = fast_model.into();
+        self.large_model = large_model.into();
+        self
+    }
+
+    /// Normalizes a melious.ai base URL so `{base_url}/chat/completions` always targets `/v1/chat/completions`
+    /// whether the caller passed `https://api.melious.ai/v1`, `https://api.melious.ai`, or `.../v1/chat/completions`.
+    pub fn normalize_base_url(raw: &str) -> String {
+        let trimmed = raw.trim().trim_end_matches('/');
+        if let Some(without_endpoint) = trimmed.strip_suffix("/chat/completions") {
+            let base = without_endpoint.trim_end_matches('/');
+            if base.ends_with("/v1") {
+                base.to_string()
+            } else {
+                format!("{base}/v1")
+            }
+        } else if trimmed.ends_with("/v1") {
+            trimmed.to_string()
+        } else {
+            format!("{trimmed}/v1")
+        }
+    }
+
+    /// Returns the full `/v1/chat/completions` endpoint URL.
+    pub fn chat_completions_url(&self) -> String {
+        format!("{}/chat/completions", self.base_url)
+    }
+
+    /// Resolves the concrete melious.ai model identifier for the requested [`ModelTier`].
+    pub fn resolve_model(&self, model_tier: ModelTier) -> &str {
+        match model_tier {
+            ModelTier::Fast => &self.fast_model,
+            ModelTier::Large => &self.large_model,
+        }
+    }
+
+    /// Maps the gateway [`ReasoningLevel`] to the OpenAI-compatible `reasoning_effort` parameter:
+    /// - [`ReasoningLevel::Off`] | [`ReasoningLevel::Minimal`] -> `"none"`
+    /// - [`ReasoningLevel::Low`] -> `"low"`
+    /// - [`ReasoningLevel::Medium`] -> `"medium"`
+    /// - [`ReasoningLevel::High`] -> `"high"`
+    pub fn map_reasoning_effort(reasoning_level: ReasoningLevel) -> &'static str {
+        match reasoning_level {
+            ReasoningLevel::Off | ReasoningLevel::Minimal => "none",
+            ReasoningLevel::Low => "low",
+            ReasoningLevel::Medium => "medium",
+            ReasoningLevel::High => "high",
+        }
+    }
+
+    /// Wraps a JSON Schema value into the OpenAI `response_format` (`type: "json_schema"`, `strict: true`) envelope.
+    pub fn build_response_format(json_schema: &serde_json::Value) -> serde_json::Value {
+        let name = json_schema
+            .get("title")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or("response");
+        serde_json::json!({
+            "type": "json_schema",
+            "json_schema": {
+                "name": name,
+                "strict": true,
+                "schema": json_schema
+            }
+        })
+    }
+
+    /// Sends a chat completion request to melious.ai's `/v1/chat/completions` endpoint.
+    fn execute_prompt<'a>(
+        &'a self,
+        system_prompt: &'a str,
+        prompt: &'a str,
+        model_tier: ModelTier,
+        reasoning_level: ReasoningLevel,
+        json_schema: Option<&'a serde_json::Value>,
+    ) -> Pin<Box<dyn Future<Output = Result<PromptOutput, PromptError>> + Send + 'a>> {
+        Box::pin(async move {
+            let model_name = self.resolve_model(model_tier);
+            let reasoning_effort = Self::map_reasoning_effort(reasoning_level);
+            let url = self.chat_completions_url();
+
+            tracing::debug!(
+                provider = "melious",
+                url = %url,
+                model = %model_name,
+                model_tier = model_tier.as_str(),
+                reasoning_level = reasoning_level.as_str(),
+                reasoning_effort = %reasoning_effort,
+                structured_json = json_schema.is_some(),
+                system_prompt = %system_prompt,
+                prompt = %prompt,
+                "Sending prompt to melious.ai LLM API"
+            );
+
+            let mut payload = serde_json::json!({
+                "model": model_name,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": system_prompt
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                "temperature": 0.0,
+                "reasoning_effort": reasoning_effort
+            });
+
+            if let Some(schema) = json_schema {
+                payload["response_format"] = Self::build_response_format(schema);
+            }
+
+            let http_res = self
+                .client
+                .post(&url)
+                .bearer_auth(&self.api_key)
+                .json(&payload)
+                .send()
+                .await
+                .map_err(|e| PromptError(format!("melious.ai request failed: {e}")))?;
+
+            let status = http_res.status();
+            if !status.is_success() {
+                let err_body = http_res.text().await.unwrap_or_default();
+                return Err(PromptError(format!(
+                    "melious.ai API returned HTTP {status}: {err_body}"
+                )));
+            }
+
+            let parsed: OpenAiChatCompletionResponse = http_res.json().await.map_err(|e| {
+                PromptError(format!("Failed to decode melious.ai JSON response: {e}"))
+            })?;
+
+            let choice = parsed.choices.into_iter().next().ok_or_else(|| {
+                PromptError("melious.ai response contained no choices".to_string())
+            })?;
+
+            let text = choice.message.content.unwrap_or_default();
+            let reasoning = choice
+                .message
+                .reasoning_content
+                .or(choice.message.reasoning)
+                .map(|r| r.trim().to_string())
+                .filter(|r| !r.is_empty());
+
+            if let Some(ref thought) = reasoning {
+                tracing::debug!(reasoning = %thought, "Received melious.ai reasoning thought");
+            }
+            tracing::debug!(response = %text, "Received melious.ai response text");
+
+            let usage = parsed.usage.unwrap_or_default();
+            let reasoning_tokens = usage
+                .completion_tokens_details
+                .and_then(|d| d.reasoning_tokens)
+                .or(usage.reasoning_tokens)
+                .unwrap_or(0);
+
+            Ok(PromptOutput {
+                text,
+                reasoning,
+                usage: TokenUsage {
+                    input_tokens: usage.prompt_tokens,
+                    reasoning_tokens,
+                    output_tokens: usage.completion_tokens,
+                },
+            })
+        })
+    }
+}
+
+impl PromptRunner for MeliousPromptRunner {
+    fn provider(&self) -> LlmProvider {
+        LlmProvider::Melious
+    }
+
+    fn model_name(&self, tier: ModelTier) -> &str {
+        match tier {
+            ModelTier::Fast => &self.fast_model,
+            ModelTier::Large => &self.large_model,
+        }
+    }
+
+    fn run_prompt<'a>(
+        &'a self,
+        system_prompt: &'a str,
+        prompt: &'a str,
+        model_tier: ModelTier,
+        reasoning_level: ReasoningLevel,
+    ) -> Pin<Box<dyn Future<Output = Result<PromptOutput, PromptError>> + Send + 'a>> {
+        self.execute_prompt(system_prompt, prompt, model_tier, reasoning_level, None)
+    }
+
+    fn run_prompt_with_schema<'a>(
+        &'a self,
+        system_prompt: &'a str,
+        prompt: &'a str,
+        model_tier: ModelTier,
+        reasoning_level: ReasoningLevel,
+        json_schema: &'a serde_json::Value,
+    ) -> Pin<Box<dyn Future<Output = Result<PromptOutput, PromptError>> + Send + 'a>> {
+        self.execute_prompt(
+            system_prompt,
+            prompt,
+            model_tier,
+            reasoning_level,
+            Some(json_schema),
+        )
     }
 }
 
@@ -551,7 +1396,7 @@ pub struct CorrectTranscriptModelOutput {
     pub merge_with_previous: bool,
 }
 
-/// Fallback [`PromptRunner`] used in local debug/test builds when `GEMINI_API_KEY` is not set.
+/// Fallback [`PromptRunner`] used in local debug/test builds when no LLM API key is configured.
 /// Extracts the final ```input block from the prompt and echoes it back deterministically
 /// (emitting structured JSON for `CORRECT_TRANSCRIPT_SYSTEM_PROMPT` and `CLASSIFY_DIALOG_SYSTEM_PROMPT`),
 /// tokenized using the Gemma 4 tokenizer.
@@ -563,7 +1408,8 @@ impl PromptRunner for EchoPromptRunner {
         &'a self,
         system_prompt: &'a str,
         prompt: &'a str,
-        _thinking_level: &'a str,
+        _model_tier: ModelTier,
+        _reasoning_level: ReasoningLevel,
     ) -> Pin<Box<dyn Future<Output = Result<PromptOutput, PromptError>> + Send + 'a>> {
         Box::pin(async move {
             let input = extract_input_block(prompt).unwrap_or(prompt);
@@ -1831,7 +2677,12 @@ mod tests {
 
         let runner = EchoPromptRunner;
         let out = runner
-            .run_prompt(TRANSLATE_SYSTEM_PROMPT, &rendered, "medium")
+            .run_prompt(
+                TRANSLATE_SYSTEM_PROMPT,
+                &rendered,
+                ModelTier::Large,
+                ReasoningLevel::Medium,
+            )
             .await
             .unwrap();
         assert_eq!(out.text, "FORMATIERUNG\nEchte Nutzer Eingabe");
@@ -2272,7 +3123,8 @@ mod tests {
             .run_prompt_with_schema(
                 CORRECT_TRANSCRIPT_SYSTEM_PROMPT,
                 &prompt,
-                "minimal",
+                ModelTier::Fast,
+                ReasoningLevel::Minimal,
                 &CORRECT_TRANSCRIPT_RESPONSE_SCHEMA,
             )
             .await
@@ -2295,7 +3147,8 @@ mod tests {
             .run_prompt_with_schema(
                 &CLASSIFY_DIALOG_SYSTEM_PROMPT,
                 &classify_prompt,
-                "low",
+                ModelTier::Fast,
+                ReasoningLevel::Low,
                 &CLASSIFY_DIALOG_RESPONSE_SCHEMA,
             )
             .await
@@ -2438,5 +3291,194 @@ mod tests {
         let extracted_only = extract_staging_directives(only_directives, true);
         assert_eq!(extracted_only.r#type, Some(TranslationType::Translation));
         assert_eq!(extracted_only.cleaned_message, only_directives);
+    }
+
+    /// Verifies `ModelTier`, `ReasoningLevel`, `LlmProvider`, `GeminiPromptRunner`, and
+    /// `MeliousPromptRunner` model resolution, thinking/reasoning mappings, URL normalization,
+    /// and JSON schema response_format wrapping.
+    #[test]
+    fn test_model_gateway_mappings_and_normalization() {
+        // 1. LlmProvider parsing
+        assert_eq!(LlmProvider::parse_str(""), Ok(LlmProvider::Gemini));
+        assert_eq!(LlmProvider::parse_str("GEMINI"), Ok(LlmProvider::Gemini));
+        assert_eq!(LlmProvider::parse_str("melious"), Ok(LlmProvider::Melious));
+        assert_eq!(
+            LlmProvider::parse_str("melious.ai"),
+            Ok(LlmProvider::Melious)
+        );
+        assert!(LlmProvider::parse_str("unknown-provider").is_err());
+
+        // 2. GeminiPromptRunner model tiers & thinkingConfig
+        let gemini = GeminiPromptRunner::new("test-key");
+        assert_eq!(
+            gemini.resolve_model(ModelTier::Fast),
+            "gemini-3.5-flash-lite"
+        );
+        assert_eq!(
+            gemini.resolve_model(ModelTier::Large),
+            "gemini-3.5-flash-lite"
+        );
+
+        let custom_gemini = GeminiPromptRunner::new("test-key")
+            .with_models("gemini-custom-fast", "gemini-custom-large");
+        assert_eq!(
+            custom_gemini.resolve_model(ModelTier::Fast),
+            "gemini-custom-fast"
+        );
+        assert_eq!(
+            custom_gemini.resolve_model(ModelTier::Large),
+            "gemini-custom-large"
+        );
+
+        assert_eq!(
+            GeminiPromptRunner::build_thinking_config(ReasoningLevel::Off),
+            serde_json::json!({ "thinkingBudget": 0, "includeThoughts": false })
+        );
+        assert_eq!(
+            GeminiPromptRunner::build_thinking_config(ReasoningLevel::Minimal),
+            serde_json::json!({ "thinkingLevel": "minimal", "includeThoughts": true })
+        );
+        assert_eq!(
+            GeminiPromptRunner::build_thinking_config(ReasoningLevel::Low),
+            serde_json::json!({ "thinkingLevel": "low", "includeThoughts": true })
+        );
+        assert_eq!(
+            GeminiPromptRunner::build_thinking_config(ReasoningLevel::Medium),
+            serde_json::json!({ "thinkingLevel": "medium", "includeThoughts": true })
+        );
+        assert_eq!(
+            GeminiPromptRunner::build_thinking_config(ReasoningLevel::High),
+            serde_json::json!({ "thinkingLevel": "high", "includeThoughts": true })
+        );
+
+        // 3. MeliousPromptRunner model tiers, reasoning_effort, URL normalization & response_format
+        let melious = MeliousPromptRunner::new("test-key");
+        assert_eq!(melious.resolve_model(ModelTier::Fast), "gemma-4-26b-a4b");
+        assert_eq!(melious.resolve_model(ModelTier::Large), "gemma-4-31b");
+        assert_eq!(
+            melious.chat_completions_url(),
+            "https://api.melious.ai/v1/chat/completions"
+        );
+
+        assert_eq!(
+            MeliousPromptRunner::normalize_base_url("https://api.melious.ai"),
+            "https://api.melious.ai/v1"
+        );
+        assert_eq!(
+            MeliousPromptRunner::normalize_base_url("https://api.melious.ai/v1/"),
+            "https://api.melious.ai/v1"
+        );
+        assert_eq!(
+            MeliousPromptRunner::normalize_base_url("https://api.melious.ai/v1/chat/completions"),
+            "https://api.melious.ai/v1"
+        );
+        assert_eq!(
+            MeliousPromptRunner::normalize_base_url("http://127.0.0.1:8080/chat/completions"),
+            "http://127.0.0.1:8080/v1"
+        );
+
+        assert_eq!(
+            MeliousPromptRunner::map_reasoning_effort(ReasoningLevel::Off),
+            "none"
+        );
+        assert_eq!(
+            MeliousPromptRunner::map_reasoning_effort(ReasoningLevel::Minimal),
+            "none"
+        );
+        assert_eq!(
+            MeliousPromptRunner::map_reasoning_effort(ReasoningLevel::Low),
+            "low"
+        );
+        assert_eq!(
+            MeliousPromptRunner::map_reasoning_effort(ReasoningLevel::Medium),
+            "medium"
+        );
+        assert_eq!(
+            MeliousPromptRunner::map_reasoning_effort(ReasoningLevel::High),
+            "high"
+        );
+
+        let rf = MeliousPromptRunner::build_response_format(&CORRECT_TRANSCRIPT_RESPONSE_SCHEMA);
+        assert_eq!(rf["type"], "json_schema");
+        assert_eq!(rf["json_schema"]["name"], "CorrectTranscriptOutput");
+        assert_eq!(rf["json_schema"]["strict"], true);
+
+        // 4. ModelGateway resolution & admin vs non-admin rules
+        let gemini_runner: Arc<dyn PromptRunner> = Arc::new(EchoPromptRunner);
+        let melious_runner: Arc<dyn PromptRunner> = Arc::new(EchoPromptRunner);
+        let mut runners: HashMap<LlmProvider, Arc<dyn PromptRunner>> = HashMap::new();
+        runners.insert(LlmProvider::Gemini, Arc::clone(&gemini_runner));
+        runners.insert(LlmProvider::Melious, Arc::clone(&melious_runner));
+
+        let gateway = ModelGateway::new(
+            LlmProvider::Gemini,
+            runners,
+            vec![LlmProvider::Gemini, LlmProvider::Melious],
+        );
+        assert_eq!(gateway.default_provider(), LlmProvider::Gemini);
+        assert_eq!(
+            gateway.configured_providers(),
+            &[LlmProvider::Gemini, LlmProvider::Melious]
+        );
+
+        // Non-admin callers always get default runner (sticky to LLM_PROVIDER)
+        assert!(gateway.resolve_runner(Some("melious"), false).is_ok());
+        assert!(gateway.resolve_runner(Some("unknown"), false).is_ok());
+
+        // Admin callers: None or blank returns default runner
+        assert!(gateway.resolve_runner(None, true).is_ok());
+        assert!(gateway.resolve_runner(Some(""), true).is_ok());
+        assert!(gateway.resolve_runner(Some("   "), true).is_ok());
+
+        // Admin callers: valid configured provider succeeds
+        assert!(gateway.resolve_runner(Some("gemini"), true).is_ok());
+        assert!(gateway.resolve_runner(Some("melious"), true).is_ok());
+
+        // Admin callers: unknown provider returns validation error
+        assert!(gateway.resolve_runner(Some("anthropic"), true).is_err());
+
+        // Admin callers: unconfigured provider returns error
+        let gemini_only = ModelGateway::single(Arc::clone(&gemini_runner));
+        let err = gemini_only
+            .resolve_runner(Some("melious"), true)
+            .err()
+            .expect("expected unconfigured provider error");
+        assert!(err.contains("not configured with an API key"));
+    }
+
+    #[test]
+    fn test_model_pricing_and_currency_tracking() {
+        // Gemini Fast (Gemini 3.5 Flash Lite): $0.30 In / $2.50 Out (USD)
+        let gemini_fast = LlmProvider::Gemini.pricing(ModelTier::Fast);
+        assert_eq!(gemini_fast.currency, Currency::USD);
+        assert_eq!(gemini_fast.currency.symbol(), "$");
+        assert_eq!(gemini_fast.input_per_million, 0.30);
+        assert_eq!(gemini_fast.output_per_million, 2.50);
+        // 1M in + 1M out = 0.30 + 2.50 = 2.80
+        assert!((gemini_fast.calculate_cost(1_000_000, 1_000_000) - 2.80).abs() < 1e-6);
+
+        // Gemini Large (Gemini 3.5 Flash Lite): $0.30 In / $2.50 Out (USD)
+        let gemini_large = LlmProvider::Gemini.pricing(ModelTier::Large);
+        assert_eq!(gemini_large.currency, Currency::USD);
+        assert_eq!(gemini_large.currency.symbol(), "$");
+        assert_eq!(gemini_large.input_per_million, 0.30);
+        assert_eq!(gemini_large.output_per_million, 2.50);
+        assert!((gemini_large.calculate_cost(1_000_000, 1_000_000) - 2.80).abs() < 1e-6);
+
+        // Melious Fast (Gemma 4 26B A4B): €0.25 In / €0.50 Out (EUR)
+        let melious_fast = LlmProvider::Melious.pricing(ModelTier::Fast);
+        assert_eq!(melious_fast.currency, Currency::EUR);
+        assert_eq!(melious_fast.currency.symbol(), "€");
+        assert_eq!(melious_fast.input_per_million, 0.25);
+        assert_eq!(melious_fast.output_per_million, 0.50);
+        assert!((melious_fast.calculate_cost(1_000_000, 1_000_000) - 0.75).abs() < 1e-6);
+
+        // Melious Large (Gemma 4 31B): €0.10 In / €0.30 Out (EUR)
+        let melious_large = LlmProvider::Melious.pricing(ModelTier::Large);
+        assert_eq!(melious_large.currency, Currency::EUR);
+        assert_eq!(melious_large.currency.symbol(), "€");
+        assert_eq!(melious_large.input_per_million, 0.10);
+        assert_eq!(melious_large.output_per_million, 0.30);
+        assert!((melious_large.calculate_cost(1_000_000, 1_000_000) - 0.40).abs() < 1e-6);
     }
 }

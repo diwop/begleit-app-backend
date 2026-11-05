@@ -57,3 +57,9 @@ variable "cloudwatch_metrics_namespace" {
   type        = string
   default     = ""
 }
+
+variable "llm_provider" {
+  description = "LLM Model Gateway provider strategy (gemini or melious)."
+  type        = string
+  default     = "gemini"
+}

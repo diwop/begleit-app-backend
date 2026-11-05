@@ -14,10 +14,13 @@ pub use api::{
 };
 pub use few_shots::{FewShotBucketIndex, FewShotEntry};
 pub use prompts::{
-    ensure_markdown_line_breaks, ClassificationCategory, ClassificationLevel,
-    CorrectTranscriptModelOutput, DialogClassification, DialogTopic, EchoPromptRunner,
-    GeminiPromptRunner, ModelPartnerRole, PromptError, PromptOutput, PromptRunner,
-    ResolvedSpeakerRole, TokenUsage,
+    ensure_markdown_line_breaks, resolve_provider_api_key, ClassificationCategory,
+    ClassificationLevel, CorrectTranscriptModelOutput, Currency, DialogClassification, DialogTopic,
+    EchoPromptRunner, GeminiPromptRunner, LlmProvider, MeliousPromptRunner, ModelGateway,
+    ModelPartnerRole, ModelPricing, ModelTier, PromptError, PromptOutput, PromptRunner,
+    ReasoningLevel, ResolvedSpeakerRole, TokenUsage, DEFAULT_GEMINI_FAST_MODEL,
+    DEFAULT_GEMINI_LARGE_MODEL, DEFAULT_MELIOUS_BASE_URL, DEFAULT_MELIOUS_FAST_MODEL,
+    DEFAULT_MELIOUS_LARGE_MODEL,
 };
 
 use axum::{http::StatusCode, routing::get, Router};
@@ -53,47 +56,44 @@ use utoipa::OpenApi;
         WarningType,
         Warning,
         TranslationResponse,
+        Currency,
+        ModelPricing,
         ErrorDetail,
         ErrorResponse
     ))
 )]
 struct ApiDoc;
 
-/// Creates and configures the main application router using the environment-configured [`PromptRunner`].
+/// Instantiates the configured [`PromptRunner`] strategy from environment variables.
 ///
-/// In release builds, `GEMINI_API_KEY` is required and configures [`GeminiPromptRunner`].
-/// In debug/test builds, falls back to [`EchoPromptRunner`] when `GEMINI_API_KEY` is unset.
+/// Returns an [`Arc<ModelGateway>`] configured via `LLM_PROVIDER`, `GEMINI_API_KEY`, and `MELIOUS_API_KEY`.
+pub fn create_prompt_runner_from_env() -> Arc<dyn PromptRunner> {
+    Arc::new(ModelGateway::from_env())
+}
+
+/// Creates and configures the main application router using the environment-configured [`ModelGateway`].
+///
+/// Selects the default provider via `LLM_PROVIDER` (`gemini` default, or `melious`).
+/// Initializes runners for each provider having its corresponding API key (`GEMINI_API_KEY`, `MELIOUS_API_KEY`).
+/// In debug/test builds, falls back to [`EchoPromptRunner`] when no API key is set.
 ///
 /// Spawns a background warmup task to verify the LLM API before marking the service as ready on `/readyz`.
 pub fn create_app() -> Router {
-    let runner: Arc<dyn PromptRunner> = match std::env::var("GEMINI_API_KEY") {
-        Ok(key) if !key.trim().is_empty() => Arc::new(GeminiPromptRunner::new(key)),
-        _ => {
-            #[cfg(not(debug_assertions))]
-            panic!("GEMINI_API_KEY environment variable is crucially required in release profile!");
-
-            #[cfg(debug_assertions)]
-            Arc::new(EchoPromptRunner)
-        }
-    };
-
-    create_app_with_runner(runner)
+    let gateway = Arc::new(ModelGateway::from_env());
+    create_app_with_gateway(gateway)
 }
 
-/// Creates and configures the main application router with an explicit [`PromptRunner`].
+/// Creates and configures the main application router with an explicit [`ModelGateway`].
 ///
 /// Spawns a single asynchronous background warmup check against the embedded few-shot vector index
-/// and `runner` to verify both semantic lookup and LLM API connectivity.
-/// While warmup is in progress or if all attempts fail, `/readyz` returns `503 Service Unavailable`.
-/// Once warmup succeeds, the readiness state is cached as `true`, and subsequent `/readyz` queries
-/// return `200 OK` in-memory without recurring LLM API calls.
-pub fn create_app_with_runner(runner: Arc<dyn PromptRunner>) -> Router {
+/// and the gateway's default runner to verify both semantic lookup and LLM API connectivity.
+pub fn create_app_with_gateway(gateway: Arc<ModelGateway>) -> Router {
     let readiness = Arc::new(AtomicBool::new(false));
     let few_shots_res = FewShotBucketIndex::default_shared();
 
     // Spawn an asynchronous startup warmup probe if running within an active Tokio runtime
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        let runner_clone = Arc::clone(&runner);
+        let runner_clone = gateway.default_runner();
         let readiness_clone = Arc::clone(&readiness);
         handle.spawn(async move {
             let few_shots = match few_shots_res {
@@ -112,7 +112,12 @@ pub fn create_app_with_runner(runner: Arc<dyn PromptRunner>) -> Router {
             for attempt in 1..=3 {
                 tracing::info!(attempt, "Running LLM API startup warmup check for readiness probe...");
                 match runner_clone
-                    .run_prompt("Du bist ein Test-Assistent.", "ping", "minimal")
+                    .run_prompt(
+                        "Du bist ein Test-Assistent.",
+                        "ping",
+                        ModelTier::Fast,
+                        ReasoningLevel::Minimal,
+                    )
                     .await
                 {
                     Ok(_) => {
@@ -135,10 +140,27 @@ pub fn create_app_with_runner(runner: Arc<dyn PromptRunner>) -> Router {
         readiness.store(true, Ordering::SeqCst);
     }
 
-    create_app_with_runner_and_readiness(runner, readiness)
+    create_app_with_gateway_and_readiness(gateway, readiness)
+}
+
+/// Creates and configures the main application router with an explicit [`PromptRunner`].
+///
+/// Wraps `runner` in a single-runner [`ModelGateway`].
+pub fn create_app_with_runner(runner: Arc<dyn PromptRunner>) -> Router {
+    create_app_with_gateway(Arc::new(ModelGateway::single(runner)))
 }
 
 /// Creates and configures the main application router with an explicit [`PromptRunner`] and [`AtomicBool`] readiness flag.
+///
+/// Wraps `runner` in a single-runner [`ModelGateway`].
+pub fn create_app_with_runner_and_readiness(
+    runner: Arc<dyn PromptRunner>,
+    readiness: Arc<AtomicBool>,
+) -> Router {
+    create_app_with_gateway_and_readiness(Arc::new(ModelGateway::single(runner)), readiness)
+}
+
+/// Creates and configures the main application router with an explicit [`ModelGateway`] and [`AtomicBool`] readiness flag.
 ///
 /// This function aggregates all separate HTTP components into a single `axum::Router`:
 /// - Exposes an unauthenticated `/healthz` endpoint returning `200 OK` (process liveness probe).
@@ -146,8 +168,8 @@ pub fn create_app_with_runner(runner: Arc<dyn PromptRunner>) -> Router {
 /// - Exposes Swagger UI documentation on `/open-api` and `/api-docs/openapi.json`.
 /// - Protects operational endpoints with Bearer authentication if `API_KEY` is configured.
 /// - Exposes the administration web interface on `/`, `/dialog-translation`, `/vad-diarization`, `/login`, `/logout`, and `/static/*` protected via `ADMIN_PASSWORD`.
-pub fn create_app_with_runner_and_readiness(
-    runner: Arc<dyn PromptRunner>,
+pub fn create_app_with_gateway_and_readiness(
+    gateway: Arc<ModelGateway>,
     readiness: Arc<AtomicBool>,
 ) -> Router {
     // Attempt to extract the API Key enforcing production rules
@@ -181,7 +203,11 @@ pub fn create_app_with_runner_and_readiness(
             Arc::new(crate::few_shots::DeterministicHashEmbedder),
         ))
     });
-    let mut api_router = api::router_with_state(runner, few_shots, Arc::clone(&admin_password));
+    let mut api_router = api::router_with_gateway_state(
+        Arc::clone(&gateway),
+        few_shots,
+        Arc::clone(&admin_password),
+    );
 
     let is_secured = expected_api_key.is_some();
 
@@ -204,7 +230,12 @@ pub fn create_app_with_runner_and_readiness(
 
     let swagger_ui = configure_swagger_ui(is_secured);
     let analytics_service = crate::analytics::create_metrics_query_service();
-    let web_router = web::router(admin_password, expected_api_key.clone(), analytics_service);
+    let web_router = web::router(
+        admin_password,
+        expected_api_key.clone(),
+        analytics_service,
+        Arc::clone(&gateway),
+    );
 
     let readiness_state = Arc::clone(&readiness);
     let health_router = Router::new()
@@ -276,7 +307,8 @@ mod tests {
             &'a self,
             _system_instruction: &'a str,
             _user_prompt: &'a str,
-            _thinking_level: &'a str,
+            _model_tier: ModelTier,
+            _reasoning_level: ReasoningLevel,
         ) -> Pin<Box<dyn Future<Output = Result<PromptOutput, PromptError>> + Send + 'a>> {
             Box::pin(async move {
                 let call_idx = self.calls.fetch_add(1, Ordering::SeqCst);

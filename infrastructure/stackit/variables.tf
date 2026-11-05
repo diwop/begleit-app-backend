@@ -40,10 +40,16 @@ variable "api_key" {
 }
 
 variable "gemini_api_key" {
-  description = "Gemini API key required by the application in release mode."
+  description = "Gemini / LLM API key required by the application in release mode."
   type        = string
   default     = "REPLACE_ME"
   sensitive   = true
+}
+
+variable "llm_provider" {
+  description = "LLM Model Gateway provider strategy (gemini or melious)."
+  type        = string
+  default     = "gemini"
 }
 
 variable "admin_password" {

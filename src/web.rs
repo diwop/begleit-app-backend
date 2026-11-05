@@ -67,12 +67,17 @@ pub struct DashboardTemplate;
 #[template(path = "dialog_translation.html")]
 pub struct DialogTranslationTemplate {
     pub api_key: String,
+    pub available_providers: Vec<String>,
+    pub default_provider: String,
 }
 
 /// Askama template rendering the WASM VAD + Speaker Diarization test interface at `/vad-diarization`.
 #[derive(Template)]
 #[template(path = "vad_diarization.html")]
-pub struct VadDiarizationTemplate;
+pub struct VadDiarizationTemplate {
+    pub available_providers: Vec<String>,
+    pub default_provider: String,
+}
 
 /// Askama template rendering the analytics dashboard at `/analytics`.
 #[derive(Template)]
@@ -103,12 +108,13 @@ pub struct LoginForm {
     pub next: Option<String>,
 }
 
-/// Shared application state for the web router holding the configured admin password, optional API key, and analytics service.
+/// Shared application state for the web router holding the configured admin password, optional API key, analytics service, and model gateway.
 #[derive(Clone)]
 pub struct WebState {
     pub admin_password: Arc<String>,
     pub api_key: Option<Arc<String>>,
     pub analytics_service: Arc<dyn crate::analytics::MetricsQueryService>,
+    pub gateway: Arc<crate::prompts::ModelGateway>,
 }
 
 /// Creates the web interface router for the HTML administration pages and static assets.
@@ -116,11 +122,13 @@ pub fn router(
     admin_password: Arc<String>,
     api_key: Option<Arc<String>>,
     analytics_service: Arc<dyn crate::analytics::MetricsQueryService>,
+    gateway: Arc<crate::prompts::ModelGateway>,
 ) -> Router {
     let state = WebState {
         admin_password,
         api_key,
         analytics_service,
+        gateway,
     };
 
     Router::new()
@@ -281,11 +289,21 @@ async fn index(State(state): State<WebState>, headers: HeaderMap) -> Response {
 async fn dialog_translation(State(state): State<WebState>, headers: HeaderMap) -> Response {
     if let Some(cookie_val) = extract_session_cookie(&headers) {
         if is_valid_session(&cookie_val, &state.admin_password) {
+            let available_providers = state
+                .gateway
+                .configured_providers()
+                .iter()
+                .map(|p| p.as_str().to_string())
+                .collect();
+            let default_provider = state.gateway.default_provider().as_str().to_string();
+
             let template = DialogTranslationTemplate {
                 api_key: state
                     .api_key
                     .as_ref()
                     .map_or(String::new(), |k| k.to_string()),
+                available_providers,
+                default_provider,
             };
             return match template.render() {
                 Ok(html) => Html(html).into_response(),
@@ -315,7 +333,18 @@ async fn dialog_translation(State(state): State<WebState>, headers: HeaderMap) -
 async fn vad_diarization(State(state): State<WebState>, headers: HeaderMap) -> Response {
     if let Some(cookie_val) = extract_session_cookie(&headers) {
         if is_valid_session(&cookie_val, &state.admin_password) {
-            let template = VadDiarizationTemplate;
+            let available_providers = state
+                .gateway
+                .configured_providers()
+                .iter()
+                .map(|p| p.as_str().to_string())
+                .collect();
+            let default_provider = state.gateway.default_provider().as_str().to_string();
+
+            let template = VadDiarizationTemplate {
+                available_providers,
+                default_provider,
+            };
             return match template.render() {
                 Ok(html) => {
                     let mut resp_headers = HeaderMap::new();
@@ -1100,6 +1129,9 @@ mod tests {
         let state = WebState {
             admin_password: Arc::new("admin-secret".to_string()),
             api_key: None,
+            gateway: Arc::new(crate::prompts::ModelGateway::single(Arc::new(
+                crate::prompts::EchoPromptRunner,
+            ))),
             analytics_service: Arc::new(FailingMetricsQueryService),
         };
         let mut headers = HeaderMap::new();

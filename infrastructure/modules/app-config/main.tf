@@ -4,6 +4,7 @@ locals {
     PORT              = tostring(var.port)
     RUST_LOG          = var.rust_log
     OTEL_SERVICE_NAME = var.app_name
+    LLM_PROVIDER      = var.llm_provider
   }
 
   otel_endpoint_env = var.otel_exporter_otlp_endpoint != "" ? {

@@ -58,6 +58,7 @@ module "app_config" {
   source = "../modules/app-config"
 
   environment                  = var.environment
+  llm_provider                 = var.llm_provider
   otel_exporter_otlp_endpoint  = var.otel_exporter_otlp_endpoint != "" ? var.otel_exporter_otlp_endpoint : "http://127.0.0.1:4317"
   otel_resource_attributes     = "deployment.environment=${var.environment}"
   metrics_provider             = "cloudwatch"
@@ -124,6 +125,20 @@ resource "aws_ssm_parameter" "gemini_api_key" {
   depends_on = [aws_iam_role_policy.github_actions_deploy]
 }
 
+resource "aws_ssm_parameter" "melious_api_key" {
+  name        = "/${local.name_prefix}/melious-api-key"
+  description = "Melious API key for ${local.name_prefix}"
+  type        = "SecureString"
+  value       = "REPLACE_ME"
+  overwrite   = true
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+
+  depends_on = [aws_iam_role_policy.github_actions_deploy]
+}
+
 resource "aws_ssm_parameter" "admin_password" {
   name        = "/${local.name_prefix}/admin-password"
   description = "Admin password for ${local.name_prefix}"
@@ -168,6 +183,7 @@ data "aws_iam_policy_document" "ecs_secret_read" {
     resources = [
       aws_ssm_parameter.api_key.arn,
       aws_ssm_parameter.gemini_api_key.arn,
+      aws_ssm_parameter.melious_api_key.arn,
       aws_ssm_parameter.admin_password.arn,
     ]
   }
@@ -458,6 +474,10 @@ resource "aws_ecs_task_definition" "app" {
         {
           name      = "GEMINI_API_KEY"
           valueFrom = aws_ssm_parameter.gemini_api_key.arn
+        },
+        {
+          name      = "MELIOUS_API_KEY"
+          valueFrom = aws_ssm_parameter.melious_api_key.arn
         },
         {
           name      = "ADMIN_PASSWORD"

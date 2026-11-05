@@ -525,6 +525,38 @@ async fn test_authenticated_dialog_translation_serves_interface() {
         html.contains("JSON-Ausgabe"),
         "HTML should contain JSON-Ausgabe sub-block for classification"
     );
+    assert!(
+        html.contains("Text eingeben"),
+        "HTML should contain 'Text eingeben' action links"
+    );
+    assert!(
+        html.contains("text-link-user"),
+        "HTML should contain text input trigger link for user"
+    );
+    assert!(
+        html.contains("text-link-partner"),
+        "HTML should contain text input trigger link for partner"
+    );
+    assert!(
+        html.contains("text-input-user"),
+        "HTML should contain text input box for user"
+    );
+    assert!(
+        html.contains("text-input-partner"),
+        "HTML should contain text input box for partner"
+    );
+    assert!(
+        html.contains("submitTextMessage"),
+        "HTML should contain submitTextMessage script function"
+    );
+    assert!(
+        html.contains("let cumulativeCostUSD = 0;"),
+        "HTML should declare cumulativeCostUSD in script"
+    );
+    assert!(
+        html.contains("let cumulativeCostEUR = 0;"),
+        "HTML should declare cumulativeCostEUR in script"
+    );
 }
 
 /// Verifies that an unauthenticated GET to `/vad-diarization` presents the login form with next parameter.
